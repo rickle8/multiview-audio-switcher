@@ -9,7 +9,6 @@ Runs on a mini PC (or any Linux/Windows/Mac box) on the same network as the TV.
 1. **Mic + YAMNet** (Google's sound classifier) scores each second of audio as "game-like" (crowd, cheering, babble) or "ad-like" (music, jingles, clean voiceover). A rolling 8 second window with hysteresis decides *game* vs *commercial*.
 2. **ESPN live data** (optional, on by default) adds a second opinion: which games are live, final, at halftime, or just had a timeout/score/injury.
 3. **Remote control** presses arrow keys on the TV to move the multiview highlight, which moves the audio.
-
 4. **Game scoring** rates every live game so it switches to the best one, not just the next one:
    - **Closeness**: tie = max, blowout = near zero (scaled per sport)
    - **Time left**: a close 4th quarter counts far more than a close 1st
