@@ -1,0 +1,47 @@
+# Copy to config.yaml and edit.
+
+remote:
+  # samsung = YouTube TV app running on the Samsung TV itself
+  # roku    = Roku stick/TV (enable Settings > System > Advanced > Control by mobile apps)
+  # adb     = Google TV / Chromecast w/ Google TV / Fire TV (enable network debugging)
+  # dry_run = don't press anything, just log (good for testing the mic)
+  type: samsung
+  host: 192.168.1.50          # give the TV a DHCP reservation so this never changes
+  token_file: samsung_token.txt
+
+multiview:
+  layout: "4"                 # "2" side by side, "3" big left + two right, "4" 2x2 grid, or "custom"
+  start_box: 1                # box that has audio when you start the script
+  key_delay: 0.35             # seconds between key presses
+  wake_key: null              # set if the first press only shows the overlay (pick a key that moves nowhere)
+  confirm_key: null           # set to SELECT only if your device needs OK to switch audio
+  # neighbors:                # only for layout: custom
+  #   1: {RIGHT: 2}
+  #   2: {LEFT: 1}
+
+# Which game is in which box (reading order: left to right, top to bottom).
+# league is the ESPN path: football/nfl, football/college-football,
+# basketball/nba, baseball/mlb, hockey/nhl
+games:
+  1: {league: football/nfl, team: GB}
+  2: {league: football/nfl, team: MIN}
+  3: {league: football/nfl, team: CHI}
+  4: {league: football/nfl, team: DET}
+
+switching:
+  primary_box: 1              # your main game; goes back to it when its break should be over
+  priority: [1, 2, 3, 4]      # order to try other boxes in
+  return_to_primary: true
+  assumed_break_secs: 150     # how long a TV break usually lasts
+  settle_secs: 6              # ignore the mic for this long after a switch
+  use_feed: true              # use ESPN live data as a second opinion
+  require_feed_confirm: false # true = only switch when ESPN also shows a stoppage (fewer false switches, slower)
+  feed_poll_secs: 15
+
+detector:
+  mic_device: null            # name or index from: python -m mvswitch devices
+  window_secs: 8              # rolling window the decision is based on
+  ad_threshold: 0.6           # ad% at or above this = commercial
+  game_threshold: 0.4         # ad% at or below this = game
+  min_ad_secs: 5              # must sound like an ad this long before switching
+  silence_dbfs: -55           # ignore audio quieter than this

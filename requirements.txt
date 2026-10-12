@@ -1,0 +1,7 @@
+numpy
+pyyaml
+requests
+sounddevice
+tensorflow
+tensorflow-hub
+samsungtvws
