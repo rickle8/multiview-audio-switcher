@@ -238,7 +238,7 @@ fun SettingsScreen(state: EngineState, settings: Settings, update: UpdateState, 
                 shape = RoundedCornerShape(12.dp),
             )
             Text(
-                "Needed because the repo is private. On GitHub: Settings > Developer settings > " +
+                "Only needed if the repo is private. On GitHub: Settings > Developer settings > " +
                     "Fine-grained tokens > Generate. Repository access: only multiview-audio-switcher. " +
                     "Permissions: Contents, Read-only. Copy it and paste it here.",
                 color = C.muted, fontSize = 12.sp, modifier = Modifier.padding(top = 6.dp),

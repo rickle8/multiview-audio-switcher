@@ -57,10 +57,6 @@ object Updater {
         val token = Engine.settings.value.githubToken
         _state.value = _state.value.copy(installed = installedName(app), busy = !quiet,
             message = if (quiet) _state.value.message else "Checking…")
-        if (quiet && token.isBlank()) {
-            _state.value = _state.value.copy(busy = false)
-            return
-        }
         scope.launch {
             try {
                 val req = request("https://api.github.com/repos/$REPO/releases/latest", token,
