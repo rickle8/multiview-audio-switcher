@@ -43,19 +43,8 @@ jobs:
 
       - name: Report errors
         if: failure()
-        shell: bash
-        run: |
-          grep -E "^e: |error:" ../build.log | head -20 | while read -r line; do echo "::error::${line}"; done
-          for f in app/build/test-results/testDebugUnitTest/*.xml; do
-            [ -f "$f" ] || continue
-            python3 - "$f" <<'PY'
-          import sys, xml.etree.ElementTree as ET
-          for tc in ET.parse(sys.argv[1]).getroot().iter("testcase"):
-              for fl in list(tc.findall("failure")) + list(tc.findall("error")):
-                  msg = (fl.get("message") or fl.text or "").splitlines()[0][:300]
-                  print(f"::error::TEST {tc.get('name')}: {msg}")
-          PY
-          done
+        working-directory: .
+        run: python3 .github/scripts/report_errors.py
 
       - name: Rename APK
         run: cp app/build/outputs/apk/release/app-release.apk MultiviewAudio.apk
