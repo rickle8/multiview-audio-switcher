@@ -44,7 +44,7 @@ class SoundModel(private val maxPerLabel: Int = 900) {
 
     companion object {
         const val MIN_SAMPLES = 20
-        private const val VAR_FLOOR = 0.04
+        private const val VAR_FLOOR = 0.01
     }
 
     private class Fit(val gm: DoubleArray, val gv: DoubleArray, val am: DoubleArray, val av: DoubleArray)
@@ -86,7 +86,7 @@ class SoundModel(private val maxPerLabel: Int = 900) {
             llr += logGauss(x[i], f.am[i], f.av[i]) - logGauss(x[i], f.gm[i], f.gv[i])
         }
         // Naive Bayes is overconfident with correlated features; soften it.
-        llr /= 4.0
+        llr /= 3.0
         return 1.0 / (1.0 + exp(-llr.coerceIn(-30.0, 30.0)))
     }
 
