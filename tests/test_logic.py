@@ -2,6 +2,8 @@ from mvswitch.controller import Controller
 from mvswitch.detector import AD, GAME, UNSURE, Frame, Verdict
 from mvswitch.excitement import closeness, excitement, progress
 from mvswitch.feed import BREAK, FINAL, LIVE, GameFeed, GameInfo, parse_event
+import pytest
+
 from mvswitch.remote import LAYOUTS, DryRunRemote, Navigator, key_path
 
 
@@ -30,11 +32,30 @@ def test_key_paths():
     assert key_path(LAYOUTS["3"], 3, 1) == ["LEFT"]
 
 
-def test_navigator_presses_and_tracks():
+def test_navigator_presses_and_tracks_without_homing():
     r = DryRunRemote()
-    nav = Navigator(r, LAYOUTS["2"], sleep=lambda s: None)
+    nav = Navigator(r, LAYOUTS["2"], home=False, sleep=lambda s: None)
     nav.go_to(2)
     assert r.pressed == ["RIGHT"] and nav.current == 2
+
+
+@pytest.mark.parametrize("layout", ["2", "3", "4"])
+def test_homing_reaches_every_box_from_any_real_position(layout):
+    from mvswitch.remote import simulate
+
+    grid = LAYOUTS[layout]
+    for actual in grid:            # where the highlight really is
+        for target in grid:
+            r = DryRunRemote()
+            nav = Navigator(r, grid, start_box=1, sleep=lambda s: None)
+            nav.current = None       # pretend we lost track completely
+            nav.go_to(target)
+            assert simulate(grid, actual, r.pressed) == target
+
+
+def test_homing_rejects_bad_settings():
+    with pytest.raises(ValueError):  # UP alone can't reach box 1 from box 2
+        Navigator(DryRunRemote(), LAYOUTS["4"], home_keys=("UP",), sleep=lambda s: None)
 
 
 # --- detector -------------------------------------------------------------
@@ -81,9 +102,11 @@ def test_parse_scores_clock_redzone():
 
 def test_feed_timeout_counts_as_break_then_expires():
     clock = Clock()
-    board = {"events": [event("GB", "MIN", play="Timeout #1 by GB at 04:12.")]}
+    board = {"events": [event("GB", "MIN", play="Pass complete to Reed for 8 yards.")]}
     f = GameFeed({1: {"league": "football/nfl", "team": "GB"}}, fetch=lambda l: board,
                  break_play_secs=150, poll_secs=0, clock=clock)
+    assert f.poll()[1] == LIVE
+    board["events"] = [event("GB", "MIN", play="Timeout #1 by GB at 04:12.")]
     assert f.poll()[1] == BREAK
     clock.t = 200
     assert f.poll()[1] == LIVE
@@ -94,6 +117,10 @@ class FakeFeed:
     def __init__(self, status, info=None):
         self.status = status
         self.info = info or {}
+        self.plays = {}
+
+    def latest_play(self, box):
+        return self.plays.get(box)
 
     def poll(self):
         return self.status
@@ -104,7 +131,7 @@ class FakeFeed:
 
 def make(feed_status=None, info=None, **kw):
     clock = Clock()
-    nav = Navigator(DryRunRemote(), LAYOUTS["4"], sleep=lambda s: None)
+    nav = Navigator(DryRunRemote(), LAYOUTS["4"], home=False, sleep=lambda s: None)
     feed = FakeFeed(feed_status, info) if feed_status is not None else None
     c = Controller(nav, [1, 2, 3, 4], feed, clock=clock, **kw)
     return c, nav, clock
@@ -220,3 +247,50 @@ def test_returns_to_important_game_after_break():
     assert c.step(GAME) is False  # box 1 still assumed on break
     clock.t = 260
     assert c.step(GAME) is True and nav.current == 1
+
+
+# --- proactive ------------------------------------------------------------
+def test_switches_right_away_on_touchdown_even_while_hearing_game():
+    info = {b: nfl(14, 10, 3, 400) for b in (1, 2, 3, 4)}
+    c, nav, clock = make({b: LIVE for b in info}, info)
+    clock.t = 100
+    c.feed.plays[1] = ("J.Love pass to C.Watson for 22 yards, TOUCHDOWN.", 95)
+    assert c.step(GAME) is True and nav.current != 1
+    assert c.break_until[1] > clock.t
+
+
+def test_proactive_ignores_ordinary_and_stale_plays_and_fires_once():
+    info = {b: nfl(14, 10, 3, 400) for b in (1, 2, 3, 4)}
+    c, nav, clock = make({b: LIVE for b in info}, info)
+    clock.t = 100
+    c.feed.plays[1] = ("Run up the middle for 3 yards.", 99)
+    assert c.step(GAME) is False
+    c.feed.plays[1] = ("Field goal is GOOD.", 10)   # seen 90s ago
+    assert c.step(GAME) is False
+    c.feed.plays[1] = ("Two-Minute Warning", 99)
+    assert c.step(GAME) is True
+    nav.current = 1
+    clock.t = 200
+    assert c.step(GAME) is False  # same play doesn't trigger twice
+
+
+def test_halftime_status_triggers_switch():
+    info = {b: nfl(14, 10, 2, 0) for b in (1, 2, 3, 4)}
+    info[1].status_name = "STATUS_HALFTIME"
+    status = {1: BREAK, 2: LIVE, 3: LIVE, 4: LIVE}
+    c, nav, clock = make(status, info)
+    clock.t = 100
+    assert c.step(GAME) is True and nav.current != 1
+
+
+def test_feed_ignores_plays_already_on_board_at_startup():
+    clock = Clock()
+    board = {"events": [event("GB", "MIN", play="TOUCHDOWN GB")]}
+    f = GameFeed({1: {"league": "football/nfl", "team": "GB"}}, fetch=lambda l: board,
+                 poll_secs=0, clock=clock)
+    clock.t = 1000
+    f.poll()
+    assert f.status[1] == LIVE
+    c = Controller(Navigator(DryRunRemote(), LAYOUTS["2"], home=False,
+                             sleep=lambda s: None), [1, 2], f, clock=clock)
+    assert c._break_coming(1, clock.t) is None

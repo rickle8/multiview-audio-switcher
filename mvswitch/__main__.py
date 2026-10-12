@@ -33,7 +33,8 @@ def build_navigator(cfg: dict) -> Navigator:
     return Navigator(make_remote(cfg.get("remote", {})), neighbors,
                      start_box=int(mv.get("start_box", 1)),
                      key_delay=float(mv.get("key_delay", 0.35)),
-                     wake_key=mv.get("wake_key"), confirm_key=mv.get("confirm_key"))
+                     wake_key=mv.get("wake_key"), confirm_key=mv.get("confirm_key"),
+                     home=mv.get("home", True), home_presses=int(mv.get("home_presses", 2)))
 
 
 def boxes_from(cfg: dict) -> dict[int, dict]:
@@ -77,7 +78,11 @@ def cmd_listen(cfg):
 def cmd_test_keys(cfg):
     nav = build_navigator(cfg)
     boxes = sorted(nav.neighbors)
-    print(f"Assuming box {nav.current} is highlighted now. Cycling through {boxes}.")
+    if nav.home_seq:
+        print("Resetting highlight to the top-left box...")
+        nav.resync()
+        time.sleep(2)
+    print(f"Audio should be on box {nav.current}. Cycling through {boxes}.")
     for box in boxes + [boxes[0]]:
         nav.go_to(box)
         print(f"  audio should now be on box {box}")
@@ -110,6 +115,8 @@ def cmd_run(cfg):
     ctrl = Controller(nav, sorted(nav.neighbors), feed, games=games,
                       upgrade_margin=sw.get("upgrade_margin", 0.35),
                       min_dwell_secs=sw.get("min_dwell_secs", 45),
+                      proactive=sw.get("proactive", True),
+                      **({"proactive_plays": sw["proactive_plays"]} if sw.get("proactive_plays") else {}),
                       primary=sw.get("primary_box"), priority=sw.get("priority"),
                       settle_secs=sw.get("settle_secs", 6),
                       assumed_break_secs=sw.get("assumed_break_secs", 150),
@@ -117,8 +124,9 @@ def cmd_run(cfg):
                       return_to_primary=sw.get("return_to_primary", True))
     verdict = build_verdict(cfg)
     mic = MicListener(device=cfg.get("detector", {}).get("mic_device"))
+    nav.resync()
     mic.start()
-    log.info("Running. Audio assumed on box %s. Ctrl+C to stop.", nav.current)
+    log.info("Running. Audio on box %s. Ctrl+C to stop.", nav.current)
     last = None
     while True:
         frame = mic.next_frame()

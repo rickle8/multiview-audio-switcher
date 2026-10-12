@@ -16,6 +16,9 @@ Runs on a mini PC (or any Linux/Windows/Mac box) on the same network as the TV.
    - **Your pick**: set `pick: "MIN +3.5"` and a game sweating your spread counts as close
    - **Importance**: your weight per game (favorite team = 2.0)
 
+5. **Switches before the break** when ESPN shows a play that almost always leads to commercial on your game (touchdown, field goal, two-minute warning, end of quarter/half, injury, halftime), instead of waiting to hear the ad. The mic still catches anything the feed misses or reports late.
+6. **Can't lose track of the highlight.** Before every switch it presses UP and LEFT to pin the highlight in the top-left box, then moves from there. Using the real remote no longer confuses it.
+
    It also upgrades mid-game (no commercial needed) when another game becomes clearly better, after staying at least `min_dwell_secs`. Giving your main game a higher importance is how it gets back to it after a break.
 
 Multiview only plays one game's audio at a time, so it can only *hear* the game you're on. When it switches, it listens to the new game; if that one is also in commercial, it hops again.
@@ -54,7 +57,7 @@ Start multiview with audio on box 1, then:
 python -m mvswitch test-keys
 ```
 
-The audio should walk through every box and back. If the first press only pops up the overlay, set `wake_key`. If your device needs OK to switch audio, set `confirm_key: SELECT`.
+It first presses UP/LEFT to reset to the top-left box, then the audio should walk through every box and back. If it doesn't land on box 1 first, raise `home_presses`. If UP/LEFT at the edge wraps around or opens a menu on your TV, set `home: false` (it will then track position on its own, like before). If the first press only pops up the overlay, set `wake_key`. If your device needs OK to switch audio, set `confirm_key: SELECT`.
 
 ### 4. Tune the mic
 
@@ -83,7 +86,8 @@ To test detection without touching the TV, set `remote.type: dry_run`.
 
 ## Known limits
 
-- It tracks which box is highlighted by itself. If you press arrows on the real remote, it loses track. Put the highlight back on the box it thinks it's on, or restart with the right `start_box`.
+- Each switch takes about 2 seconds of key presses, and the audio briefly passes through box 1 on the way.
+- The ESPN feed can lag, so a proactive switch may land a few seconds into the break rather than right at it.
 - Ads with crowd noise (beer, cars, sports betting), studio segments and halftime shows can fool the mic. `require_feed_confirm: true` cuts false switches at the cost of slower reactions.
 - ESPN data runs 10 to 60 seconds behind the broadcast.
 - Return-to-primary is a guess based on typical break length plus the feed showing new plays.

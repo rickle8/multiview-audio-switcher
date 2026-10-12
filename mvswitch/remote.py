@@ -124,12 +124,27 @@ def make_remote(cfg: dict) -> Remote:
     raise ValueError(f"Unknown remote type: {kind}")
 
 
+def simulate(neighbors: dict, start: int, keys: list[str]) -> int:
+    """Where the highlight ends up after pressing keys (edges don't wrap)."""
+    box = start
+    for k in keys:
+        box = neighbors.get(box, {}).get(k, box)
+    return box
+
+
 class Navigator:
-    """Tracks which multiview box is highlighted (and therefore has audio)."""
+    """Tracks which multiview box is highlighted (and therefore has audio).
+
+    Homing: before each switch it presses UP and LEFT enough times to pin the
+    highlight in the top-left box, then navigates from there. That way it can
+    never lose track, even if someone used the real remote.
+    """
 
     def __init__(self, remote: Remote, neighbors: dict, start_box: int = 1,
                  key_delay: float = 0.35, wake_key: str | None = None,
-                 confirm_key: str | None = None, sleep=time.sleep):
+                 confirm_key: str | None = None, home: bool = True,
+                 home_keys: tuple[str, ...] = ("UP", "LEFT"), home_presses: int = 2,
+                 sleep=time.sleep):
         self.remote = remote
         self.neighbors = neighbors
         self.current = start_box
@@ -137,17 +152,40 @@ class Navigator:
         self.wake_key = wake_key
         self.confirm_key = confirm_key
         self.sleep = sleep
+        self.home_seq = [k for k in home_keys for _ in range(home_presses)] if home else []
+        self.home_box = None
+        if self.home_seq:
+            ends = {simulate(neighbors, b, self.home_seq) for b in neighbors}
+            if len(ends) != 1:
+                raise ValueError("Homing keys don't land on one box from every box; "
+                                 "raise home_presses or set home: false")
+            self.home_box = ends.pop()
+
+    def _press_all(self, keys: list[str]) -> None:
+        for key in keys:
+            self.remote.press(key)
+            self.sleep(self.key_delay)
+
+    def resync(self) -> None:
+        """Pin the highlight to the home box so we know where it is."""
+        if not self.home_seq:
+            return
+        keys = ([self.wake_key] if self.wake_key else []) + self.home_seq
+        self._press_all(keys)
+        self.current = self.home_box
+        log.info("Highlight reset to box %s", self.home_box)
 
     def go_to(self, box: int) -> None:
-        keys = key_path(self.neighbors, self.current, box)
-        if not keys:
+        if box == self.current:
             return
+        if self.home_seq:
+            keys = self.home_seq + key_path(self.neighbors, self.home_box, box)
+        else:
+            keys = key_path(self.neighbors, self.current, box)
         if self.wake_key:
             keys = [self.wake_key] + keys
         if self.confirm_key:
             keys = keys + [self.confirm_key]
         log.info("Switching audio: box %s -> box %s (%s)", self.current, box, " ".join(keys))
-        for key in keys:
-            self.remote.press(key)
-            self.sleep(self.key_delay)
+        self._press_all(keys)
         self.current = box

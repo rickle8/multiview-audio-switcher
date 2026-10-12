@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import time
 
 from .detector import AD, GAME
@@ -16,6 +17,12 @@ from .excitement import excitement
 from .feed import BREAK, FINAL, PREGAME, UNKNOWN
 
 log = logging.getLogger(__name__)
+
+# Plays that almost always lead straight into a commercial break.
+DEFAULT_PROACTIVE = (r"touchdown|field goal|two.minute warning|"
+                     r"end of (the )?(1st|first|3rd|third) quarter|end of (the )?quarter|"
+                     r"end of (the )?half|injur")
+PROACTIVE_STATUSES = {"STATUS_HALFTIME", "STATUS_END_PERIOD"}
 
 
 class Controller:
@@ -25,7 +32,8 @@ class Controller:
                  settle_secs: float = 6, assumed_break_secs: float = 150,
                  require_feed_confirm: bool = False, return_to_primary: bool = True,
                  upgrade_margin: float = 0.35, min_dwell_secs: float = 45,
-                 clock=time.monotonic):
+                 proactive: bool = True, proactive_plays: str = DEFAULT_PROACTIVE,
+                 proactive_max_age: float = 45, clock=time.monotonic):
         self.nav = navigator
         self.boxes = boxes
         self.feed = feed
@@ -38,6 +46,10 @@ class Controller:
         self.return_to_primary = return_to_primary
         self.upgrade_margin = upgrade_margin
         self.min_dwell_secs = min_dwell_secs
+        self.proactive = proactive
+        self.proactive_re = re.compile(proactive_plays, re.IGNORECASE)
+        self.proactive_max_age = proactive_max_age
+        self.handled_play: dict[int, str] = {}
         self.clock = clock
         self.last_switch = -1e9
         self.break_until: dict[int, float] = {}
@@ -92,6 +104,40 @@ class Controller:
         self.last_switch = now
         return True
 
+    def _break_coming(self, box: int, now: float) -> str | None:
+        """A reason string if the feed says this game is about to go to break."""
+        if not (self.proactive and self.feed):
+            return None
+        info = self._info(box)
+        if info and info.status_name in PROACTIVE_STATUSES:
+            key = f"status:{info.status_name}:{info.period}"
+            if self.handled_play.get(box) != key:
+                self.handled_play[box] = key
+                return info.status_name.replace("STATUS_", "").replace("_", " ").lower()
+        latest = getattr(self.feed, "latest_play", lambda b: None)(box)
+        if not latest:
+            return None
+        text, seen = latest
+        if self.handled_play.get(box) == text:
+            return None
+        self.handled_play[box] = text
+        # Stale plays (already old when we first saw them or long ago) don't count.
+        if now - seen > self.proactive_max_age:
+            return None
+        if self.proactive_re.search(text):
+            return text
+        return None
+
+    def _go_to_break(self, cur: int, now: float, feed: dict[int, str], why: str) -> bool:
+        if self.break_until.get(cur, 0) <= now:
+            self.break_started[cur] = now
+        self.break_until[cur] = now + self.assumed_break_secs
+        targets = self._ranked(now, feed, exclude=cur)
+        if targets:
+            return self._switch(targets[0], now, why)
+        log.info("%s, but no other game looks live; staying", why)
+        return False
+
     # -- main step ----------------------------------------------------------
     def step(self, verdict: str) -> bool:
         """Feed in the current audio verdict. Returns True if we switched (caller
@@ -102,18 +148,15 @@ class Controller:
         feed = self._feed_status()
         cur = self.nav.current
 
+        reason = self._break_coming(cur, now)
+        if reason:
+            return self._go_to_break(cur, now, feed, f"Break coming on box {cur} ({reason[:60]})")
+
         if verdict == AD:
             if self.require_feed_confirm and feed.get(cur, UNKNOWN) not in (BREAK, UNKNOWN):
                 log.info("Mic says commercial on box %s but feed says live; staying", cur)
                 return False
-            if self.break_until.get(cur, 0) <= now:
-                self.break_started[cur] = now
-            self.break_until[cur] = now + self.assumed_break_secs
-            targets = self._ranked(now, feed, exclude=cur)
-            if targets:
-                return self._switch(targets[0], now, f"Commercial on box {cur}")
-            log.info("Commercial on box %s and no other game looks live; staying", cur)
-            return False
+            return self._go_to_break(cur, now, feed, f"Commercial on box {cur}")
 
         if verdict != GAME:
             return False

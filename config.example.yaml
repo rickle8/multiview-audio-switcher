@@ -11,7 +11,9 @@ remote:
 
 multiview:
   layout: "4"                 # "2" side by side, "3" big left + two right, "4" 2x2 grid, or "custom"
-  start_box: 1                # box that has audio when you start the script
+  home: true                  # press UP/LEFT before each switch so it can't lose track
+  home_presses: 2             # presses of each; raise it if test-keys doesn't land on box 1
+  start_box: 1                # only used when home is false
   key_delay: 0.35             # seconds between key presses
   wake_key: null              # set if the first press only shows the overlay (pick a key that moves nowhere)
   confirm_key: null           # set to SELECT only if your device needs OK to switch audio
@@ -42,6 +44,9 @@ switching:
   assumed_break_secs: 150     # how long a TV break usually lasts
   settle_secs: 6              # ignore the mic for this long after a switch
   use_feed: true              # use ESPN live data as a second opinion
+  proactive: true             # switch as soon as ESPN shows a TD, FG, 2-min warning,
+                              # end of quarter/half or injury on your game (no waiting for the mic)
+  # proactive_plays: "touchdown|field goal|timeout"   # regex to override that list
   require_feed_confirm: false # true = only switch when ESPN also shows a stoppage (fewer false switches, slower)
   feed_poll_secs: 15
 

@@ -31,6 +31,7 @@ BREAK_PLAY = re.compile(
 @dataclass
 class GameInfo:
     status: str = UNKNOWN
+    status_name: str = ""               # raw ESPN status, e.g. STATUS_HALFTIME
     league: str = ""
     period: int = 0
     clock: float | None = None          # seconds left in the period
@@ -55,7 +56,7 @@ def parse_event(event: dict, league: str = "") -> GameInfo:
     st = st_obj.get("type", {})
     state, name = st.get("state"), st.get("name", "")
     sit = comp.get("situation") or {}
-    info = GameInfo(league=league, period=int(st_obj.get("period") or 0),
+    info = GameInfo(league=league, status_name=name, period=int(st_obj.get("period") or 0),
                     clock=st_obj.get("clock"), red_zone=bool(sit.get("isRedZone")),
                     last_play=(sit.get("lastPlay") or {}).get("text"))
     for c in comp.get("competitors", []):
@@ -131,7 +132,10 @@ class GameFeed:
             info = parse_event(event, league)
             if info.last_play:
                 prev = self._play.get(box)
-                if prev is None or prev[0] != info.last_play:
+                if prev is None:
+                    # Already on the board when we started: treat as old news.
+                    self._play[box] = (info.last_play, now - self.break_play_secs)
+                elif prev[0] != info.last_play:
                     self._play[box] = (info.last_play, now)
                 text, seen = self._play[box]
                 if (info.status == LIVE and BREAK_PLAY.search(text)
@@ -140,6 +144,10 @@ class GameFeed:
             self.info[box] = info
             self.status[box] = info.status
         return self.status
+
+    def latest_play(self, box: int) -> tuple[str, float] | None:
+        """(text, time we first saw it) for the newest play in this box's game."""
+        return self._play.get(box)
 
     def play_changed_since(self, box: int, t: float) -> bool:
         """True if a new play has shown up for this box since time t (game resumed)."""
