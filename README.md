@@ -1,4 +1,47 @@
-# Multiview Audio Switcher
+# Multiview Audio
+
+When the game you're hearing in YouTube TV multiview goes to commercial, this moves the audio to the best other game that's still live, then comes back when the break is over.
+
+There are two versions:
+
+- **Android app** (recommended): runs entirely on your phone. Uses the phone's mic, talks to the TV over Wi-Fi, and keeps working with the screen off. Source in [`android/`](android).
+- **PC version**: a Python script for a mini PC with a USB mic. Same logic, no UI. Docs below.
+
+## Android app
+
+### Install
+
+1. On your phone, open this repo's **Releases** page and download `MultiviewAudio.apk` from the newest release.
+2. Open it. Android will ask to allow installs from your browser; allow it, then Install.
+3. New versions install right over the old one (same steps).
+
+Every push to `main` that touches `android/` builds a new release automatically.
+
+### Use it
+
+1. **Settings tab:** pick Samsung TV or Roku, enter its IP address, open multiview on the TV, and tap **Test with the TV**. On a Samsung, accept the "Allow" prompt on the TV the first time.
+2. **Games tab:** pick the layout (2, 3 or 4 games), then tap each box and choose the game from today's schedule. Star your main game. Optionally enter your pick against the spread (like `GB -3.5`).
+3. **Live tab:** tap **Start switching**, set the phone near the TV, and leave it. Pause/stop from the notification.
+
+Tap a box on the Live tab to move the audio there yourself, or lock it so nothing switches until you unlock.
+
+### How it decides
+
+- **Mic:** Google's YAMNet sound classifier (runs on the phone, offline) tells crowd/play-by-play apart from music and ad voiceover.
+- **Live data:** ESPN scoreboard data spots touchdowns, field goals, the 2-minute warning, end of quarters, injuries and halftime, and switches *before* the ad starts.
+- **Best game:** every live game gets a rating from closeness, time left, red zone, overtime, your pick, and your star. Commercial on your game means it goes to the highest rated live game, and it will also leave a blowout for a much better game mid-play.
+- **Never loses track:** before each switch it presses up/left to reset the highlight to the top-left box.
+
+### Building it yourself
+
+GitHub builds it for you. To build locally: install Android Studio, download the model with
+`curl -o android/app/src/main/assets/yamnet.tflite https://storage.googleapis.com/mediapipe-models/audio_classifier/yamnet/float32/1/yamnet.tflite`,
+then open the `android/` folder.
+
+---
+
+# PC version
+
 
 Listens to your TV through a USB mic. When the game you're hearing in YouTube TV multiview goes to commercial, it moves the audio to another game that's still live, then back to your main game when its break should be over.
 
