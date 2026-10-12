@@ -2,7 +2,7 @@
 
 Used as a second opinion: if the mic thinks it hears a commercial, the feed
 can confirm there was a stoppage (timeout, end of quarter, score, etc.), and it
-tells us which other games are live and worth switching to.
+tells us which other games are live, close, and late.
 
 Note: the feed often runs 10-60 seconds behind what's on TV.
 """
@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 import re
 import time
+from dataclasses import dataclass, field
 
 log = logging.getLogger(__name__)
 
@@ -27,21 +28,53 @@ BREAK_PLAY = re.compile(
 )
 
 
-def parse_event(event: dict) -> tuple[str, str | None]:
-    """Return (status, last_play_text) for one ESPN event."""
+@dataclass
+class GameInfo:
+    status: str = UNKNOWN
+    league: str = ""
+    period: int = 0
+    clock: float | None = None          # seconds left in the period
+    scores: dict[str, int] = field(default_factory=dict)  # team abbreviation -> points
+    red_zone: bool = False
+    last_play: str | None = None
+
+    def describe(self) -> str:
+        if not self.scores:
+            return self.status
+        s = " ".join(f"{t} {p}" for t, p in self.scores.items())
+        clk = ""
+        if self.clock is not None:
+            clk = f" {int(self.clock // 60)}:{int(self.clock % 60):02d}"
+        rz = " RZ" if self.red_zone else ""
+        return f"{s} P{self.period}{clk}{rz}"
+
+
+def parse_event(event: dict, league: str = "") -> GameInfo:
     comp = (event.get("competitions") or [{}])[0]
-    st = (comp.get("status") or event.get("status") or {}).get("type", {})
+    st_obj = comp.get("status") or event.get("status") or {}
+    st = st_obj.get("type", {})
     state, name = st.get("state"), st.get("name", "")
-    last_play = ((comp.get("situation") or {}).get("lastPlay") or {}).get("text")
+    sit = comp.get("situation") or {}
+    info = GameInfo(league=league, period=int(st_obj.get("period") or 0),
+                    clock=st_obj.get("clock"), red_zone=bool(sit.get("isRedZone")),
+                    last_play=(sit.get("lastPlay") or {}).get("text"))
+    for c in comp.get("competitors", []):
+        abbr = str(c.get("team", {}).get("abbreviation", "")).upper()
+        try:
+            info.scores[abbr] = int(float(c.get("score") or 0))
+        except (TypeError, ValueError):
+            info.scores[abbr] = 0
     if state == "post" or st.get("completed"):
-        return FINAL, last_play
-    if state == "pre":
-        return PREGAME, last_play
-    if state != "in":
-        return UNKNOWN, last_play
-    if name in BREAK_STATUSES:
-        return BREAK, last_play
-    return LIVE, last_play
+        info.status = FINAL
+    elif state == "pre":
+        info.status = PREGAME
+    elif state != "in":
+        info.status = UNKNOWN
+    elif name in BREAK_STATUSES:
+        info.status = BREAK
+    else:
+        info.status = LIVE
+    return info
 
 
 def find_event(scoreboard: dict, team: str) -> dict | None:
@@ -66,6 +99,7 @@ class GameFeed:
         self.clock = clock
         self.last_poll = -1e9
         self.status: dict[int, str] = {b: UNKNOWN for b in boxes}
+        self.info: dict[int, GameInfo] = {}
         self._play: dict[int, tuple[str, float]] = {}  # box -> (text, first seen)
 
     @staticmethod
@@ -94,15 +128,17 @@ class GameFeed:
             if event is None:
                 self.status[box] = UNKNOWN
                 continue
-            status, play = parse_event(event)
-            if play:
+            info = parse_event(event, league)
+            if info.last_play:
                 prev = self._play.get(box)
-                if prev is None or prev[0] != play:
-                    self._play[box] = (play, now)
+                if prev is None or prev[0] != info.last_play:
+                    self._play[box] = (info.last_play, now)
                 text, seen = self._play[box]
-                if status == LIVE and BREAK_PLAY.search(text) and now - seen < self.break_play_secs:
-                    status = BREAK
-            self.status[box] = status
+                if (info.status == LIVE and BREAK_PLAY.search(text)
+                        and now - seen < self.break_play_secs):
+                    info.status = BREAK
+            self.info[box] = info
+            self.status[box] = info.status
         return self.status
 
     def play_changed_since(self, box: int, t: float) -> bool:

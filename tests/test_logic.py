@@ -1,6 +1,7 @@
 from mvswitch.controller import Controller
 from mvswitch.detector import AD, GAME, UNSURE, Frame, Verdict
-from mvswitch.feed import BREAK, FINAL, LIVE, GameFeed, parse_event
+from mvswitch.excitement import closeness, excitement, progress
+from mvswitch.feed import BREAK, FINAL, LIVE, GameFeed, GameInfo, parse_event
 from mvswitch.remote import LAYOUTS, DryRunRemote, Navigator, key_path
 
 
@@ -61,9 +62,21 @@ def test_verdict_ignores_silence():
 
 # --- feed -----------------------------------------------------------------
 def test_parse_event():
-    assert parse_event(event("GB", "MIN"))[0] == LIVE
-    assert parse_event(event("GB", "MIN", name="STATUS_HALFTIME"))[0] == BREAK
-    assert parse_event(event("GB", "MIN", state="post", name="STATUS_FINAL"))[0] == FINAL
+    assert parse_event(event("GB", "MIN")).status == LIVE
+    assert parse_event(event("GB", "MIN", name="STATUS_HALFTIME")).status == BREAK
+    assert parse_event(event("GB", "MIN", state="post", name="STATUS_FINAL")).status == FINAL
+
+
+def test_parse_scores_clock_redzone():
+    e = event("GB", "MIN")
+    c = e["competitions"][0]
+    c["status"].update(period=4, clock=125.0)
+    c["competitors"][0]["score"] = "24"
+    c["competitors"][1]["score"] = "21"
+    c["situation"] = {"isRedZone": True}
+    info = parse_event(e, "football/nfl")
+    assert info.scores == {"GB": 24, "MIN": 21} and info.period == 4
+    assert info.red_zone and info.clock == 125.0
 
 
 def test_feed_timeout_counts_as_break_then_expires():
@@ -78,8 +91,9 @@ def test_feed_timeout_counts_as_break_then_expires():
 
 # --- controller -----------------------------------------------------------
 class FakeFeed:
-    def __init__(self, status):
+    def __init__(self, status, info=None):
         self.status = status
+        self.info = info or {}
 
     def poll(self):
         return self.status
@@ -88,10 +102,10 @@ class FakeFeed:
         return False
 
 
-def make(feed_status=None, **kw):
+def make(feed_status=None, info=None, **kw):
     clock = Clock()
     nav = Navigator(DryRunRemote(), LAYOUTS["4"], sleep=lambda s: None)
-    feed = FakeFeed(feed_status) if feed_status is not None else None
+    feed = FakeFeed(feed_status, info) if feed_status is not None else None
     c = Controller(nav, [1, 2, 3, 4], feed, clock=clock, **kw)
     return c, nav, clock
 
@@ -136,3 +150,73 @@ def test_require_feed_confirm():
     c, nav, clock = make({1: LIVE, 2: LIVE, 3: LIVE, 4: LIVE}, require_feed_confirm=True)
     clock.t = 100
     assert c.step(AD) is False
+
+
+# --- excitement -----------------------------------------------------------
+def nfl(a, b, period, clock, status=LIVE, red_zone=False):
+    return GameInfo(status=status, league="football/nfl", period=period, clock=clock,
+                    scores={"AAA": a, "BBB": b}, red_zone=red_zone)
+
+
+def test_progress():
+    assert progress(nfl(0, 0, 1, 900)) == 0
+    assert abs(progress(nfl(0, 0, 4, 0)) - 1) < 1e-9
+    assert progress(nfl(0, 0, 5, 600)) > 1
+
+
+def test_close_late_beats_close_early_beats_blowout():
+    close_late = excitement(nfl(24, 21, 4, 120))
+    close_early = excitement(nfl(7, 3, 1, 600))
+    blowout_late = excitement(nfl(38, 3, 4, 120))
+    assert close_late > close_early > blowout_late
+
+
+def test_red_zone_overtime_importance_and_final():
+    base = excitement(nfl(17, 14, 3, 300))
+    assert excitement(nfl(17, 14, 3, 300, red_zone=True)) > base
+    assert excitement(nfl(20, 20, 5, 400)) > excitement(nfl(20, 17, 4, 30))
+    assert excitement(nfl(17, 14, 3, 300), {"importance": 2}) == 2 * base
+    assert excitement(nfl(17, 14, 4, 0, status=FINAL)) == 0
+
+
+def test_pick_against_spread_counts_as_close():
+    g = nfl(10, 24, 4, 300)  # BBB up 14
+    assert closeness(g, "AAA +13.5") > 0.9
+    assert closeness(g, "AAA +13.5") > closeness(g)
+
+
+def test_commercial_switches_to_most_exciting_game():
+    info = {1: nfl(10, 7, 2, 300), 2: nfl(35, 3, 4, 200),
+            3: nfl(21, 20, 4, 90), 4: nfl(14, 10, 1, 500)}
+    c, nav, clock = make({b: LIVE for b in info}, info)
+    clock.t = 100
+    c.step(AD)
+    assert nav.current == 3
+
+
+def test_upgrade_from_blowout_after_dwell():
+    info = {1: nfl(38, 3, 4, 400), 2: nfl(24, 24, 4, 100), 3: nfl(0, 0, 1, 900),
+            4: nfl(0, 0, 1, 900)}
+    c, nav, clock = make({b: LIVE for b in info}, info, min_dwell_secs=45)
+    clock.t = 100
+    assert c.step(GAME) is True and nav.current == 2
+    # just switched: a better game appearing doesn't cause instant ping-pong
+    info[3] = nfl(28, 28, 5, 500)
+    clock.t = 120
+    assert c.step(GAME) is False
+    clock.t = 160
+    assert c.step(GAME) is True and nav.current == 3
+
+
+def test_returns_to_important_game_after_break():
+    info = {1: nfl(14, 10, 3, 400), 2: nfl(14, 10, 3, 400), 3: nfl(0, 30, 3, 400),
+            4: nfl(0, 30, 3, 400)}
+    c, nav, clock = make({b: LIVE for b in info}, info, assumed_break_secs=150)
+    c.games = {1: {"importance": 2.0}}
+    clock.t = 100
+    c.step(AD)
+    assert nav.current == 2
+    clock.t = 160
+    assert c.step(GAME) is False  # box 1 still assumed on break
+    clock.t = 260
+    assert c.step(GAME) is True and nav.current == 1

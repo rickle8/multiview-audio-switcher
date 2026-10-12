@@ -10,6 +10,15 @@ Runs on a mini PC (or any Linux/Windows/Mac box) on the same network as the TV.
 2. **ESPN live data** (optional, on by default) adds a second opinion: which games are live, final, at halftime, or just had a timeout/score/injury.
 3. **Remote control** presses arrow keys on the TV to move the multiview highlight, which moves the audio.
 
+4. **Game scoring** rates every live game so it switches to the best one, not just the next one:
+   - **Closeness**: tie = max, blowout = near zero (scaled per sport)
+   - **Time left**: a close 4th quarter counts far more than a close 1st
+   - **Red zone** and **overtime** bonuses
+   - **Your pick**: set `pick: "MIN +3.5"` and a game sweating your spread counts as close
+   - **Importance**: your weight per game (favorite team = 2.0)
+
+   It also upgrades mid-game (no commercial needed) when another game becomes clearly better, after staying at least `min_dwell_secs`. Giving your main game a higher importance is how it gets back to it after a break.
+
 Multiview only plays one game's audio at a time, so it can only *hear* the game you're on. When it switches, it listens to the new game; if that one is also in commercial, it hops again.
 
 ## Setup
@@ -57,7 +66,15 @@ python -m mvswitch listen
 
 Watch the `ad%` column during game play and during commercials, then adjust `ad_threshold` / `game_threshold` if needed. Put the mic near the TV speaker, away from where people talk.
 
-### 5. Run it
+### 5. Check the ratings
+
+```bash
+python -m mvswitch scores
+```
+
+Shows each box's score, clock, and rating right now. Tweak `importance`, `pick`, and `upgrade_margin` until the order matches what you'd pick.
+
+### 6. Run it
 
 ```bash
 python -m mvswitch run

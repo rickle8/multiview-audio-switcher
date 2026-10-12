@@ -22,15 +22,22 @@ multiview:
 # Which game is in which box (reading order: left to right, top to bottom).
 # league is the ESPN path: football/nfl, football/college-football,
 # basketball/nba, baseball/mlb, hockey/nhl
+#
+# importance: your weight for the game (1.0 normal, 2.0 = favorite team).
+#   Higher importance is also how it returns to your main game after a break.
+# pick: optional against-the-spread pick like "GB -3.5" or "MIN +7". A game
+#   sweating your pick counts as close even if the real score isn't.
 games:
-  1: {league: football/nfl, team: GB}
-  2: {league: football/nfl, team: MIN}
+  1: {league: football/nfl, team: GB, importance: 2.0}
+  2: {league: football/nfl, team: MIN, pick: "MIN +3.5"}
   3: {league: football/nfl, team: CHI}
   4: {league: football/nfl, team: DET}
 
 switching:
-  primary_box: 1              # your main game; goes back to it when its break should be over
-  priority: [1, 2, 3, 4]      # order to try other boxes in
+  upgrade_margin: 0.35        # switch mid-game only if another game scores this much higher
+  min_dwell_secs: 45          # stay on a game at least this long before upgrading
+  priority: [1, 2, 3, 4]      # tie breaker when games score the same (or no live data)
+  primary_box: 1              # used only if live data is off/unavailable
   return_to_primary: true
   assumed_break_secs: 150     # how long a TV break usually lasts
   settle_secs: 6              # ignore the mic for this long after a switch

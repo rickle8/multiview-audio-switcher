@@ -4,6 +4,7 @@
     python -m mvswitch test-keys   # cycle the audio through every box
     python -m mvswitch run         # the real thing
     python -m mvswitch devices     # list microphones
+    python -m mvswitch scores      # show how each game is rated right now
 """
 from __future__ import annotations
 
@@ -83,6 +84,20 @@ def cmd_test_keys(cfg):
         time.sleep(3)
 
 
+def cmd_scores(cfg):
+    from .excitement import excitement
+    from .feed import GameFeed
+
+    games = boxes_from(cfg)
+    feed = GameFeed(games)
+    feed.poll(force=True)
+    for box in sorted(games):
+        info = feed.info.get(box)
+        desc = info.describe() if info else feed.status.get(box, "not found")
+        print(f"box {box}: {games[box].get('team', '?'):>4}  {desc:<28} "
+              f"score {excitement(info, games[box])}")
+
+
 def cmd_run(cfg):
     from .controller import Controller
     from .detector import MicListener
@@ -92,7 +107,9 @@ def cmd_run(cfg):
     games = boxes_from(cfg)
     sw = cfg.get("switching", {})
     feed = GameFeed(games, poll_secs=sw.get("feed_poll_secs", 15)) if sw.get("use_feed", True) else None
-    ctrl = Controller(nav, sorted(nav.neighbors), feed,
+    ctrl = Controller(nav, sorted(nav.neighbors), feed, games=games,
+                      upgrade_margin=sw.get("upgrade_margin", 0.35),
+                      min_dwell_secs=sw.get("min_dwell_secs", 45),
                       primary=sw.get("primary_box"), priority=sw.get("priority"),
                       settle_secs=sw.get("settle_secs", 6),
                       assumed_break_secs=sw.get("assumed_break_secs", 150),
@@ -120,7 +137,7 @@ def cmd_run(cfg):
 def main(argv=None):
     p = argparse.ArgumentParser(prog="mvswitch", description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("command", choices=["run", "listen", "test-keys", "devices"])
+    p.add_argument("command", choices=["run", "listen", "test-keys", "devices", "scores"])
     p.add_argument("-c", "--config", default="config.yaml")
     p.add_argument("-v", "--verbose", action="store_true")
     a = p.parse_args(argv)
@@ -129,7 +146,7 @@ def main(argv=None):
     cfg = {} if a.command == "devices" else load_config(a.config)
     try:
         {"run": cmd_run, "listen": cmd_listen, "test-keys": cmd_test_keys,
-         "devices": cmd_devices}[a.command](cfg)
+         "devices": cmd_devices, "scores": cmd_scores}[a.command](cfg)
     except KeyboardInterrupt:
         print("\nStopped.")
         return 0
