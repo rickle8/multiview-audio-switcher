@@ -11,7 +11,9 @@ import com.rickle8.mvswitch.core.Heard
 import com.rickle8.mvswitch.core.LAYOUTS
 import com.rickle8.mvswitch.core.Navigator
 import com.rickle8.mvswitch.core.Remote
+import com.rickle8.mvswitch.core.Frame
 import com.rickle8.mvswitch.core.ScheduledGame
+import com.rickle8.mvswitch.core.SoundModel
 import com.rickle8.mvswitch.core.Verdict
 import com.rickle8.mvswitch.core.excitement
 import com.rickle8.mvswitch.core.listGames
@@ -65,6 +67,10 @@ data class EngineState(
     val boxes: List<BoxView> = emptyList(),
     val log: List<LogLine> = emptyList(),
     val testStatus: String? = null,
+    val learnedGameSecs: Int = 0,
+    val learnedAdSecs: Int = 0,
+    val usingLearned: Boolean = false,
+    val labeling: String? = null,
 )
 
 object Engine {
@@ -91,6 +97,13 @@ object Engine {
     private val logLines = ArrayDeque<LogLine>()
     private val timeFmt = SimpleDateFormat("h:mm:ss", Locale.US)
 
+    private val model = SoundModel()
+    private val recentFrames = ArrayDeque<Frame>()
+    @Volatile private var labelUntil = 0.0
+    @Volatile private var labelAsAd = false
+    private var unsavedSamples = 0
+    private val modelFile by lazy { java.io.File(app.filesDir, "sound_model.json") }
+
     @Volatile var restarting = false
     @Volatile private var paused = false
     @Volatile private var lockedBox: Int? = null
@@ -108,6 +121,7 @@ object Engine {
         app = context.applicationContext
         store = SettingsStore(app)
         _settings.value = store.load()
+        runCatching { if (modelFile.exists()) model.load(modelFile.readText()) }
         scope.launch(Dispatchers.IO) { previewLoop() }
     }
 
@@ -211,6 +225,10 @@ object Engine {
             boxes = boxes,
             log = synchronized(logLines) { logLines.toList() },
             testStatus = testStatus,
+            learnedGameSecs = model.gameSeconds,
+            learnedAdSecs = model.adSeconds,
+            usingLearned = model.ready,
+            labeling = if (now() < labelUntil) (if (labelAsAd) "commercial" else "game") else null,
         )
     }
 
@@ -235,6 +253,7 @@ object Engine {
             try {
                 runLoop()
             } finally {
+                saveModel()
                 synchronized(lock) {
                     mic?.close(); mic = null
                     (remote as? SamsungRemote)?.close()
@@ -301,9 +320,10 @@ object Engine {
                 continue
             }
             val v = verdict ?: break
+            val scored = frame?.let { learn(it) }
             val heard = when {
                 m == null -> Heard.GAME
-                frame != null -> v.add(frame)
+                scored != null -> v.add(scored)
                 else -> v.state
             }
             synchronized(lock) {
@@ -326,6 +346,76 @@ object Engine {
             }
             publish()
         }
+    }
+
+    // ---------------------------------------------------------------- learning
+    /**
+     * Collects training samples and, once trained, swaps the fixed-rule scores
+     * for the learned model's verdict.
+     */
+    private fun learn(frame: Frame): Frame {
+        if (frame.features.isEmpty()) return frame
+        synchronized(recentFrames) {
+            recentFrames.addLast(frame)
+            while (recentFrames.size > 12) recentFrames.removeFirst()
+        }
+        val n = now()
+        val cur = nav?.current
+        when {
+            n < labelUntil -> addSample(frame, labelAsAd)
+            // Auto-label: ESPN just showed a normal play on the game we're hearing,
+            // and we've been on this game a while, so this is game audio.
+            cur != null && !paused && n - (ctrl?.lastSwitch ?: 0.0) > 15 &&
+                ctrl?.recentPlay(cur, n, within = 25.0) != null -> addSample(frame, false)
+        }
+        val p = model.adProbability(frame.features) ?: return frame
+        return frame.withScores(game = 1 - p, ad = p)
+    }
+
+    private fun addSample(frame: Frame, isAd: Boolean) {
+        model.add(frame.features, isAd)
+        if (++unsavedSamples >= 30) saveModel()
+    }
+
+    private fun saveModel() {
+        unsavedSamples = 0
+        val json = model.toJson()
+        scope.launch(Dispatchers.IO) { runCatching { modelFile.writeText(json) } }
+    }
+
+    /** "It's the game" / "It's a commercial": label the last 8 s and the next 12 s. */
+    fun label(isAd: Boolean) {
+        val past = synchronized(recentFrames) { recentFrames.toList().takeLast(8) }
+        past.forEach { model.add(it.features, isAd) }
+        labelAsAd = isAd
+        labelUntil = now() + 12
+        saveModel()
+        if (isAd) {
+            log("Got it, commercial. Learning this sound.")
+            scope.launch(Dispatchers.IO) {
+                synchronized(lock) {
+                    try {
+                        if (lockedBox == null && ctrl?.commercialNow() == true) {
+                            labelUntil = 0.0 // new game now: don't label its audio as an ad
+                            mic?.drain()
+                            verdict?.reset()
+                        }
+                    } catch (e: Exception) {
+                        log(e.message ?: "TV error")
+                    }
+                }
+            }
+        } else {
+            verdict?.reset()
+            log("Got it, game audio. Learning this sound.")
+        }
+        publish()
+    }
+
+    fun resetLearning() {
+        model.clear()
+        saveModel()
+        log("Forgot what it learned. Back to the built-in rules.")
     }
 
     // ---------------------------------------------------------------- manual controls

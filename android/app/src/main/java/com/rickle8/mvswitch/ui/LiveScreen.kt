@@ -241,8 +241,37 @@ private fun HearingRow(state: EngineState) {
         )
         Text(if (pct == null) "Not enough sound yet" else "Commercial-like sound: $pct%",
             color = C.muted, fontSize = 12.sp, modifier = Modifier.padding(top = 4.dp))
+        LearnRow(state)
     }
 }
+
+@Composable
+private fun LearnRow(state: EngineState) {
+    Spacer(Modifier.height(14.dp))
+    Text("Teach it what your TV sounds like", color = C.text, fontWeight = FontWeight.Medium,
+        fontSize = 14.sp)
+    Spacer(Modifier.height(8.dp))
+    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+        OutlinedButton(onClick = { Engine.label(isAd = false) }, modifier = Modifier.weight(1f),
+            shape = RoundedCornerShape(12.dp), border = BorderStroke(1.dp, C.accent)) {
+            Text("It's the game", color = C.accent)
+        }
+        OutlinedButton(onClick = { Engine.label(isAd = true) }, modifier = Modifier.weight(1f),
+            shape = RoundedCornerShape(12.dp), border = BorderStroke(1.dp, C.amber)) {
+            Text("It's an ad", color = C.amber)
+        }
+    }
+    val learned = "Learned ${fmtSecs(state.learnedGameSecs)} of game, ${fmtSecs(state.learnedAdSecs)} of ads."
+    val status = when {
+        state.labeling != null -> "Recording this as ${state.labeling}…"
+        state.usingLearned -> "$learned Using what it learned."
+        else -> "$learned Tap \"It's an ad\" a few times during commercials (it also skips the ad). " +
+            "Game sound is learned automatically from live plays."
+    }
+    Text(status, color = C.muted, fontSize = 12.sp, modifier = Modifier.padding(top = 6.dp))
+}
+
+private fun fmtSecs(s: Int) = if (s < 60) "${s}s" else "${s / 60}m ${s % 60}s"
 
 private val BOX_H = 112.dp
 private val GAP = 10.dp

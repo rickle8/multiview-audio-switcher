@@ -234,4 +234,48 @@ class LogicTest {
         assertFalse(ctrl.step(Heard.GAME))
         assertNull(f.latestPlay(2))
     }
+
+    // ---- detection fixes ----
+    @Test fun announcersWithLittleCrowdIsGameNotAd() {
+        // What a game sounds like through a phone mic: mostly talk, a bit of crowd, TV-ish.
+        val (game, ad) = heuristicScores(mapOf("Speech" to 0.8f, "Crowd" to 0.05f, "Television" to 0.4f,
+            "Music" to 0.05f))
+        assertTrue(game > ad)
+        val (g2, a2) = heuristicScores(mapOf("Music" to 0.6f, "Pop music" to 0.2f, "Speech" to 0.3f))
+        assertTrue(a2 > g2)
+    }
+
+    @Test fun learnedModelSeparatesYourTvsGameFromAds() {
+        val m = SoundModel()
+        val rnd = java.util.Random(1)
+        fun sample(music: Float, speech: Float, crowd: Float) = features(mapOf(
+            "Music" to (music + rnd.nextFloat() * 0.1f), "Speech" to (speech + rnd.nextFloat() * 0.1f),
+            "Crowd" to (crowd + rnd.nextFloat() * 0.05f)), -25.0 + rnd.nextGaussian() * 2)
+        assertNull(m.adProbability(sample(0.1f, 0.7f, 0.05f)))
+        repeat(40) { m.add(sample(0.3f, 0.6f, 0.02f), isAd = false) }   // this TV's game has some music
+        repeat(40) { m.add(sample(0.7f, 0.3f, 0.0f), isAd = true) }
+        assertTrue(m.ready)
+        assertTrue(m.adProbability(sample(0.3f, 0.6f, 0.02f))!! < 0.3)
+        assertTrue(m.adProbability(sample(0.7f, 0.3f, 0.0f))!! > 0.7)
+        val copy = SoundModel().apply { load(m.toJson()) }
+        assertEquals(40, copy.adSeconds)
+    }
+
+    @Test fun micAdIgnoredRightAfterAPlay() {
+        val info = (1..4).associateWith { nfl(14, 10, 3, 400.0) }
+        val (ctrl, nav, c) = setup(info, plays = mutableMapOf(1 to ("Pass short right for 9 yards" to 80.0)))
+        c.t = 100.0
+        assertFalse(ctrl.step(Heard.AD))
+        assertEquals(1, nav.current)
+        c.t = 200.0 // play is old now: trust the mic
+        assertTrue(ctrl.step(Heard.AD))
+    }
+
+    @Test fun markedCommercialSwitches() {
+        val info = (1..4).associateWith { nfl(14, 10, 3, 400.0) }
+        val (ctrl, nav, c) = setup(info)
+        c.t = 100.0
+        assertTrue(ctrl.commercialNow())
+        assertNotEquals(1, nav.current)
+    }
 }

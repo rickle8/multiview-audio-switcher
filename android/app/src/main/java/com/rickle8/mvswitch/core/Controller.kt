@@ -25,11 +25,14 @@ class Controller(
     var proactive: Boolean = true,
     proactivePlays: String = DEFAULT_PROACTIVE,
     private val proactiveMaxAge: Double = 45.0,
+    /** Ignore the mic's "commercial" if ESPN showed a normal play this recently. */
+    var liveGuardSecs: Double = 75.0,
     private val clock: () -> Double,
     private val log: (String) -> Unit = {},
 ) {
     private val proactiveRe = Regex(proactivePlays, RegexOption.IGNORE_CASE)
     private val handledPlay = mutableMapOf<Int, String>()
+    private var guardLogged: String? = null
     var lastSwitch = -1e9
     val breakUntil = mutableMapOf<Int, Double>()
     private val breakStarted = mutableMapOf<Int, Double>()
@@ -93,6 +96,20 @@ class Controller(
         return false
     }
 
+    /** A normal (non-break) play showed up for this box recently: the game is on. */
+    fun recentPlay(box: Int, now: Double, within: Double = liveGuardSecs): String? {
+        val (text, seen) = feed?.latestPlay(box) ?: return null
+        if (now - seen > within || BREAK_PLAY.containsMatchIn(text)) return null
+        return text
+    }
+
+    /** You said it's a commercial: treat it as a break and move now. */
+    fun commercialNow(): Boolean {
+        val now = clock()
+        val cur = nav.current ?: return false
+        return goToBreak(cur, now, feedStatus(), "You marked a commercial on box $cur")
+    }
+
     /** Returns true if it switched (caller should reset the audio window). */
     fun step(heard: Heard): Boolean {
         val now = clock()
@@ -104,7 +121,17 @@ class Controller(
             return goToBreak(cur, now, status, "Break coming on box $cur (${it.take(50)})")
         }
         when (heard) {
-            Heard.AD -> return goToBreak(cur, now, status, "Commercial on box $cur")
+            Heard.AD -> {
+                val play = recentPlay(cur, now)
+                if (play != null) {
+                    if (guardLogged != play) {
+                        guardLogged = play
+                        log("Sounded like an ad, but box $cur just had a play. Staying.")
+                    }
+                    return false
+                }
+                return goToBreak(cur, now, status, "Commercial on box $cur")
+            }
             Heard.UNSURE -> return false
             Heard.GAME -> Unit
         }

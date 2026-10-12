@@ -29,6 +29,7 @@ import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -141,6 +142,13 @@ fun SettingsScreen(state: EngineState, settings: Settings, modifier: Modifier) {
                 Row {
                     Text("Only obvious ads", color = C.muted, fontSize = 12.sp, modifier = Modifier.weight(1f))
                     Text("Switch sooner", color = C.muted, fontSize = 12.sp)
+                }
+                Spacer(Modifier.height(12.dp))
+                Text("Learned sounds: ${state.learnedGameSecs}s game, ${state.learnedAdSecs}s ads" +
+                    if (state.usingLearned) " (in use)" else " (needs 20s of each)",
+                    color = C.muted, fontSize = 12.sp)
+                TextButton(onClick = { Engine.resetLearning() }) {
+                    Text("Forget learned sounds", color = C.red)
                 }
             }
             HorizontalDivider(Modifier.padding(vertical = 14.dp), color = C.line)

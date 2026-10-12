@@ -9,9 +9,9 @@ import com.google.mediapipe.tasks.audio.audioclassifier.AudioClassifier
 import com.google.mediapipe.tasks.audio.core.RunningMode
 import com.google.mediapipe.tasks.components.containers.AudioData
 import com.google.mediapipe.tasks.core.BaseOptions
-import com.rickle8.mvswitch.core.AD_CLASSES
 import com.rickle8.mvswitch.core.Frame
-import com.rickle8.mvswitch.core.GAME_CLASSES
+import com.rickle8.mvswitch.core.features
+import com.rickle8.mvswitch.core.heuristicScores
 import kotlin.math.log10
 import kotlin.math.sqrt
 
@@ -92,9 +92,9 @@ class MicClassifier(context: Context) {
         if (count == 0) return null
         val mean = totals.mapValues { it.value / count }
         lastTop = mean.entries.sortedByDescending { it.value }.take(3).map { it.key to it.value }
-        val game = GAME_CLASSES.sumOf { (mean[it] ?: 0f).toDouble() }
-        val ad = AD_CLASSES.sumOf { (mean[it] ?: 0f).toDouble() }
-        return Frame(now, game, ad, 20 * log10(rms))
+        val loud = 20 * log10(rms)
+        val (game, ad) = heuristicScores(mean)
+        return Frame(now, game, ad, loud, features(mean, loud))
     }
 
     fun stop() {

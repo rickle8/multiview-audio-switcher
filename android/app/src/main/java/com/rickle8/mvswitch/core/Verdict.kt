@@ -2,25 +2,46 @@ package com.rickle8.mvswitch.core
 
 enum class Heard { GAME, AD, UNSURE }
 
-/** One second of audio, already scored. */
-data class Frame(val t: Double, val game: Double, val ad: Double, val loudDb: Double)
+/** One second of audio, already scored. `features` feeds the learned model. */
+class Frame(
+    val t: Double,
+    val game: Double,
+    val ad: Double,
+    val loudDb: Double,
+    val features: DoubleArray = DoubleArray(0),
+) {
+    fun withScores(game: Double, ad: Double) = Frame(t, game, ad, loudDb, features)
+}
 
 val GAME_CLASSES = setOf(
     "Crowd", "Cheering", "Applause", "Hubbub, speech noise, speech babble",
-    "Chatter", "Whistle", "Roar",
+    "Chatter", "Whistle", "Shout", "Yell",
 )
+val SPEECH_CLASSES = setOf("Speech", "Male speech, man speaking", "Narration, monologue")
 val AD_CLASSES = setOf(
     "Music", "Pop music", "Hip hop music", "Rock music", "Electronic music",
-    "Jingle (music)", "Theme music", "Background music", "Soundtrack music",
-    "Television", "Singing",
+    "Jingle (music)", "Theme music", "Background music", "Soundtrack music", "Singing",
 )
+
+/**
+ * Fixed rules used until the app has learned your TV.
+ * Through a phone mic a game is mostly announcers with a little crowd, so
+ * talking counts a bit toward "game"; commercials are mostly music. ("Television"
+ * is deliberately not used: it fires on all TV audio.)
+ */
+fun heuristicScores(scores: Map<String, Float>): Pair<Double, Double> {
+    val crowd = GAME_CLASSES.sumOf { (scores[it] ?: 0f).toDouble() }
+    val speech = SPEECH_CLASSES.maxOf { (scores[it] ?: 0f).toDouble() }
+    val music = AD_CLASSES.sumOf { (scores[it] ?: 0f).toDouble() }
+    return (crowd + 0.35 * speech) to music
+}
 
 /** Rolling window + hysteresis: game audio or commercial? */
 class Verdict(
-    var windowSecs: Double = 8.0,
+    var windowSecs: Double = 10.0,
     var adThreshold: Double = 0.6,
     var gameThreshold: Double = 0.4,
-    var minAdSecs: Double = 5.0,
+    var minAdSecs: Double = 8.0,
     var silenceDb: Double = -55.0,
 ) {
     private val frames = ArrayDeque<Frame>()
