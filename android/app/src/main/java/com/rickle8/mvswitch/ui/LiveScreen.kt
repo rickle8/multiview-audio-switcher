@@ -32,6 +32,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.OutlinedButton
@@ -204,6 +205,7 @@ private fun ControlPanel(
             Spacer(Modifier.height(12.dp))
             Text(it, color = C.red, fontSize = 13.sp)
         }
+        if (!noGames) LearnRow(state)
     }
 }
 
@@ -241,28 +243,33 @@ private fun HearingRow(state: EngineState) {
         )
         Text(if (pct == null) "Not enough sound yet" else "Commercial-like sound: $pct%",
             color = C.muted, fontSize = 12.sp, modifier = Modifier.padding(top = 4.dp))
-        LearnRow(state)
     }
 }
 
 @Composable
 private fun LearnRow(state: EngineState) {
-    Spacer(Modifier.height(14.dp))
+    HorizontalDivider(Modifier.padding(top = 16.dp, bottom = 12.dp), color = C.line)
     Text("Teach it what your TV sounds like", color = C.text, fontWeight = FontWeight.Medium,
         fontSize = 14.sp)
     Spacer(Modifier.height(8.dp))
+    val on = state.running
     Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-        OutlinedButton(onClick = { Engine.label(isAd = false) }, modifier = Modifier.weight(1f),
-            shape = RoundedCornerShape(12.dp), border = BorderStroke(1.dp, C.accent)) {
-            Text("It's the game", color = C.accent)
+        OutlinedButton(onClick = { Engine.label(isAd = false) }, enabled = on,
+            modifier = Modifier.weight(1f).height(48.dp),
+            shape = RoundedCornerShape(12.dp), border = BorderStroke(1.dp, if (on) C.accent else C.line)) {
+            Text("It's the game", color = if (on) C.accent else C.muted)
         }
-        OutlinedButton(onClick = { Engine.label(isAd = true) }, modifier = Modifier.weight(1f),
-            shape = RoundedCornerShape(12.dp), border = BorderStroke(1.dp, C.amber)) {
-            Text("It's an ad", color = C.amber)
+        OutlinedButton(onClick = { Engine.label(isAd = true) }, enabled = on,
+            modifier = Modifier.weight(1f).height(48.dp),
+            shape = RoundedCornerShape(12.dp), border = BorderStroke(1.dp, if (on) C.amber else C.line)) {
+            Text("It's an ad", color = if (on) C.amber else C.muted)
         }
     }
     val learned = "Learned ${fmtSecs(state.learnedGameSecs)} of game, ${fmtSecs(state.learnedAdSecs)} of ads."
     val status = when {
+        !state.running -> "$learned These work once you tap Start switching."
+        !state.micOn -> "Mic is off, so it can't learn sounds. \"It's an ad\" still skips to another game. " +
+            "Check the mic permission and Settings > Listen with the microphone."
         state.labeling != null -> "Recording this as ${state.labeling}…"
         state.usingLearned -> "$learned Using what it learned."
         else -> "$learned Tap \"It's an ad\" a few times during commercials (it also skips the ad). " +
