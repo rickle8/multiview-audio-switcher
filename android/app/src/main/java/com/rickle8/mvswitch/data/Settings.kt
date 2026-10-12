@@ -27,6 +27,7 @@ data class Settings(
     val hopping: Hopping = Hopping.NORMAL,
     val breakSecs: Int = 150,
     val league: String = "football/nfl",
+    val githubToken: String = "",
 ) {
     val adThreshold: Double get() = 0.75 - 0.25 * micSensitivity
     val gameThreshold: Double get() = adThreshold - 0.2
@@ -37,6 +38,7 @@ data class Settings(
         .put("useMic", useMic).put("micSensitivity", micSensitivity.toDouble())
         .put("proactive", proactive).put("hopping", hopping.name).put("breakSecs", breakSecs)
         .put("league", league)
+        .put("githubToken", githubToken)
         .put("slots", JSONObject().apply {
             slots.forEach { (box, s) ->
                 put(box.toString(), JSONObject().put("league", s.league).put("team", s.team)
@@ -69,6 +71,7 @@ data class Settings(
                 hopping = runCatching { Hopping.valueOf(j.optString("hopping")) }.getOrDefault(d.hopping),
                 breakSecs = j.optInt("breakSecs", d.breakSecs),
                 league = j.optString("league", d.league),
+                githubToken = j.optString("githubToken", ""),
             )
         }
     }

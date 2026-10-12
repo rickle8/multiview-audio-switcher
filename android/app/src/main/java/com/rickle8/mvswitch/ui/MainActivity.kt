@@ -26,6 +26,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import com.rickle8.mvswitch.service.Engine
 import com.rickle8.mvswitch.service.SwitcherService
+import com.rickle8.mvswitch.service.Updater
 
 class MainActivity : ComponentActivity() {
     private val permissions = registerForActivityResult(
@@ -43,11 +44,13 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         Engine.init(this)
+        if (savedInstanceState == null) Updater.check(this, quiet = true)
         enableEdgeToEdge()
         setContent {
             AppTheme {
                 val state by Engine.state.collectAsState()
                 val settings by Engine.settings.collectAsState()
+                val update by Updater.state.collectAsState()
                 var tab by rememberSaveable { mutableIntStateOf(if (settings.slots.isEmpty()) 1 else 0) }
                 Scaffold(
                     containerColor = C.bg,
@@ -78,12 +81,12 @@ class MainActivity : ComponentActivity() {
                 ) { pad ->
                     val mod = Modifier.padding(pad)
                     when (tab) {
-                        0 -> LiveScreen(state, settings, mod,
+                        0 -> LiveScreen(state, settings, update, mod,
                             onStart = ::startSwitching,
                             onStop = { SwitcherService.stop(this) },
                             onGoToGames = { tab = 1 })
                         1 -> GamesScreen(settings, mod)
-                        else -> SettingsScreen(state, settings, mod)
+                        else -> SettingsScreen(state, settings, update, mod)
                     }
                 }
             }

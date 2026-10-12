@@ -57,6 +57,9 @@ import com.rickle8.mvswitch.data.Settings
 import com.rickle8.mvswitch.service.BoxView
 import com.rickle8.mvswitch.service.Engine
 import com.rickle8.mvswitch.service.EngineState
+import com.rickle8.mvswitch.service.UpdateState
+import com.rickle8.mvswitch.service.Updater
+import androidx.compose.ui.platform.LocalContext
 
 @Composable
 fun SectionLabel(text: String) {
@@ -78,6 +81,7 @@ fun Panel(modifier: Modifier = Modifier, content: @Composable ColumnScope.() -> 
 fun LiveScreen(
     state: EngineState,
     settings: Settings,
+    update: UpdateState,
     modifier: Modifier,
     onStart: () -> Unit,
     onStop: () -> Unit,
@@ -91,6 +95,24 @@ fun LiveScreen(
         Text("Multiview Audio", fontSize = 26.sp, fontWeight = FontWeight.Bold, color = C.text)
         Text(statusLine(state), color = C.muted, fontSize = 14.sp)
         Spacer(Modifier.height(16.dp))
+        if (update.available) {
+            val ctx = LocalContext.current
+            Row(
+                Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp))
+                    .background(C.blue.copy(alpha = 0.14f))
+                    .clickable(enabled = !update.busy) { Updater.install(ctx) }
+                    .padding(horizontal = 14.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    if (update.busy) "Downloading update… ${update.progress ?: 0}%"
+                    else "Update available: ${update.latest}",
+                    color = C.blue, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f),
+                )
+                if (!update.busy) Text("Install", color = C.blue, fontWeight = FontWeight.Bold)
+            }
+            Spacer(Modifier.height(12.dp))
+        }
 
         ControlPanel(state, settings, onStart, onStop, onGoToGames)
 

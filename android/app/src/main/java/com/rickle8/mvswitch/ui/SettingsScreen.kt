@@ -49,10 +49,14 @@ import com.rickle8.mvswitch.data.Settings
 import com.rickle8.mvswitch.data.TvType
 import com.rickle8.mvswitch.service.Engine
 import com.rickle8.mvswitch.service.EngineState
+import com.rickle8.mvswitch.service.UpdateState
+import com.rickle8.mvswitch.service.Updater
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun SettingsScreen(state: EngineState, settings: Settings, modifier: Modifier) {
+fun SettingsScreen(state: EngineState, settings: Settings, update: UpdateState, modifier: Modifier) {
     val focus = LocalFocusManager.current
     Column(modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp)) {
         Spacer(Modifier.height(16.dp))
@@ -185,6 +189,60 @@ fun SettingsScreen(state: EngineState, settings: Settings, modifier: Modifier) {
                 onValueChangeFinished = { Engine.update { it.copy(breakSecs = secs.toInt()) } })
             Text("When it's safe to go back to a game that went to commercial.",
                 color = C.muted, fontSize = 12.sp)
+        }
+
+        SectionLabel("Updates")
+        Panel {
+            val ctx = LocalContext.current
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("Installed: ${update.installed.ifBlank { "?" }}", color = C.text,
+                    fontWeight = FontWeight.Medium, modifier = Modifier.weight(1f))
+                update.latest?.let { Text("Latest: $it", color = C.muted, fontSize = 13.sp) }
+            }
+            Spacer(Modifier.height(12.dp))
+            Button(
+                onClick = { if (update.available) Updater.install(ctx) else Updater.check(ctx) },
+                enabled = !update.busy,
+                modifier = Modifier.fillMaxWidth().height(48.dp), shape = RoundedCornerShape(14.dp),
+            ) {
+                Text(when {
+                    update.busy && update.progress != null -> "Downloading… ${update.progress}%"
+                    update.busy -> "Checking…"
+                    update.available -> "Install ${update.latest}"
+                    else -> "Check for updates"
+                })
+            }
+            update.message?.let {
+                Text(it, color = C.muted, fontSize = 13.sp, modifier = Modifier.padding(top = 8.dp))
+            }
+            HorizontalDivider(Modifier.padding(vertical = 14.dp), color = C.line)
+            var token by remember(settings.githubToken) { mutableStateOf(settings.githubToken) }
+            OutlinedTextField(
+                value = token,
+                onValueChange = { token = it.trim() },
+                label = { Text("GitHub token") },
+                singleLine = true,
+                visualTransformation = PasswordVisualTransformation(),
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                keyboardActions = KeyboardActions(onDone = {
+                    Engine.update { it.copy(githubToken = token) }; focus.clearFocus(); Updater.check(ctx)
+                }),
+                trailingIcon = {
+                    if (token != settings.githubToken) {
+                        IconButton(onClick = {
+                            Engine.update { it.copy(githubToken = token) }; focus.clearFocus(); Updater.check(ctx)
+                        }) { Icon(Icons.Filled.Check, "Save", tint = C.accent) }
+                    }
+                },
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(12.dp),
+            )
+            Text(
+                "Needed because the repo is private. On GitHub: Settings > Developer settings > " +
+                    "Fine-grained tokens > Generate. Repository access: only multiview-audio-switcher. " +
+                    "Permissions: Contents, Read-only. Copy it and paste it here.",
+                color = C.muted, fontSize = 12.sp, modifier = Modifier.padding(top = 6.dp),
+            )
         }
 
         SectionLabel("Tips")
