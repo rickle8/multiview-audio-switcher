@@ -162,6 +162,12 @@ class AdPrints(private val maxSegments: Int = 80) {
     @Synchronized
     fun trusted(id: Int): Boolean = segments[id]?.auto == false
 
+    /** Mark a segment as just recognized (keeps often-aired ads when the library is full). */
+    @Synchronized
+    fun touch(id: Int, now: Long) {
+        segments[id]?.lastUsed = now
+    }
+
     @Synchronized
     fun confirm(id: Int) {
         segments[id]?.auto = false
@@ -222,7 +228,6 @@ class AdPrints(private val maxSegments: Int = 80) {
         }
         val best = counts.maxByOrNull { it.value } ?: return null
         val seg = best.key / 131072
-        segments[seg]?.lastUsed = now
         val spread = java.lang.Long.bitCount(slots[best.key] ?: 0L)
         return AdMatch(seg, best.value, best.value.toDouble() / query.size, spread)
     }

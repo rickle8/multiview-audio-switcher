@@ -104,6 +104,7 @@ class Controller(
         }
         if (likely != null) return Bias.LIKELY
         if (now - end < 240) return Bias.UNLIKELY
+        if (now - lastSwitch < 20) return Bias.LANDED
         return Bias.NORMAL
     }
 

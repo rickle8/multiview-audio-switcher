@@ -219,7 +219,7 @@ class Detector(private val dir: File? = null) {
                 strong = true
                 if (pNow >= 0.6) { prints.confirm(seg); dirty = true }
             }
-            if (strong) lastMatch = seg to now
+            if (strong) { lastMatch = seg to now; prints.touch(seg, System.currentTimeMillis()) }
         }
 
         // 4. Sudden change in sound.

@@ -292,4 +292,16 @@ class DetectionTest {
         val bytes = java.io.ByteArrayOutputStream().also { db.save(it) }.toByteArray()
         assertTrue(AdPrints().apply { load(bytes.inputStream()) }.trusted(id))
     }
+
+    @Test fun alertRightAfterSwitching() {
+        var now = 100.0
+        val nav = Navigator(object : Remote { override fun press(key: Key) {} }, LAYOUTS.getValue(2), home = false, sleep = {})
+        val f = GameFeed(emptyMap(), { JSONObject() }, { now }, pollSecs = 1e9)
+        val c = Controller(nav, listOf(1, 2), f, clock = { now })
+        assertTrue(c.step(Heard.AD)) // box 1 to commercial -> box 2
+        now = 105.0
+        assertEquals(Bias.LANDED, c.bias(2, now))
+        now = 130.0
+        assertEquals(Bias.NORMAL, c.bias(2, now))
+    }
 }

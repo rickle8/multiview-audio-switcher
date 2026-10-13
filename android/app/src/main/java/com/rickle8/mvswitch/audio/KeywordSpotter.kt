@@ -73,12 +73,35 @@ class KeywordSpotter(modelDir: File, phrases: List<String>) : AutoCloseable {
     private fun normalize(s: String) = s.lowercase().replace("’", "'")
         .replace(Regex("[^a-z' ]"), " ").replace(Regex("\\s+"), " ").trim()
 
-    /** Feed one second of audio; returns a phrase if one was just said clearly. */
+    private var lastPartial: String? = null
+    private var reported = false
+
+    /**
+     * Feed one second of audio; returns a phrase if one was just said clearly.
+     * TV audio rarely pauses, so sentences can run long before the recognizer
+     * finishes them. In-progress text counts once a phrase holds for 2 seconds.
+     */
     fun accept(samples: FloatArray): String? {
         val n = minOf(samples.size, shorts.size)
         for (i in 0 until n) shorts[i] = (samples[i].coerceIn(-1f, 1f) * 32767).toInt().toShort()
-        if (!recognizer.acceptWaveForm(shorts, n)) return null
-        return match(recognizer.result)
+        if (recognizer.acceptWaveForm(shorts, n)) {
+            val already = reported
+            reported = false
+            lastPartial = null
+            val hit = match(recognizer.result)
+            return if (already) null else hit
+        }
+        if (reported) return null
+        val partial = runCatching { JSONObject(recognizer.partialResult).optString("partial") }.getOrNull()
+        val text = " " + normalize(partial.orEmpty()) + " "
+        val found = phrases.firstOrNull { text.contains(" $it ") }
+        val stable = found != null && found == lastPartial
+        lastPartial = found
+        if (stable) {
+            reported = true
+            return found
+        }
+        return null
     }
 
     private fun match(json: String): String? {

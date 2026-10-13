@@ -19,17 +19,20 @@ Every push to `main` that touches `android/` builds a new release automatically.
 
 ### Use it
 
-1. **Settings tab:** pick Samsung TV or Roku, enter its IP address, open multiview on the TV, and tap **Test with the TV**. On a Samsung, accept the "Allow" prompt on the TV the first time.
+1. **Settings tab:** tap **Find my TV** (or pick Samsung TV / Roku and type its IP), open multiview on the TV, and tap **Test with the TV**. On a Samsung, accept the "Allow" prompt on the TV the first time. To let Start turn the TV on, enable *Power On with Mobile* on the TV.
 2. **Games tab:** pick the layout (2, 3 or 4 games), then tap each box and choose the game from today's schedule. Star your main game. Optionally enter your pick against the spread (like `GB -3.5`).
 3. **Live tab:** tap **Start switching**, set the phone near the TV, and leave it. Pause/stop from the notification.
 
 Tap a box on the Live tab to move the audio there yourself, or lock it so nothing switches until you unlock.
+
+Start turns the TV on (Samsung via Wake-on-LAN, Roku TVs), opens YouTube TV if it isn't up, and waits for you to tap **Go** once multiview is showing. It pauses itself whenever YouTube TV isn't on screen. The notification has an **It's an ad** button, and the **Remote** tab replaces the physical remote.
 
 ### How it decides
 
 - **Mic:** Google's YAMNet sound classifier (runs on the phone, offline) scores every second across 521 sound types. Combined with the sound's spectral shape and voice timbre, that's about 600 numbers per second for a classifier that learns your TV.
 - **Repeat ads:** commercials you mark (and ones it's very sure about) are fingerprinted Shazam-style, so the next time one airs it's recognized in a few seconds.
 - **Announcer voices:** it learns the announcers' voices during play; a different voice talking counts toward "commercial."
+- **Announcer phrases:** offline speech recognition (Vosk) listens for "we'll be right back," "stay with us" and similar, in the announcers' voice, and switches right away. The list is editable.
 - **Sudden changes:** a brief dip in sound followed by something that sounds different makes it react in about 5 seconds instead of 8+.
 - **Break timing:** right after a score, timeout, turnover or quarter end, a break is likely; right after a break ended, another is unlikely. It adjusts how sure it needs to be.
 - **Live data:** ESPN play-by-play for the game you're hearing is checked every 5 seconds, with each play's real time. It spots touchdowns, field goals, official timeouts, the 2-minute warning, end of quarters, injuries and halftime, and switches *before* the ad starts. Stretches between plays teach it what the game sounds like.

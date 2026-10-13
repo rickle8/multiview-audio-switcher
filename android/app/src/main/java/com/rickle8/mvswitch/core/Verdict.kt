@@ -48,6 +48,8 @@ data class Bias(
         /** The game just came back from a break with nothing since that causes another. */
         val UNLIKELY = Bias(10.0, 14.0, 0.08, "just back from a break")
         val TRANSITION_BUT_UNLIKELY = Bias(5.0, 5.0, 0.0, "sound changed suddenly")
+        /** Just switched games: if this one is also in a break, notice fast and move on. */
+        val LANDED = Bias(5.0, 4.0, 0.0, "checking the game it just switched to")
     }
 }
 
