@@ -158,9 +158,10 @@ class Detector(private val dir: File? = null) {
         val latest = fp.latestFrame
         val query = fp.range(latest - (4 * FpParams.FPS).toLong(), latest)
         val m = prints.match(query, System.currentTimeMillis())
-        val strong = m != null && m.ratio >= 0.04 &&
-            (m.count >= 14 || (m.count >= 10 && prevMatch?.segment == m.segment))
-        prevMatch = if (m != null && m.count >= 10) m else null
+        // A real replay lines up steadily across the whole window, not in one burst.
+        val solid = m != null && m.ratio >= 0.04 && m.spread >= 3
+        val strong = solid && (m!!.count >= 14 || (m.count >= 10 && prevMatch?.segment == m.segment))
+        prevMatch = if (solid && m!!.count >= 10) m else null
         if (strong) lastMatch = m!!.segment to now
 
         // 2. Classifier (learned, or fixed rules until trained).

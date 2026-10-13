@@ -14,28 +14,29 @@ import kotlin.math.sqrt
 
 class DetectionTest {
     // ------------------------------------------------------------ synthetic audio
-    private val notes = doubleArrayOf(110.0, 130.8, 146.8, 164.8, 196.0, 220.0, 246.9, 261.6)
-
-    /** A jingle-like clip: a different note every half second with harmonics and a drum hit. */
+    /** Commercial-like audio: overlapping tones of random pitch and length, some percussive hits. */
     private fun jingle(seed: Long, secs: Int): FloatArray {
         val r = java.util.Random(seed)
         val n = Dsp.SR * secs
         val x = FloatArray(n)
-        val beat = Dsp.SR / 2
-        var k = 0
-        while (k * beat < n) {
-            val f0 = notes[r.nextInt(notes.size)] * (if (r.nextBoolean()) 2 else 1)
-            for (i in 0 until beat) {
-                val idx = k * beat + i
+        var start = 0
+        while (start < n) {
+            val len = (Dsp.SR * (0.15 + r.nextDouble() * 0.45)).toInt()
+            val f0 = 120 + r.nextDouble() * 1380
+            val decay = 1 + r.nextDouble() * 5
+            val phase = r.nextDouble() * 6
+            val hit = r.nextDouble() < 0.3
+            for (i in 0 until len) {
+                val idx = start + i
                 if (idx >= n) break
                 val t = i.toDouble() / Dsp.SR
-                val env = exp(-t * 3)
+                val env = exp(-t * decay)
                 var v = 0.0
-                for (h in 1..5) v += env * sin(2 * PI * f0 * h * t) / h
-                if (k % 2 == 0) v += r.nextGaussian() * 0.3 * exp(-t * 30)
-                x[idx] = (v * 0.3).toFloat()
+                for (h in 1..3) v += env * sin(2 * PI * f0 * h * t + phase) / h
+                if (hit) v += r.nextGaussian() * 0.3 * exp(-t * 30)
+                x[idx] += (v * 0.3).toFloat()
             }
-            k++
+            start += (len * (0.5 + r.nextDouble() * 0.5)).toInt()
         }
         return x
     }
@@ -81,7 +82,7 @@ class DetectionTest {
             val heard = throughRoom(jingle(500L + s, 10), 2000L + s)
             val (fp, last) = prints(heard)
             val m = db.match(fp.range(last - (4 * FpParams.FPS).toLong(), last), 0)
-            assertTrue("unknown ad $s matched ${m?.count}", (m?.count ?: 0) < 10)
+            assertTrue("unknown ad $s matched ${m?.count}", (m?.count ?: 0) < 10 || (m?.spread ?: 0) < 3)
         }
         val bytes = java.io.ByteArrayOutputStream().also { db.save(it) }.toByteArray()
         assertEquals(6, AdPrints().apply { load(bytes.inputStream()) }.size)

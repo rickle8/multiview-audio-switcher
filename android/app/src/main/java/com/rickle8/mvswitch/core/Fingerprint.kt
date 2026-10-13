@@ -121,7 +121,8 @@ class Fingerprinter {
     }
 }
 
-data class AdMatch(val segment: Int, val count: Int, val ratio: Double)
+/** count: aligned hashes; spread: how many ~0.25 s slots of the query they cover. */
+data class AdMatch(val segment: Int, val count: Int, val ratio: Double, val spread: Int)
 
 /** Library of commercials heard before. */
 class AdPrints(private val maxSegments: Int = 80) {
@@ -192,6 +193,7 @@ class AdPrints(private val maxSegments: Int = 80) {
         if (query.isEmpty() || index.isEmpty()) return null
         val q0 = query.minOf { it ushr 21 }
         val counts = HashMap<Int, Int>()
+        val slots = HashMap<Int, Long>()
         for (q in query) {
             val h = q and 0x1FFFFF
             val qt = ((q ushr 21) - q0).toInt()
@@ -202,13 +204,15 @@ class AdPrints(private val maxSegments: Int = 80) {
                 val t = (e and 0xFFFF).toInt()
                 val key = seg * 131072 + (t - qt + 65536)
                 counts[key] = (counts[key] ?: 0) + 1
+                slots[key] = (slots[key] ?: 0L) or (1L shl minOf(63, qt / 8))
                 i++
             }
         }
         val best = counts.maxByOrNull { it.value } ?: return null
         val seg = best.key / 131072
         segments[seg]?.lastUsed = now
-        return AdMatch(seg, best.value, best.value.toDouble() / query.size)
+        val spread = java.lang.Long.bitCount(slots[best.key] ?: 0L)
+        return AdMatch(seg, best.value, best.value.toDouble() / query.size, spread)
     }
 
     @Synchronized
