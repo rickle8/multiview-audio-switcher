@@ -121,7 +121,7 @@ fun LiveScreen(
             if (state.running) tapped = it else onGoToGames()
         }
         state.boxes.filter { it.noGame }.forEach {
-            Text("Box ${it.box}: ${it.slot?.team} isn't playing today. Tap it to pick this week's game.",
+            Text("Box ${it.box}: ${it.slot?.name?.ifBlank { null } ?: it.slot?.team} isn't on today. Tap it to pick today's game.",
                 color = C.amber, fontSize = 13.sp, modifier = Modifier.padding(top = 8.dp))
         }
         state.feedError?.let {
@@ -388,6 +388,7 @@ private fun BoxCard(v: BoxView, hasAudio: Boolean, locked: Boolean, modifier: Mo
     val info = v.info
     val (chip, chipColor) = when {
         v.slot == null -> "EMPTY" to C.muted
+        v.slot.isOther -> "OTHER" to C.blue
         v.noGame -> "NO GAME" to C.amber
         info == null -> "—" to C.muted
         info.status == GameStatus.FINAL -> "FINAL" to C.muted

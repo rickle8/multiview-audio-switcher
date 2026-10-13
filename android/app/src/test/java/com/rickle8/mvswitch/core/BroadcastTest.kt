@@ -274,4 +274,30 @@ class BroadcastTest {
         assertEquals(0, d.comebacks.trustedCount)
         assertFalse(strong)
     }
+
+    @Test fun fillerBoxOnlyCoversBreaks() {
+        var now = 100.0
+        val nav = Navigator(quiet, LAYOUTS.getValue(2), home = false, sleep = {})
+        val slots = mapOf(1 to GameSlot(league = "football/nfl", team = "BUF"),
+            2 to GameSlot(name = "RedZone", importance = 0.5, kind = GameSlot.OTHER))
+        val f = GameFeed(slots, { board(900.0) }, { now }, pollSecs = 1e9)
+        f.poll(force = true)
+        val c = Controller(nav, listOf(1, 2), f, games = slots, clock = { now })
+        assertTrue(c.step(Heard.AD))            // game to commercial: the filler covers it
+        assertEquals(2, nav.current)
+        now = 400.0                              // break over
+        assertTrue(c.step(Heard.GAME))
+        assertEquals(1, nav.current)
+    }
+
+    @Test fun findsTheExactEventById() {
+        val board = JSONObject().put("events", JSONArray()
+            .put(JSONObject().put("id", "1").put("name", "Round 1").put("competitions", JSONArray().put(JSONObject())))
+            .put(JSONObject().put("id", "2").put("name", "The Masters").put("competitions", JSONArray().put(JSONObject()))))
+        assertEquals("The Masters", findEvent(board, GameSlot(league = "golf/pga", eventId = "2"))!!.optString("name"))
+        assertNull(findEvent(board, GameSlot(league = "golf/pga", eventId = "9")))
+        val games = listGames(board, "golf/pga")
+        assertEquals("The Masters", games.first { it.id == "2" }.shortName)
+        assertTrue(scoreboardUrl("football/college-football").contains("groups=80"))
+    }
 }

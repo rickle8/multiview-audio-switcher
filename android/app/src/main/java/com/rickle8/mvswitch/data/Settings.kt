@@ -87,7 +87,8 @@ data class Settings(
         .put("slots", JSONObject().apply {
             slots.forEach { (box, s) ->
                 put(box.toString(), JSONObject().put("league", s.league).put("team", s.team)
-                    .put("name", s.name).put("importance", s.importance).put("pick", s.pick))
+                    .put("name", s.name).put("importance", s.importance).put("pick", s.pick)
+                    .put("eventId", s.eventId).put("kind", s.kind))
             }
         })
 
@@ -100,7 +101,8 @@ data class Settings(
                 val s = slotsJ.optJSONObject(k) ?: continue
                 val box = k.toIntOrNull() ?: continue
                 slots[box] = GameSlot(s.optString("league", d.league), s.optString("team"),
-                    s.optString("name"), s.optDouble("importance", 1.0), s.optString("pick"))
+                    s.optString("name"), s.optDouble("importance", 1.0), s.optString("pick"),
+                    s.optString("eventId"), s.optString("kind", GameSlot.GAME).ifBlank { GameSlot.GAME })
             }
             return Settings(
                 tvType = runCatching { TvType.valueOf(j.optString("tvType")) }.getOrDefault(d.tvType),
@@ -165,7 +167,23 @@ val LEAGUES = listOf(
     "football/college-football" to "College FB",
     "basketball/nba" to "NBA",
     "basketball/mens-college-basketball" to "NCAA MBB",
-    "hockey/nhl" to "NHL",
-    "baseball/mlb" to "MLB",
+    "basketball/womens-college-basketball" to "NCAA WBB",
     "basketball/wnba" to "WNBA",
+    "hockey/nhl" to "NHL",
+    "hockey/mens-college-hockey" to "College hockey",
+    "baseball/mlb" to "MLB",
+    "baseball/college-baseball" to "College baseball",
+    "soccer/usa.1" to "MLS",
+    "soccer/eng.1" to "Premier League",
+    "soccer/uefa.champions" to "Champions League",
+    "soccer/esp.1" to "La Liga",
+    "soccer/mex.1" to "Liga MX",
+    "soccer/usa.nwsl" to "NWSL",
+    "football/ufl" to "UFL",
+    "golf/pga" to "PGA Tour",
+    "racing/f1" to "F1",
+    "racing/nascar-premier" to "NASCAR",
+    "mma/ufc" to "UFC",
+    "tennis/atp" to "Tennis ATP",
+    "tennis/wta" to "Tennis WTA",
 )

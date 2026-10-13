@@ -272,6 +272,11 @@ class Controller(
             Heard.GAME -> Unit
         }
         breakUntil.remove(cur)
+        // On a filler box: leave as soon as any real game is back on.
+        if (games[cur]?.let { it.isOther && it.importance < 1.0 } == true) {
+            val game = ranked(now, status, exclude = cur).firstOrNull { games[it]?.isOther != true }
+            if (game != null) return switchTo(game, now, "A game is back on, leaving the filler")
+        }
         if (now - lastSwitch < minDwellSecs) return false
         if (hasData()) {
             val best = ranked(now, status, exclude = cur).firstOrNull() ?: return false

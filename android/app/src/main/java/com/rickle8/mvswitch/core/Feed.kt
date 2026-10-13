@@ -12,7 +12,20 @@ data class GameSlot(
     val name: String = "",
     val importance: Double = 1.0,
     val pick: String = "",
-)
+    /** ESPN's id for the exact event picked (works for golf, racing, fights... not just teams). */
+    val eventId: String = "",
+    /** "game" (live scores from ESPN) or "other" (anything else: no scores, the mic decides). */
+    val kind: String = GAME,
+) {
+    val isOther: Boolean get() = kind == OTHER
+    /** Has something ESPN can follow. */
+    val tracked: Boolean get() = !isOther && (team.isNotBlank() || eventId.isNotBlank())
+
+    companion object {
+        const val GAME = "game"
+        const val OTHER = "other"
+    }
+}
 
 data class GameInfo(
     var status: GameStatus = GameStatus.UNKNOWN,
@@ -28,7 +41,10 @@ data class GameInfo(
 
 data class ScheduledGame(
     val league: String,
+    val id: String = "",
     val shortName: String,
+    /** Full event name ("Detroit Lions at Chicago Bears", "The Masters"). */
+    val name: String = "",
     val away: String,
     val home: String,
     val detail: String,
@@ -85,6 +101,18 @@ fun parseEvent(event: JSONObject, league: String = ""): GameInfo {
     )
 }
 
+/** The event picked for this slot: the exact one if it's on today's board, otherwise its team's game today. */
+fun findEvent(board: JSONObject, slot: GameSlot): JSONObject? {
+    if (slot.eventId.isNotBlank()) {
+        val events = board.optJSONArray("events")
+        if (events != null) for (i in 0 until events.length()) {
+            val e = events.optJSONObject(i) ?: continue
+            if (e.optString("id") == slot.eventId) return e
+        }
+    }
+    return if (slot.team.isNotBlank()) findEvent(board, slot.team) else null
+}
+
 fun findEvent(board: JSONObject, team: String): JSONObject? {
     val want = team.uppercase()
     val events = board.optJSONArray("events") ?: return null
@@ -107,18 +135,22 @@ fun listGames(board: JSONObject, league: String): List<ScheduledGame> {
     val events = board.optJSONArray("events") ?: return out
     for (i in 0 until events.length()) {
         val e = events.optJSONObject(i) ?: continue
-        val comps = e.firstCompetition().optJSONArray("competitors") ?: continue
+        val comps = e.firstCompetition().optJSONArray("competitors") ?: org.json.JSONArray()
         var home = ""
         var away = ""
         for (j in 0 until comps.length()) {
             val c = comps.optJSONObject(j) ?: continue
             val abbr = c.optJSONObject("team")?.optString("abbreviation").orEmpty().uppercase()
+            if (abbr.isBlank()) continue // individual sports: competitors are players, not teams
             if (c.optString("homeAway") == "home") home = abbr else away = abbr
         }
         val info = parseEvent(e, league)
         out += ScheduledGame(
             league = league,
-            shortName = e.optString("shortName").ifBlank { "$away @ $home" },
+            id = e.optString("id"),
+            name = e.optString("name"),
+            shortName = e.optString("shortName").ifBlank { e.optString("name") }
+                .ifBlank { if (home.isNotBlank() || away.isNotBlank()) "$away @ $home" else "Event" },
             away = away, home = home, detail = info.detail, status = info.status,
         )
     }
@@ -133,8 +165,19 @@ fun listGames(board: JSONObject, league: String): List<ScheduledGame> {
     }
 }
 
-fun scoreboardUrl(league: String) =
-    "https://site.api.espn.com/apis/site/v2/sports/$league/scoreboard"
+/**
+ * Today's scoreboard. Without extra settings ESPN only lists featured/top-25
+ * college games, so ask for every game.
+ */
+fun scoreboardUrl(league: String): String {
+    val extra = when (league) {
+        "football/college-football" -> "?groups=80&limit=300"
+        "basketball/mens-college-basketball", "basketball/womens-college-basketball" -> "?groups=50&limit=400"
+        "hockey/mens-college-hockey", "baseball/college-baseball", "softball/college-softball" -> "?limit=300"
+        else -> "?limit=300"
+    }
+    return "https://site.api.espn.com/apis/site/v2/sports/$league/scoreboard$extra"
+}
 
 fun summaryUrl(league: String, eventId: String) =
     "https://site.api.espn.com/apis/site/v2/sports/$league/summary?event=$eventId"
@@ -201,7 +244,7 @@ class GameFeed(
     /** Other games' play-by-play is checked less often. */
     private val otherSummarySecs: Double = 20.0,
 ) {
-    private val slots = slots.filterValues { it.team.isNotBlank() }
+    private val slots = slots.filterValues { it.tracked }
     /** One poll at a time. Network calls happen under this lock only, never under the data lock (this). */
     private val pollLock = Any()
     private var lastPoll = -1e9
@@ -273,7 +316,7 @@ class GameFeed(
         for ((box, slot) in slots) {
             val event = try {
                 val board = boards.getOrPut(slot.league) { fetch(slot.league) }
-                findEvent(board, slot.team)
+                findEvent(board, slot)
             } catch (e: Exception) {
                 error = e.message ?: e.javaClass.simpleName
                 continue // keep last known status

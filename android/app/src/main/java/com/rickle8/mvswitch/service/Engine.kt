@@ -235,11 +235,12 @@ object Engine {
             appsCache = null
             synchronized(iconCache) { iconCache.clear() }
         }
-        if (new.slots.mapValues { it.value.team } != old.slots.mapValues { it.value.team } ||
+        fun picked(x: Settings) = x.slots.mapValues { Triple(it.value.team, it.value.eventId, it.value.kind) }
+        if (picked(new) != picked(old) ||
             new.layout != old.layout) previewFeed = null
         val running = job?.isActive == true
         if (!running) { publish(); return }
-        fun games(x: Settings) = x.slots.mapValues { it.value.league to it.value.team }
+        fun games(x: Settings) = x.slots.mapValues { listOf(it.value.league, it.value.team, it.value.eventId, it.value.kind) }
         val structural = new.tvType != old.tvType || new.tvHost.trim() != old.tvHost.trim() ||
             new.layout != old.layout || games(new) != games(old) || new.useMic != old.useMic ||
             new.homing != old.homing || new.homePresses != old.homePresses ||
@@ -277,8 +278,31 @@ object Engine {
         }
     }
 
+    private val boardCache = HashMap<String, Pair<Double, List<ScheduledGame>>>()
+
     suspend fun schedule(league: String): List<ScheduledGame> = withContext(Dispatchers.IO) {
-        listGames(fetchBoard(league), league)
+        synchronized(boardCache) { boardCache[league]?.takeIf { now() - it.first < 60 }?.second }
+            ?: listGames(fetchBoard(league), league).also { synchronized(boardCache) { boardCache[league] = now() to it } }
+    }
+
+    /** Today's games in every sport whose name or teams match [query] (live first). */
+    suspend fun searchGames(query: String): List<ScheduledGame> = withContext(Dispatchers.IO) {
+        val q = query.trim().lowercase()
+        val all = kotlinx.coroutines.coroutineScope {
+            com.rickle8.mvswitch.data.LEAGUES.map { (league, _) ->
+                kotlinx.coroutines.async { runCatching { schedule(league) }.getOrDefault(emptyList()) }
+            }.map { it.await() }.flatten()
+        }
+        all.filter { g ->
+            listOf(g.shortName, g.away, g.home, g.name).any { it.lowercase().contains(q) }
+        }.sortedBy {
+            when (it.status) {
+                GameStatus.LIVE, GameStatus.BREAK -> 0
+                GameStatus.PREGAME -> 1
+                GameStatus.UNKNOWN -> 2
+                GameStatus.FINAL -> 3
+            }
+        }
     }
 
     private fun boxCount(s: Settings) = LAYOUTS[s.layout]?.size ?: 4
@@ -1231,7 +1255,7 @@ object Engine {
         sb.appendLine("On the TV: ${st.nowOnTv ?: "?"}${st.tvVolume?.let { ", $it" } ?: ""}")
         sb.appendLine("Switching: ${if (st.running) "running" else "stopped"}, layout ${s.layout}, mic ${s.useMic}, " +
             "cues ${s.useCues}, paused ${st.paused}, auto-paused ${st.autoPaused}, held ${st.held}")
-        sb.appendLine("Games: " + s.slots.entries.sortedBy { it.key }.joinToString { "${it.key}=${it.value.league}/${it.value.team}" })
+        sb.appendLine("Games: " + s.slots.entries.sortedBy { it.key }.joinToString { "${it.key}=" + if (it.value.isOther) "other:${it.value.name}" else "${it.value.league}/${it.value.team}#${it.value.eventId}" })
         sb.appendLine()
         sb.appendLine("TV connection log (newest first):")
         synchronized(tvLines) { tvLines.forEach { sb.appendLine("${it.time}  ${it.text}") } }

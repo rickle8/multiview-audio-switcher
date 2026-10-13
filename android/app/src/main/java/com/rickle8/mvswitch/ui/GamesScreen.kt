@@ -87,7 +87,9 @@ fun GamesScreen(settings: Settings, modifier: Modifier) {
             Spacer(Modifier.height(10.dp))
         }
         Text("★ = your main game. It gets priority and the app comes back to it after its breaks.\n" +
-            "Your pick (like \"GB -3.5\") makes games that are close against the spread count as close.",
+            "Your pick (like \"GB -3.5\") makes games that are close against the spread count as close.\n" +
+            "Not on ESPN's list (RedZone, a show, a game it doesn't cover)? Choose \"Something else\": " +
+            "it has no live scores, so the mic alone decides, and you set how much it matters.",
             color = C.muted, fontSize = 13.sp, modifier = Modifier.padding(top = 4.dp, bottom = 24.dp))
     }
 
@@ -99,7 +101,17 @@ fun GamesScreen(settings: Settings, modifier: Modifier) {
                     val keep = s.slots[box]
                     s.copy(league = g.league, slots = s.slots + (box to GameSlot(
                         league = g.league, team = g.home.ifBlank { g.away }, name = g.shortName,
-                        importance = keep?.importance ?: 1.0, pick = "",
+                        importance = keep?.importance ?: 1.0, pick = "", eventId = g.id,
+                    )))
+                }
+                picking = null
+            },
+            onOther = { name ->
+                Engine.update { s ->
+                    val keep = s.slots[box]
+                    s.copy(slots = s.slots + (box to GameSlot(
+                        league = "", team = "", name = name, importance = keep?.importance ?: 1.0,
+                        kind = GameSlot.OTHER,
                     )))
                 }
                 picking = null
@@ -153,30 +165,50 @@ private fun SlotCard(box: Int, position: String, slot: GameSlot?, onPick: () -> 
             }
             Spacer(Modifier.width(12.dp))
             Column(Modifier.weight(1f).clickable(onClick = onPick)) {
-                Text(position.replaceFirstChar { it.uppercase() }, color = C.muted, fontSize = 12.sp)
+                Text(position.replaceFirstChar { it.uppercase() } +
+                    (if (slot?.isOther == true) " · something else, no live scores" else ""),
+                    color = C.muted, fontSize = 12.sp)
                 Text(slot?.name?.ifBlank { null } ?: slot?.team ?: "Tap to choose a game",
                     color = if (slot == null) C.accent else C.text, fontWeight = FontWeight.SemiBold,
                     fontSize = 16.sp)
             }
-            if (slot != null) {
+            if (slot != null && !slot.isOther) {
                 val main = slot.importance > 1.0
                 IconButton(onClick = {
                     Engine.update { s ->
                         // Only one main game: starring this one un-stars the rest.
                         s.copy(slots = s.slots.mapValues { (b, g) ->
-                            g.copy(importance = if (b == box) (if (main) 1.0 else 2.0) else 1.0)
+                            g.copy(importance = if (b == box) (if (main) 1.0 else 2.0) else if (g.isOther) g.importance else 1.0)
                         })
                     }
                 }) {
                     Icon(if (main) Icons.Filled.Star else Icons.Filled.StarBorder, "Main game",
                         tint = if (main) C.amber else C.muted)
                 }
+            }
+            if (slot != null) {
                 IconButton(onClick = { Engine.update { s -> s.copy(slots = s.slots - box) } }) {
                     Icon(Icons.Filled.Close, "Clear", tint = C.muted)
                 }
             }
         }
-        if (slot != null) {
+        if (slot != null && slot.isOther) {
+            Spacer(Modifier.height(8.dp))
+            Text("How much it matters", color = C.muted, fontSize = 12.sp)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                for ((label, value) in listOf("Filler" to 0.5, "Normal" to 1.0, "High" to 2.0)) {
+                    FilterChip(
+                        selected = slot.importance == value,
+                        onClick = { Engine.update { s -> s.copy(slots = s.slots + (box to slot.copy(importance = value))) } },
+                        label = { Text(label) },
+                        colors = FilterChipDefaults.filterChipColors(
+                            selectedContainerColor = C.accent, selectedLabelColor = C.onAccent),
+                    )
+                }
+            }
+            Text("Filler: only gets the audio when every game is on commercial.", color = C.muted, fontSize = 12.sp)
+        }
+        if (slot != null && !slot.isOther && slot.team.isNotBlank()) {
             var pick by remember(slot.team) { mutableStateOf(slot.pick) }
             Spacer(Modifier.height(8.dp))
             OutlinedTextField(
@@ -198,15 +230,24 @@ private fun SlotCard(box: Int, position: String, slot: GameSlot?, onPick: () -> 
 }
 
 @Composable
-private fun GamePicker(startLeague: String, onDismiss: () -> Unit, onPick: (ScheduledGame) -> Unit) {
+private fun GamePicker(
+    startLeague: String, onDismiss: () -> Unit, onPick: (ScheduledGame) -> Unit, onOther: (String) -> Unit,
+) {
     var league by remember { mutableStateOf(startLeague) }
+    var query by remember { mutableStateOf("") }
     var games by remember { mutableStateOf<List<ScheduledGame>?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
-    LaunchedEffect(league) {
+    var other by remember { mutableStateOf<String?>(null) }
+    val searching = query.trim().length >= 2
+    val leagueName = LEAGUES.toMap()
+    LaunchedEffect(league, query) {
         games = null
         error = null
         try {
-            games = Engine.schedule(league)
+            games = if (searching) {
+                kotlinx.coroutines.delay(400) // wait for typing to pause
+                Engine.searchGames(query)
+            } else Engine.schedule(league)
         } catch (e: Exception) {
             error = "Couldn't load games (${e.message}). Check your internet."
         }
@@ -217,26 +258,35 @@ private fun GamePicker(startLeague: String, onDismiss: () -> Unit, onPick: (Sche
         title = { Text("Choose a game") },
         text = {
             Column {
-                Row(Modifier.horizontalScroll(rememberScrollState()),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    for ((key, label) in LEAGUES) {
-                        FilterChip(
-                            selected = league == key,
-                            onClick = { league = key },
-                            label = { Text(label) },
-                            colors = FilterChipDefaults.filterChipColors(
-                                selectedContainerColor = C.accent, selectedLabelColor = C.onAccent,
-                            ),
-                        )
+                OutlinedTextField(
+                    value = query, onValueChange = { query = it }, singleLine = true,
+                    placeholder = { Text("Search every sport: team, event…") },
+                    modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(12.dp),
+                )
+                Spacer(Modifier.height(8.dp))
+                if (!searching) {
+                    Row(Modifier.horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        for ((key, label) in LEAGUES) {
+                            FilterChip(
+                                selected = league == key,
+                                onClick = { league = key },
+                                label = { Text(label) },
+                                colors = FilterChipDefaults.filterChipColors(
+                                    selectedContainerColor = C.accent, selectedLabelColor = C.onAccent,
+                                ),
+                            )
+                        }
                     }
+                    Spacer(Modifier.height(8.dp))
                 }
-                Spacer(Modifier.height(12.dp))
-                Box(Modifier.fillMaxWidth().heightIn(min = 120.dp, max = 380.dp)) {
+                Box(Modifier.fillMaxWidth().heightIn(min = 100.dp, max = 320.dp)) {
                     val list = games
                     when {
                         error != null -> Text(error!!, color = C.red)
                         list == null -> CircularProgressIndicator(Modifier.align(Alignment.Center))
-                        list.isEmpty() -> Text("No games today in this league.", color = C.muted)
+                        list.isEmpty() -> Text(if (searching) "Nothing today matches that." else "No games today in this league.",
+                            color = C.muted)
                         else -> LazyColumn(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                             items(list) { g ->
                                 Row(
@@ -246,13 +296,31 @@ private fun GamePicker(startLeague: String, onDismiss: () -> Unit, onPick: (Sche
                                         .padding(12.dp),
                                     verticalAlignment = Alignment.CenterVertically,
                                 ) {
-                                    Text(g.shortName, color = C.text, fontWeight = FontWeight.SemiBold,
-                                        modifier = Modifier.weight(1f))
+                                    Column(Modifier.weight(1f)) {
+                                        Text(g.shortName, color = C.text, fontWeight = FontWeight.SemiBold)
+                                        if (searching) Text(leagueName[g.league] ?: g.league, color = C.muted, fontSize = 11.sp)
+                                    }
                                     val live = g.status == GameStatus.LIVE || g.status == GameStatus.BREAK
                                     Text(g.detail, color = if (live) C.accent else C.muted, fontSize = 12.sp)
                                 }
                             }
                         }
+                    }
+                }
+                Spacer(Modifier.height(8.dp))
+                val name = other
+                if (name == null) {
+                    TextButton(onClick = { other = "" }) {
+                        Text("Something else (RedZone, a show, a game not listed)", color = C.blue)
+                    }
+                } else {
+                    OutlinedTextField(
+                        value = name, onValueChange = { other = it.take(30) }, singleLine = true,
+                        label = { Text("What's in this box") }, placeholder = { Text("RedZone, golf, news…") },
+                        modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(12.dp),
+                    )
+                    TextButton(enabled = name.isNotBlank(), onClick = { onOther(name.trim()) }) {
+                        Text("Use it (no live scores; the mic decides)", color = if (name.isNotBlank()) C.accent else C.muted)
                     }
                 }
             }
