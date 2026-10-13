@@ -69,4 +69,6 @@ data class HttpReply(val code: Int, val body: String)
 interface TvHttp {
     fun get(url: String): HttpReply?
     fun post(url: String): HttpReply?
+    /** A UPnP SOAP call (volume and mute). */
+    fun soap(url: String, action: String, body: String): HttpReply? = null
 }

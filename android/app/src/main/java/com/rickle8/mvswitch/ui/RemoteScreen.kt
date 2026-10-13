@@ -201,11 +201,15 @@ fun RemoteScreen(state: EngineState, settings: Settings, modifier: Modifier) {
         apps = null
         if (!isTest && settings.tvHost.isNotBlank()) loadApps(false)
     }
-    // Keep the TV connection ready while this tab is open, so taps go through instantly.
+    // Keep the TV connection ready while this tab is open, so taps go through instantly,
+    // and keep "On the TV" current.
     LaunchedEffect(settings.tvType, settings.tvHost) {
+        var tick = 0
         while (true) {
-            Engine.warmUp()
-            delay(15_000)
+            if (tick % 3 == 0) Engine.warmUp()
+            Engine.refreshNowOnTv()
+            tick++
+            delay(6_000)
         }
     }
     /** An input tap: teach it first if this TV ignores input keys. */
@@ -225,6 +229,13 @@ fun RemoteScreen(state: EngineState, settings: Settings, modifier: Modifier) {
                 tint = C.red) { Engine.power() }
         }
         TvStatus(state, settings)
+        if (!isTest && settings.tvHost.isNotBlank()) {
+            Text(
+                "On the TV: " + (state.nowOnTv ?: "checking…") + (state.tvVolume?.let { " · $it" } ?: ""),
+                color = C.text, fontSize = 13.sp, maxLines = 2, overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.padding(top = 2.dp),
+            )
+        }
         state.remoteMsg?.let { Text(it, color = C.amber, fontSize = 13.sp, modifier = Modifier.padding(top = 4.dp)) }
         if (state.running && (state.waitingForMultiview || state.autoPaused)) {
             Panel(Modifier.padding(top = 10.dp)) {

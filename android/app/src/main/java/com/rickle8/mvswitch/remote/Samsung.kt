@@ -32,6 +32,8 @@ data class SamsungTiming(
     /** How long an unanswered connection (an Allow prompt on the TV) is kept open. */
     val pendingMs: Long = 60_000,
     val tickMs: Long = 1_000,
+    /** Waking from standby: how long to wait for the TV's websocket to answer. */
+    val standbyMs: Long = 4_000,
 )
 
 /**
@@ -102,6 +104,8 @@ class SamsungRemote(
     @Volatile var onKeyboard: ((Boolean) -> Unit)? = null
     /** What it's waiting on while connecting ("Press Allow on the TV"), then null. */
     @Volatile var onWaiting: ((String?) -> Unit)? = null
+    /** The TV says something changed on screen (an app opened or closed). */
+    @Volatile var onScreenChanged: (() -> Unit)? = null
 
     private val sendLock = ReentrantLock(true) // fair: presses go out in the order they came in
     private val controlLock = ReentrantLock()
@@ -216,6 +220,7 @@ class SamsungRemote(
                 "ms.remote.imeStart" -> runCatching { onKeyboard?.invoke(true) }
                 "ms.remote.imeEnd" -> runCatching { onKeyboard?.invoke(false) }
                 "ed.installedApp.get" -> parseApps(msg)
+                "ed.edenTV.update" -> runCatching { onScreenChanged?.invoke() }
                 "ms.error" -> log("TV said: " + (msg.optJSONObject("data")?.optString("message") ?: msg.toString()))
             }
         }
@@ -321,7 +326,7 @@ class SamsungRemote(
     }
 
     /** The key connection, verified alive. Must hold [sendLock]. */
-    private fun ensureRemote() {
+    private fun ensureRemote(waitMs: Long? = null) {
         if (closed) throw RemoteException("Remote closed")
         if (!remote.live && now() - failedAt < t.failFastMs) throw RemoteException(failedWhy ?: "Can't reach the TV")
         try {
@@ -332,7 +337,7 @@ class SamsungRemote(
                 log("The TV stopped answering. Reconnecting.")
                 remote.reset()
             }
-            remote.ensure(if (token == null) t.firstPairMs else t.connectMs)
+            remote.ensure(waitMs ?: if (token == null) t.firstPairMs else t.connectMs)
             failedWhy = null
         } catch (e: RemoteException) {
             failedAt = now()
@@ -343,6 +348,17 @@ class SamsungRemote(
 
     /** Makes sure the TV is connected (connecting if needed). Throws with a readable reason if not. */
     fun check() = sendLock.withLock { ensureRemote() }
+
+    /**
+     * The TV's own power key, for a TV in network standby (some keep listening).
+     * Only waits briefly. False if it couldn't be sent.
+     */
+    fun powerKeyFromStandby(): Boolean = runCatching {
+        sendLock.withLock {
+            ensureRemote(waitMs = t.standbyMs)
+            remote.send(keyJson("KEY_POWER")).also { if (it) lastSend = now() }
+        }
+    }.getOrDefault(false)
 
     private fun sendRemote(text: String) = sendLock.withLock {
         ensureRemote()
@@ -460,15 +476,89 @@ class SamsungRemote(
         throw RemoteException("The TV wouldn't open that app")
     }
 
-    override fun isOnScreen(appId: String): Boolean? {
+    /** Whether this TV answers app status over plain REST (null = not known yet). */
+    @Volatile private var restStatus: Boolean? = null
+
+    /** REST app status: true/false, null if REST doesn't say. Throws if the TV can't be reached. */
+    private fun restVisible(appId: String): Boolean? {
         val rest = http.get("http://$host:8001/api/v2/applications/$appId")
-            ?: return false // TV off or unreachable: the app certainly isn't on screen
+            ?: throw RemoteException("TV unreachable")
         if (rest.code in 200..299) {
             val j = runCatching { JSONObject(rest.body) }.getOrNull()
-            if (j != null && j.has("visible")) return j.optBoolean("visible")
+            if (j != null && j.has("visible")) { restStatus = true; return j.optBoolean("visible") }
+        }
+        if (restStatus == null) restStatus = false
+        return null
+    }
+
+    override fun isOnScreen(appId: String): Boolean? {
+        if (restStatus != false) {
+            val v = try { restVisible(appId) } catch (e: RemoteException) { return false } // off: certainly not on screen
+            if (v != null) return v
         }
         // Newer TVs only answer this on the app-control channel.
         return runCatching { controlVisible(appId) }.getOrNull()
+    }
+
+    /**
+     * Which of [candidates] (app ids, most likely first) is on screen, or null if
+     * none is or the TV won't say.
+     */
+    fun visibleApp(candidates: List<String>): String? {
+        val ids = candidates.distinct().filter { appTypes[it] != 4 }.take(40)
+        if (ids.isEmpty()) return null
+        if (restStatus != false) {
+            for (id in ids) {
+                val v = try { restVisible(id) } catch (e: RemoteException) { return null }
+                if (v == true) return id
+                if (v == null && restStatus == false) break // REST doesn't do this: ask the other way
+            }
+            if (restStatus == true) return null
+        }
+        return runCatching { controlVisibleAny(ids) }.getOrNull()
+    }
+
+    /** Asks the app-control channel about every app at once; replies say which is visible. */
+    private fun controlVisibleAny(ids: List<String>): String? {
+        controlLock.withLock {
+            if (closed) return null
+            if (!control.live) control.ensure(t.connectMs)
+            val waiters = ids.mapNotNull { id ->
+                val w = control.register { it.optString("id") == id && (it.has("result") || it.has("error")) }
+                    ?: return@mapNotNull null
+                val req = JSONObject().put("id", id).put("method", "ms.application.get")
+                    .put("params", JSONObject().put("id", id)).toString()
+                if (!control.send(req)) { control.unregister(w); null } else id to w
+            }
+            val deadline = now() + t.replyMs
+            for ((id, w) in waiters) {
+                val reply = control.await(w, maxOf(1, deadline - now())) ?: continue
+                if (reply.optJSONObject("result")?.optBoolean("visible") == true) {
+                    waiters.forEach { (_, other) -> control.unregister(other) }
+                    return id
+                }
+            }
+            return null
+        }
+    }
+
+    /** TV speaker volume and mute, from the TV's media renderer (UPnP). Null if it doesn't say. */
+    fun volume(): Pair<Int, Boolean>? {
+        fun ask(action: String): String? {
+            val body = "<?xml version=\"1.0\" encoding=\"utf-8\"?>" +
+                "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\" " +
+                "s:encodingStyle=\"http://schemas.xmlsoap.org/soap/encoding/\"><s:Body>" +
+                "<u:$action xmlns:u=\"urn:schemas-upnp-org:service:RenderingControl:1\">" +
+                "<InstanceID>0</InstanceID><Channel>Master</Channel></u:$action></s:Body></s:Envelope>"
+            return http.soap("http://$host:9197/upnp/control/RenderingControl1",
+                "\"urn:schemas-upnp-org:service:RenderingControl:1#$action\"", body)
+                ?.takeIf { it.code in 200..299 }?.body
+        }
+        val level = ask("GetVolume")?.let { Regex("<CurrentVolume>(\\d+)</CurrentVolume>").find(it) }
+            ?.groupValues?.get(1)?.toIntOrNull() ?: return null
+        val muted = ask("GetMute")?.let { Regex("<CurrentMute>(\\d+)</CurrentMute>").find(it) }
+            ?.groupValues?.get(1)?.let { it != "0" } ?: false
+        return level to muted
     }
 
     private fun controlVisible(appId: String): Boolean? {

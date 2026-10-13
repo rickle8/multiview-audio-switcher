@@ -69,6 +69,9 @@ object OkTvHttp : TvHttp {
     }
 
     override fun get(url: String) = call(Request.Builder().url(url).build())
+    override fun soap(url: String, action: String, body: String) = call(Request.Builder().url(url)
+        .header("SOAPAction", action)
+        .post(body.toRequestBody("text/xml; charset=utf-8".toMediaType())).build())
     override fun post(url: String) =
         call(Request.Builder().url(url).post(ByteArray(0).toRequestBody("text/plain".toMediaType())).build())
 }

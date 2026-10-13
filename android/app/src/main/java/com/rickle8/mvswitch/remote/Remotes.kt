@@ -74,6 +74,14 @@ class RokuRemote(private val host: String) : Remote, TvApps, TvExtras {
 
     fun awake(): Boolean = get("/query/device-info")?.contains("<power-mode>PowerOn</power-mode>") ?: false
 
+    /** What's on screen: the app or input's name ("Home screen" for the Roku menu). Null if unreachable. */
+    fun activeApp(): String? {
+        val xml = get("/query/active-app") ?: return null
+        val name = Regex("<app[^>]*>([^<]*)</app>").find(xml)?.groupValues?.get(1)?.let { unescape(it) }
+            ?: return "Home screen"
+        return if (name.isBlank() || name == "Roku") "Home screen" else name
+    }
+
     override fun isOnScreen(appId: String): Boolean? {
         val xml = get("/query/active-app") ?: return false
         return Regex("<app id=\"([^\"]+)\"").find(xml)?.groupValues?.get(1) == appId

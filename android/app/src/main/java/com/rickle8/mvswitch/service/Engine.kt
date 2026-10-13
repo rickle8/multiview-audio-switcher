@@ -111,6 +111,10 @@ data class EngineState(
     val tvKeyboard: Boolean = false,
     /** The first direct input key was just sent: ask whether the TV switched to this input. */
     val askInput: Int? = null,
+    /** What's on the TV right now: an app's name, an input, or off. Null if not known. */
+    val nowOnTv: String? = null,
+    /** "Volume 23" or "Muted", when the TV says. */
+    val tvVolume: String? = null,
 )
 
 object Engine {
@@ -169,6 +173,11 @@ object Engine {
     @Volatile private var tvKey: String? = null
     @Volatile private var tvWaiting: String? = null
     @Volatile private var tvKeyboard = false
+    @Volatile private var nowOnTv: String? = null
+    @Volatile private var tvVolume: String? = null
+    @Volatile private var lastInputPicked: String? = null
+    @Volatile private var lastAppLaunched: String? = null
+    @Volatile private var readingScreen = false
 
     private val ARROWS = setOf(Key.LEFT, Key.RIGHT, Key.UP, Key.DOWN)
     /** Keys that don't take you anywhere, so switching carries on. */
@@ -281,6 +290,7 @@ object Engine {
             }, OkWsOpener(host), OkTvHttp, log = ::tvLog).apply {
                 onKeyboard = { open -> tvKeyboard = open; publish() }
                 onWaiting = { what -> tvWaiting = what; publish() }
+                onScreenChanged = { refreshNowOnTv(800) }
             }
         }
         TvType.ROKU -> {
@@ -311,6 +321,8 @@ object Engine {
         tvKey = null
         tvKeyboard = false
         tvWaiting = null
+        nowOnTv = null
+        tvVolume = null
     }
 
     private fun makeNav(s: Settings, r: Remote) = Navigator(
@@ -384,6 +396,8 @@ object Engine {
             tvWaiting = tvWaiting,
             tvKeyboard = tvKeyboard,
             askInput = askInput,
+            nowOnTv = nowOnTv,
+            tvVolume = tvVolume,
         )
     }
 
@@ -445,38 +459,74 @@ object Engine {
         update { if (it.tvHost == s.tvHost && it.tvMac.isBlank()) it.copy(tvMac = mac) else it }
     }
 
-    /** Turn the TV on if it's off (Samsung: Wake-on-LAN, Roku TV: power key). True if it's on. */
-    private suspend fun wakeTv(s: Settings): Boolean {
-        when (s.tvType) {
-            TvType.SAMSUNG -> {
-                if (s.tvHost.isBlank()) return false
-                if (TvNetwork.samsungAwake(s.tvHost)) return true
-                if (s.tvMac.isBlank()) return false
-                log("Turning on the TV…")
-                runCatching { TvNetwork.wake(s.tvMac, s.tvHost) }
-                repeat(12) {
-                    delay(2500)
-                    if (TvNetwork.samsungAwake(s.tvHost)) {
-                        delay(4000) // give it a moment to finish starting up
-                        return true
-                    }
-                    if (it % 4 == 3) runCatching { TvNetwork.wake(s.tvMac, s.tvHost) }
-                }
-                log("The TV didn't wake up. On the TV, turn on Settings > General > Network > Expert Settings > " +
-                    "Power On with Mobile.")
-                return false
+    /** Turn the TV on if it's off. True if it's on. */
+    private suspend fun wakeTv(s: Settings): Boolean = when (s.tvType) {
+        TvType.SAMSUNG -> wakeSamsung(s)
+        TvType.ROKU -> {
+            val roku = RokuRemote(s.tvHost.trim())
+            when {
+                s.tvHost.isBlank() -> false
+                roku.awake() -> true
+                else -> { roku.powerOn(); delay(6000); roku.awake() }
             }
-            TvType.ROKU -> {
-                if (s.tvHost.isBlank()) return false
-                val roku = RokuRemote(s.tvHost.trim())
-                if (roku.awake()) return true
-                roku.powerOn()
-                delay(6000)
-                return roku.awake()
-            }
-            TvType.TEST -> return true
         }
+        TvType.TEST -> true
     }
+
+    private suspend fun waitUntilOn(host: String, secs: Double): Boolean {
+        val until = now() + secs
+        while (now() < until) {
+            delay(700)
+            if (TvNetwork.samsungAwake(host)) return true
+        }
+        return false
+    }
+
+    /**
+     * Samsung: if it's in network standby and still listening, its own power
+     * key wakes it. Otherwise Wake-on-LAN, repeated for a while, since a
+     * sleeping TV on Wi-Fi often misses the first packets.
+     */
+    private suspend fun wakeSamsung(s: Settings): Boolean {
+        val host = s.tvHost.trim()
+        if (host.isBlank()) return false
+        val info = TvNetwork.samsungInfo(host)
+        if (info != null && TvNetwork.isOn(info)) return true
+        log("Turning on the TV…")
+        if (info != null) {
+            tvLog("TV is in standby (${info.optString("PowerState")}); trying its power key")
+            val sent = (runCatching { tvRemote() }.getOrNull() as? SamsungRemote)?.powerKeyFromStandby() == true
+            if (sent && waitUntilOn(host, 8.0)) { delay(2500); return true }
+        }
+        val mac = _settings.value.tvMac
+        if (mac.isBlank()) {
+            tvLog("Can't wake: MAC address not known yet")
+            return false
+        }
+        val until = now() + 35
+        var tries = 0
+        while (now() < until) {
+            tries++
+            runCatching { TvNetwork.wake(app, mac, host) }
+            if (waitUntilOn(host, 3.0)) {
+                tvLog("Woke up after $tries Wake-on-LAN tries")
+                delay(3000) // let it finish starting up
+                return true
+            }
+        }
+        tvLog("No answer after $tries Wake-on-LAN tries to $mac")
+        log("The TV didn't wake up. On the TV, turn on Power On with Mobile (see the Remote tab).")
+        return false
+    }
+
+    /** Why it couldn't turn the TV on, and what to change. */
+    private fun powerHelp(s: Settings): String =
+        if (s.tvType == TvType.SAMSUNG && s.tvMac.isBlank())
+            "Can't turn it on yet: the app learns how the first time it connects while the TV is on. " +
+                "Or enter the TV's MAC address in Settings."
+        else "The TV didn't turn on. On the TV, turn on Power On with Mobile: Settings > General > Network > " +
+            "Expert Settings (2022 and newer: Settings > All Settings > Connection > Network > Expert Settings). " +
+            "If the TV is plugged into the router, check the MAC in Settings is the wired one."
 
     private suspend fun runLoop() {
         val s = _settings.value
@@ -789,6 +839,24 @@ object Engine {
         }
         // Anything but volume (or arrows in multiview) means you're in a menu: don't fight you.
         if (key !in PASSIVE && (key !in ARROWS || now() < holdUntil)) holdSwitching(30.0)
+        when (key) {
+            in PASSIVE -> refreshVolume()
+            Key.HOME, Key.BACK, Key.SOURCE, Key.SELECT, Key.POWER -> refreshNowOnTv(2500)
+            else -> Unit
+        }
+    }
+
+    /** Just the volume, right after a volume key. */
+    private fun refreshVolume() {
+        scope.launch(Dispatchers.IO) {
+            delay(400)
+            if (!visible) return@launch
+            val r = tv as? SamsungRemote ?: return@launch
+            runCatching { r.volume() }.getOrNull()?.let { (level, muted) ->
+                tvVolume = if (muted) "Muted" else "Volume $level"
+                publish()
+            }
+        }
     }
 
     private fun parseStep(step: String): Pair<Key, Int>? {
@@ -840,12 +908,20 @@ object Engine {
             }
             else -> throw IllegalStateException("Inputs work with Samsung and Roku TVs")
         }
+        pickedInput(inputName(n))
+    }
+
+    private fun pickedInput(name: String?) {
+        lastInputPicked = name
+        lastAppLaunched = null
+        refreshNowOnTv(2500)
     }
 
     /** Tries taught steps before saving them. */
     fun testSteps(n: Int, steps: List<String>) = onTv("switch inputs") { r ->
         leftYouTubeTv(inputName(n))
         playSteps(r, steps)
+        pickedInput(inputName(n))
     }
 
     fun saveSteps(n: Int, steps: List<String>) = update {
@@ -868,6 +944,7 @@ object Engine {
     fun nextInput() = onTv("switch inputs") { r ->
         leftYouTubeTv("another input")
         (r as? SamsungRemote ?: throw IllegalStateException("This button is for Samsung TVs")).nextInput()
+        pickedInput(null)
     }
 
     // ---------------------------------------------------------------- full remote
@@ -924,6 +1001,9 @@ object Engine {
             }
         } else leftYouTubeTv(appName(appId))
         apps.launch(appId)
+        lastAppLaunched = appId
+        lastInputPicked = null
+        refreshNowOnTv(2500)
     }
 
     fun sendText(text: String) = onTv("type") { r ->
@@ -946,37 +1026,99 @@ object Engine {
                 .onSuccess { remoteMsg = null }
                 .onFailure { remoteMsg = it.message }
             publish()
+            if (_settings.value.tvMac.isBlank()) runCatching { learnMac(_settings.value) }
         }
     }
 
-    /** Power: turns the TV on if it's off (Wake-on-LAN / Roku power key), otherwise off. */
+    /** Power: turns the TV on if it's off (power key in standby, Wake-on-LAN), otherwise off. */
     fun power() {
         scope.launch(Dispatchers.IO) {
             val s = _settings.value
             if (s.tvType == TvType.TEST) return@launch
             if (s.tvHost.isBlank()) { remoteMsg = "Set up your TV in Settings first"; publish(); return@launch }
-            val awake = when (s.tvType) {
+            val on = when (s.tvType) {
                 TvType.SAMSUNG -> TvNetwork.samsungAwake(s.tvHost)
                 TvType.ROKU -> RokuRemote(s.tvHost.trim()).awake()
                 TvType.TEST -> true
             }
-            if (awake) {
+            if (on) {
                 learnMac(s) // so this button can turn it back on later
                 press(Key.POWER)
-                return@launch
-            }
-            if (s.tvType == TvType.SAMSUNG && _settings.value.tvMac.isBlank()) {
-                remoteMsg = "Can't turn it on yet. Use the remote once while the TV is on so the app can learn how, " +
-                    "or enter the TV's MAC address in Settings."
+                nowOnTv = "Turning off…"
                 publish()
+                refreshNowOnTv(4000)
                 return@launch
             }
-            remoteMsg = "Turning on the TV…"; publish()
-            val on = wakeTv(_settings.value)
-            remoteMsg = if (on) null else "The TV didn't turn on. On the TV, turn on Settings > General > Network > " +
-                "Expert Settings > Power On with Mobile."
+            remoteMsg = "Turning on the TV…"; nowOnTv = "Turning on…"; publish()
+            val woke = wakeTv(_settings.value)
+            remoteMsg = if (woke) null else powerHelp(_settings.value)
             publish()
-            if (on) warmUp()
+            refreshNowOnTv(if (woke) 1500 else 0)
+            if (woke) warmUp()
+        }
+    }
+
+    /**
+     * What's on the TV right now: which app is open, or an input / Live TV;
+     * whether it's off; the volume. For the Remote tab (only while it's showing).
+     */
+    fun refreshNowOnTv(delayMs: Long = 0) {
+        val s = _settings.value
+        if (s.tvType == TvType.TEST || s.tvHost.isBlank()) return
+        scope.launch(Dispatchers.IO) {
+            if (delayMs > 0) delay(delayMs)
+            if (!visible || readingScreen) return@launch
+            readingScreen = true
+            try {
+                readNowOnTv(_settings.value)
+            } catch (e: Exception) {
+                tvLog("Couldn't read what's on the TV: ${e.message}")
+            } finally {
+                readingScreen = false
+                publish()
+            }
+        }
+    }
+
+    private fun appLabel(appId: String): String? = appsCache?.firstOrNull { it.id == appId }?.name
+        ?: _settings.value.shortcuts.firstOrNull { it.kind == Shortcut.APP && it.value == appId }?.label
+
+    private fun readNowOnTv(s: Settings) {
+        when (s.tvType) {
+            TvType.SAMSUNG -> {
+                val info = TvNetwork.samsungInfo(s.tvHost)
+                if (info == null || !TvNetwork.isOn(info)) {
+                    nowOnTv = if (info == null) "Off, or not on the Wi-Fi" else "Off (standby)"
+                    tvVolume = null
+                    return
+                }
+                learnMac(s)
+                val r = runCatching { tvRemote() }.getOrNull() as? SamsungRemote ?: return
+                val apps = appsCache ?: runCatching { r.listApps() }.getOrDefault(emptyList())
+                    .also { if (it.isNotEmpty()) appsCache = it }
+                val candidates = buildList {
+                    lastAppLaunched?.let { add(it) }
+                    s.youTubeTvAppId.takeIf { it.isNotBlank() }?.let { add(it) }
+                    s.shortcuts.filter { it.kind == Shortcut.APP }.forEach { add(it.value) }
+                    apps.forEach { add(it.id) }
+                }
+                val id = r.visibleApp(candidates)
+                nowOnTv = when {
+                    id != null -> appLabel(id) ?: id
+                    lastInputPicked != null -> "$lastInputPicked (or another input, Live TV or the home screen)"
+                    else -> "An input, Live TV or the home screen"
+                }
+                tvVolume = r.volume()?.let { (level, muted) -> if (muted) "Muted" else "Volume $level" }
+            }
+            TvType.ROKU -> {
+                val roku = runCatching { tvRemote() }.getOrNull() as? RokuRemote ?: return
+                nowOnTv = when {
+                    !roku.awake() -> roku.activeApp()?.let { "Off (standby)" } ?: "Off, or not on the Wi-Fi"
+                    else -> roku.activeApp() ?: "Off, or not on the Wi-Fi"
+                }
+                tvVolume = null
+            }
+            TvType.TEST -> Unit
         }
     }
 
@@ -1066,6 +1208,7 @@ object Engine {
         sb.appendLine("Inputs: direct keys " + when (s.directInputs) { 1 -> "work"; -1 -> "don't work"; else -> "untested" } +
             ", taught: ${s.inputSteps.toSortedMap()}")
         sb.appendLine("YouTube TV app: ${s.youTubeTvAppId.ifBlank { "(not found yet)" }}")
+        sb.appendLine("On the TV: ${st.nowOnTv ?: "?"}${st.tvVolume?.let { ", $it" } ?: ""}")
         sb.appendLine("Switching: ${if (st.running) "running" else "stopped"}, layout ${s.layout}, mic ${s.useMic}, " +
             "cues ${s.useCues}, paused ${st.paused}, auto-paused ${st.autoPaused}, held ${st.held}")
         sb.appendLine("Games: " + s.slots.entries.sortedBy { it.key }.joinToString { "${it.key}=${it.value.league}/${it.value.team}" })

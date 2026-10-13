@@ -30,6 +30,10 @@ class FakeTv : WsOpener, TvHttp {
     @Volatile var restGet: (String) -> HttpReply? = { HttpReply(404, "") }
     @Volatile var restPost: (String) -> HttpReply? = { HttpReply(200, "") }
     @Volatile var visible = true
+    /** If set, only this app is on screen. */
+    @Volatile var visibleId: String? = null
+    @Volatile var volume: Int? = 23
+    @Volatile var muted = false
     @Volatile var failConnect: String? = null
     @Volatile var tokenAsNumber = false
     val posts = CopyOnWriteArrayList<String>()
@@ -107,12 +111,25 @@ class FakeTv : WsOpener, TvHttp {
                     .put("iconPath", params.getJSONObject("data").getString("iconPath"))
                     .put("imageBase64", Base64.getEncoder().encodeToString(byteArrayOf(1, 2, 3)))))
             }
-            "ms.application.get" -> s.say(JSONObject().put("id", params.getString("id"))
-                .put("result", JSONObject().put("visible", visible).put("running", true)))
+            "ms.application.get" -> {
+                val id = params.getString("id")
+                s.say(JSONObject().put("id", id)
+                    .put("result", JSONObject().put("visible", visibleId?.let { it == id } ?: visible).put("running", true)))
+            }
         }
     }
 
     override fun get(url: String) = restGet(url)
+    override fun soap(url: String, action: String, body: String): HttpReply? {
+        val v = volume ?: return null
+        return when {
+            action.contains("#GetVolume") -> HttpReply(200, "<s:Envelope><s:Body><u:GetVolumeResponse>" +
+                "<CurrentVolume>$v</CurrentVolume></u:GetVolumeResponse></s:Body></s:Envelope>")
+            action.contains("#GetMute") -> HttpReply(200, "<s:Envelope><s:Body><u:GetMuteResponse>" +
+                "<CurrentMute>${if (muted) 1 else 0}</CurrentMute></u:GetMuteResponse></s:Body></s:Envelope>")
+            else -> null
+        }
+    }
     override fun post(url: String): HttpReply? { posts += url; return restPost(url) }
 
     val keySocket get() = sockets.last { !it.control }
@@ -409,6 +426,55 @@ class SamsungRemoteTest {
         assertTrue(url, url.startsWith("ws://10.0.0.5:8001/api/v2/channels/samsung.remote.control?"))
         assertFalse(url.contains("token="))
         r.close()
+    }
+
+    @Test fun findsTheAppOnScreenOverRest() {
+        val tv = FakeTv()
+        tv.restGet = { url ->
+            if (url.contains("/applications/")) HttpReply(200, JSONObject()
+                .put("visible", url.endsWith("PvWgqxV3Xa.YouTubeTV")).toString())
+            else HttpReply(404, "")
+        }
+        val r = remote(tv)
+        assertEquals("PvWgqxV3Xa.YouTubeTV", r.visibleApp(listOf("111299001912", "PvWgqxV3Xa.YouTubeTV")))
+        assertNull(r.visibleApp(listOf("111299001912")))
+        assertTrue(tv.sockets.none { it.control })
+        r.close()
+    }
+
+    @Test fun findsTheAppOnScreenOverTheControlChannel() {
+        val tv = FakeTv().apply { visibleId = "111299001912" }
+        val r = remote(tv)
+        r.listApps()
+        assertEquals("111299001912", r.visibleApp(listOf("PvWgqxV3Xa.YouTubeTV", "111299001912", "org.tizen.native")))
+        tv.visibleId = "nothing"
+        assertNull(r.visibleApp(listOf("PvWgqxV3Xa.YouTubeTV", "111299001912")))
+        r.close()
+    }
+
+    @Test fun readsVolumeAndMute() {
+        val tv = FakeTv()
+        val r = remote(tv)
+        assertEquals(23 to false, r.volume())
+        tv.muted = true
+        assertEquals(23 to true, r.volume())
+        tv.volume = null
+        assertNull(r.volume())
+        r.close()
+    }
+
+    @Test fun powerKeyReachesATvListeningInStandby() {
+        val tv = FakeTv()
+        val r = remote(tv)
+        assertTrue(r.powerKeyFromStandby())
+        assertEquals(listOf("KEY_POWER"), tv.allKeys())
+        r.close()
+        val dead = FakeTv().apply { failConnect = "Host is down" }
+        val r2 = remote(dead)
+        val t0 = System.nanoTime()
+        assertFalse(r2.powerKeyFromStandby())
+        assertTrue((System.nanoTime() - t0) / 1_000_000 < 1500)
+        r2.close()
     }
 
     @Test fun closedRemoteRefusesWork() {

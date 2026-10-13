@@ -1,6 +1,8 @@
 package com.rickle8.mvswitch.remote
 
 import android.content.Context
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.net.wifi.WifiManager
 import com.rickle8.mvswitch.data.TvType
 import okhttp3.OkHttpClient
@@ -39,11 +41,7 @@ object TvNetwork {
      * On and showing a picture. Newer Samsungs keep answering on the network in
      * standby, but say so in PowerState.
      */
-    fun samsungAwake(host: String): Boolean {
-        val d = samsungInfo(host) ?: return false
-        val power = d.optString("PowerState")
-        return power.isBlank() || power.equals("on", ignoreCase = true)
-    }
+    fun samsungAwake(host: String): Boolean = samsungInfo(host)?.let { isOn(it) } ?: false
 
     private fun rokuName(host: String): String? {
         val xml = get("http://$host:8060/query/device-info") ?: return null
@@ -146,12 +144,33 @@ object TvNetwork {
         }
     }
 
+    /** On (not standby) according to Samsung's info endpoint. */
+    fun isOn(device: JSONObject): Boolean {
+        val power = device.optString("PowerState")
+        return power.isBlank() || power.equals("on", ignoreCase = true)
+    }
+
+    /** Sends from the Wi-Fi (or Ethernet) network even if the phone's default network is mobile data. */
+    private fun bindToLocalNetwork(context: Context, socket: DatagramSocket) {
+        runCatching {
+            val cm = context.getSystemService(ConnectivityManager::class.java) ?: return
+            @Suppress("DEPRECATION")
+            val net = cm.allNetworks.firstOrNull { n ->
+                cm.getNetworkCapabilities(n)?.let {
+                    it.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) || it.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET)
+                } == true
+            } ?: return
+            net.bindSocket(socket)
+        }
+    }
+
     /**
-     * Wake-on-LAN magic packet. Needs "Power On with Mobile" (or similar) on the TV.
-     * Sent to every broadcast address the phone knows plus the TV itself, since
-     * some routers drop one kind or the other.
+     * Wake-on-LAN magic packet. Needs "Power On with Mobile" on the TV.
+     * Sent a few times to every broadcast address the phone knows, the TV's
+     * subnet, and the TV itself, since routers and mesh Wi-Fi drop one kind
+     * or another and sleeping Wi-Fi often misses the first packets.
      */
-    fun wake(mac: String, host: String? = null) {
+    fun wake(context: Context?, mac: String, host: String? = null) {
         val hex = mac.replace(":", "").replace("-", "").trim()
         if (hex.length != 12 || hex.any { it.digitToIntOrNull(16) == null }) return
         val macBytes = ByteArray(6) { hex.substring(it * 2, it * 2 + 2).toInt(16).toByte() }
@@ -164,11 +183,19 @@ object TvNetwork {
             NetworkInterface.getNetworkInterfaces().toList().filter { it.isUp && !it.isLoopback }
                 .flatMap { it.interfaceAddresses }.mapNotNull { it.broadcast }.forEach { targets += it }
         }
-        host?.takeIf { it.isNotBlank() }?.let { h -> runCatching { targets += InetAddress.getByName(h.trim()) } }
+        host?.trim()?.takeIf { it.isNotBlank() }?.let { h ->
+            runCatching { targets += InetAddress.getByName(h) }
+            val parts = h.split('.')
+            if (parts.size == 4) runCatching { targets += InetAddress.getByName("${parts[0]}.${parts[1]}.${parts[2]}.255") }
+        }
         DatagramSocket().use { s ->
             s.broadcast = true
-            for (addr in targets) for (port in listOf(9, 7)) repeat(3) {
-                runCatching { s.send(DatagramPacket(packet, packet.size, addr, port)) }
+            context?.let { bindToLocalNetwork(it, s) }
+            repeat(3) {
+                for (addr in targets) for (port in listOf(9, 7)) {
+                    runCatching { s.send(DatagramPacket(packet, packet.size, addr, port)) }
+                }
+                Thread.sleep(120)
             }
         }
     }
