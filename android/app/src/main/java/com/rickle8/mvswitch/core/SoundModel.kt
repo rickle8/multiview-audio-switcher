@@ -32,6 +32,8 @@ class SoundModel(val dims: Int = Features.SIZE, private val maxPerLabel: Int = 6
     private var mean = DoubleArray(dims)
     private var std = DoubleArray(dims) { 1.0 }
     private var newSinceTrain = 0
+    @Volatile private var training = false
+    private var generation = 0
 
     val gameSeconds get() = game.size
     val adSeconds get() = ad.size
@@ -48,15 +50,17 @@ class SoundModel(val dims: Int = Features.SIZE, private val maxPerLabel: Int = 6
 
     @Synchronized
     fun clear() {
-        game.clear(); ad.clear(); w = null; newSinceTrain = 0
+        game.clear(); ad.clear(); w = null; newSinceTrain = 0; generation++
     }
 
-    private fun train() {
-        newSinceTrain = 0
-        val rows = game.map { it to 0.0 } + ad.map { it to 1.0 }
+    private class Fit(val w: DoubleArray, val b: Double, val mean: DoubleArray, val std: DoubleArray)
+
+    /** Snapshot taken under the lock; the math itself can run on any thread. */
+    private fun fit(gameRows: List<FloatArray>, adRows: List<FloatArray>): Fit {
+        val rows = gameRows.map { it to 0.0 } + adRows.map { it to 1.0 }
         val n = rows.size
-        val wg = 0.5 / game.size
-        val wa = 0.5 / ad.size
+        val wg = 0.5 / gameRows.size
+        val wa = 0.5 / adRows.size
         val m = DoubleArray(dims)
         for ((x, _) in rows) for (d in 0 until dims) m[d] += x[d] / n.toDouble()
         val s = DoubleArray(dims)
@@ -83,14 +87,36 @@ class SoundModel(val dims: Int = Features.SIZE, private val maxPerLabel: Int = 6
             for (d in 0 until dims) weights[d] -= LR * (grad[d] + LAMBDA * weights[d])
             bias -= LR * gb
         }
-        mean = m; std = s; w = weights; b = bias
+        return Fit(weights, bias, m, s)
+    }
+
+    private fun apply(f: Fit) {
+        mean = f.mean; std = f.std; w = f.w; b = f.b
     }
 
     /** Probability this second is a commercial, or null if not trained yet. */
     @Synchronized
     fun adProbability(x: DoubleArray): Double? {
         if (!ready || x.size != dims) return null
-        if (w == null || newSinceTrain >= 10) train()
+        if (w == null) {
+            newSinceTrain = 0
+            apply(fit(game.toList(), ad.toList())) // first time: wait for it
+        } else if (newSinceTrain >= 10 && !training) {
+            // Retrain in the background and keep using the current weights meanwhile.
+            newSinceTrain = 0
+            training = true
+            val g = game.toList()
+            val a = ad.toList()
+            val gen = generation
+            Thread {
+                try {
+                    val f = fit(g, a)
+                    synchronized(this) { if (gen == generation) apply(f) } // skip if "forget" was tapped
+                } finally {
+                    training = false
+                }
+            }.apply { isDaemon = true; priority = Thread.MIN_PRIORITY }.start()
+        }
         val weights = w ?: return null
         var a = b
         for (d in 0 until dims) a += weights[d] * (x[d] - mean[d]) / std[d]

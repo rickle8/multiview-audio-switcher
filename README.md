@@ -27,8 +27,12 @@ Tap a box on the Live tab to move the audio there yourself, or lock it so nothin
 
 ### How it decides
 
-- **Mic:** Google's YAMNet sound classifier (runs on the phone, offline) tells crowd/play-by-play apart from music and ad voiceover.
-- **Live data:** ESPN scoreboard data spots touchdowns, field goals, the 2-minute warning, end of quarters, injuries and halftime, and switches *before* the ad starts.
+- **Mic:** Google's YAMNet sound classifier (runs on the phone, offline) scores every second across 521 sound types. Combined with the sound's spectral shape and voice timbre, that's about 600 numbers per second for a classifier that learns your TV.
+- **Repeat ads:** commercials you mark (and ones it's very sure about) are fingerprinted Shazam-style, so the next time one airs it's recognized in a few seconds.
+- **Announcer voices:** it learns the announcers' voices during play; a different voice talking counts toward "commercial."
+- **Sudden changes:** a brief dip in sound followed by something that sounds different makes it react in about 5 seconds instead of 8+.
+- **Break timing:** right after a score, timeout, turnover or quarter end, a break is likely; right after a break ended, another is unlikely. It adjusts how sure it needs to be.
+- **Live data:** ESPN play-by-play for the game you're hearing is checked every 5 seconds, with each play's real time. It spots touchdowns, field goals, official timeouts, the 2-minute warning, end of quarters, injuries and halftime, and switches *before* the ad starts. Stretches between plays teach it what the game sounds like.
 - **Best game:** every live game gets a rating from closeness, time left, red zone, overtime, your pick, and your star. Commercial on your game means it goes to the highest rated live game, and it will also leave a blowout for a much better game mid-play.
 - **Never loses track:** before each switch it presses up/left to reset the highlight to the top-left box.
 

@@ -48,7 +48,7 @@ class Fingerprinter {
         }
         if (frames.isEmpty()) return
         if (nextPeakFrame < frames.first().first) nextPeakFrame = frames.first().first
-        if (nextAnchor < nextPeakFrame) nextAnchor = nextPeakFrame
+        if (nextAnchor < frames.first().first) nextAnchor = frames.first().first
         // Peaks need PT frames of look-ahead.
         while (nextPeakFrame + FpParams.PT <= latestFrame) {
             peaks[nextPeakFrame] = findPeaks(nextPeakFrame)
