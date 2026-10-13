@@ -2,7 +2,8 @@ name: Android app
 
 on:
   push:
-    branches: [main]
+    # Every branch builds and tests; only main publishes a release.
+    branches: ["**"]
     paths: ["android/**", ".github/workflows/android.yml"]
   workflow_dispatch:
 
