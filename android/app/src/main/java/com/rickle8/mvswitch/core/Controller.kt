@@ -8,7 +8,7 @@ package com.rickle8.mvswitch.core
  */
 
 const val DEFAULT_PROACTIVE =
-    "touchdown|field goal|two.minute warning|" +
+    "touchdown|field goal|two.minute warning|official timeout|" +
         "end of (the )?(1st|first|3rd|third) quarter|end of (the )?quarter|" +
         "end of (the )?half|injur"
 val PROACTIVE_STATUSES = setOf("STATUS_HALFTIME", "STATUS_END_PERIOD")
@@ -36,9 +36,13 @@ class Controller(
     var lastSwitch = -1e9
     val breakUntil = mutableMapOf<Int, Double>()
     private val breakStarted = mutableMapOf<Int, Double>()
+    private val lastBreakEnd = mutableMapOf<Int, Double>()
+    private val awayForBreak = mutableSetOf<Int>()
+    private val lastHeard = mutableMapOf<Int, Heard>()
 
     private fun hasData() = feed != null && feed.info.isNotEmpty()
-    private fun feedStatus(): Map<Int, GameStatus> = feed?.poll() ?: emptyMap()
+    /** Cached live data; the engine polls the feed on its own loop. */
+    private fun feedStatus(): Map<Int, GameStatus> = feed?.status?.toMap() ?: emptyMap()
     private fun info(box: Int): GameInfo? = feed?.info?.get(box)
 
     fun score(box: Int): Double = excitement(info(box), games[box])
@@ -80,14 +84,31 @@ class Controller(
                 return gi.statusName.removePrefix("STATUS_").replace('_', ' ').lowercase()
             }
         }
-        val (text, seen) = feed.latestPlay(box) ?: return null
-        if (handledPlay[box] == text) return null
-        handledPlay[box] = text
-        if (now - seen > proactiveMaxAge) return null
-        return if (proactiveRe.containsMatchIn(text)) text else null
+        val p = feed.plays(box).lastOrNull() ?: return null
+        if (handledPlay[box] == p.text) return null
+        handledPlay[box] = p.text
+        if (now - p.seen > proactiveMaxAge || now - p.t > 240) return null
+        return if (proactiveRe.containsMatchIn(p.text)) p.text else null
+    }
+
+    /**
+     * How likely a break is on this game right now, from play-by-play timing:
+     * right after a score/timeout/turnover/quarter end it's likely; right after
+     * a break ended with nothing since, it's unlikely.
+     */
+    fun bias(box: Int?, now: Double): Bias {
+        if (box == null || feed == null) return Bias.NORMAL
+        val end = lastBreakEnd[box] ?: -1e9
+        val likely = feed.plays(box).lastOrNull {
+            LIKELY_BREAK.containsMatchIn(it.text) && it.seen > end && now - it.seen < 180 && now - it.t < 300
+        }
+        if (likely != null) return Bias.LIKELY
+        if (now - end < 240) return Bias.UNLIKELY
+        return Bias.NORMAL
     }
 
     private fun goToBreak(cur: Int, now: Double, status: Map<Int, GameStatus>, why: String): Boolean {
+        awayForBreak += cur
         if ((breakUntil[cur] ?: 0.0) <= now) breakStarted[cur] = now
         breakUntil[cur] = now + assumedBreakSecs
         val targets = ranked(now, status, exclude = cur)
@@ -111,17 +132,23 @@ class Controller(
     }
 
     /** Returns true if it switched (caller should reset the audio window). */
-    fun step(heard: Heard): Boolean {
+    fun step(heard: Heard, strongAd: Boolean = false): Boolean {
         val now = clock()
+        val cur = nav.current ?: return false
+        if (heard == Heard.GAME) {
+            if (lastHeard[cur] == Heard.AD || cur in awayForBreak) lastBreakEnd[cur] = now
+            awayForBreak.remove(cur)
+        }
+        if (heard != Heard.UNSURE) lastHeard[cur] = heard
         if (now - lastSwitch < settleSecs) return false
         val status = feedStatus()
-        val cur = nav.current ?: return false
 
         breakComing(cur, now)?.let {
             return goToBreak(cur, now, status, "Break coming on box $cur (${it.take(50)})")
         }
         when (heard) {
             Heard.AD -> {
+                if (strongAd) return goToBreak(cur, now, status, "Recognized a commercial on box $cur")
                 val play = recentPlay(cur, now)
                 if (play != null) {
                     if (guardLogged != play) {

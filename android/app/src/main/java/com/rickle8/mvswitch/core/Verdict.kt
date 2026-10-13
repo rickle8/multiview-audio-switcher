@@ -2,16 +2,8 @@ package com.rickle8.mvswitch.core
 
 enum class Heard { GAME, AD, UNSURE }
 
-/** One second of audio, already scored. `features` feeds the learned model. */
-class Frame(
-    val t: Double,
-    val game: Double,
-    val ad: Double,
-    val loudDb: Double,
-    val features: DoubleArray = DoubleArray(0),
-) {
-    fun withScores(game: Double, ad: Double) = Frame(t, game, ad, loudDb, features)
-}
+/** One second of audio, scored: how game-like and how ad-like it is. */
+class Frame(val t: Double, val game: Double, val ad: Double, val loudDb: Double)
 
 val GAME_CLASSES = setOf(
     "Crowd", "Cheering", "Applause", "Hubbub, speech noise, speech babble",
@@ -36,6 +28,29 @@ fun heuristicScores(scores: Map<String, Float>): Pair<Double, Double> {
     return (crowd + 0.35 * speech) to music
 }
 
+/**
+ * How eager to be about calling a commercial right now.
+ * windowSecs: how much recent audio to average; minAdSecs: how long it must
+ * sound like an ad; shift: added to both thresholds (negative = easier).
+ */
+data class Bias(
+    val windowSecs: Double,
+    val minAdSecs: Double,
+    val shift: Double = 0.0,
+    val why: String? = null,
+) {
+    companion object {
+        val NORMAL = Bias(10.0, 8.0)
+        /** Sound dipped and then changed character: a break may have just started. */
+        val TRANSITION = Bias(4.0, 3.0, 0.0, "sound changed suddenly")
+        /** A play that usually leads to a break just happened. */
+        val LIKELY = Bias(6.0, 4.0, -0.05, "break likely after that play")
+        /** The game just came back from a break with nothing since that causes another. */
+        val UNLIKELY = Bias(10.0, 14.0, 0.08, "just back from a break")
+        val TRANSITION_BUT_UNLIKELY = Bias(5.0, 5.0, 0.0, "sound changed suddenly")
+    }
+}
+
 /** Rolling window + hysteresis: game audio or commercial? */
 class Verdict(
     var windowSecs: Double = 10.0,
@@ -55,27 +70,40 @@ class Verdict(
         adSince = null
     }
 
-    /** Share of ad-like audio in the window, 0..1, or null if not enough signal. */
-    fun adFraction(): Double? {
-        val useful = frames.filter { it.loudDb > silenceDb }
-        if (useful.size < maxOf(3, frames.size / 2)) return null
+    /** Share of ad-like audio in the last [over] seconds, 0..1, or null if not enough signal. */
+    fun adFraction(over: Double = windowSecs): Double? {
+        val last = frames.lastOrNull() ?: return null
+        val recent = frames.filter { last.t - it.t < over }
+        val useful = recent.filter { it.loudDb > silenceDb }
+        if (useful.size < maxOf(3, recent.size / 2)) return null
         val game = useful.sumOf { it.game }
         val ad = useful.sumOf { it.ad }
         if (game + ad < 0.05 * useful.size) return null
         return ad / (game + ad)
     }
 
-    fun add(frame: Frame): Heard {
+    /** A replayed commercial was recognized: no need to wait. */
+    fun forceAd(t: Double) {
+        state = Heard.AD
+        adSince = t
+    }
+
+    fun add(frame: Frame, bias: Bias? = null): Heard {
+        val window = bias?.windowSecs ?: windowSecs
+        val minAd = bias?.minAdSecs ?: minAdSecs
+        val shift = bias?.shift ?: 0.0
         frames.addLast(frame)
-        while (frames.isNotEmpty() && frame.t - frames.first().t > windowSecs) frames.removeFirst()
-        if (frames.last().t - frames.first().t < windowSecs * 0.6) return state
-        val frac = adFraction() ?: return state
+        val keep = maxOf(windowSecs, window)
+        while (frames.isNotEmpty() && frame.t - frames.first().t > keep) frames.removeFirst()
+        val span = frames.last().t - frames.first().t
+        if (span < window * 0.6) return state
+        val frac = adFraction(window) ?: return state
         when {
-            frac >= adThreshold -> {
+            frac >= adThreshold + shift -> {
                 val since = adSince ?: frame.t.also { adSince = it }
-                if (frame.t - since >= minAdSecs) state = Heard.AD
+                if (frame.t - since >= minAd) state = Heard.AD
             }
-            frac <= gameThreshold -> {
+            frac <= gameThreshold + shift -> {
                 adSince = null
                 state = Heard.GAME
             }

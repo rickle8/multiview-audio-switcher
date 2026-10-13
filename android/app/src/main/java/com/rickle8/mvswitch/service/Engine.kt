@@ -11,10 +11,10 @@ import com.rickle8.mvswitch.core.Heard
 import com.rickle8.mvswitch.core.LAYOUTS
 import com.rickle8.mvswitch.core.Navigator
 import com.rickle8.mvswitch.core.Remote
-import com.rickle8.mvswitch.core.Frame
+import com.rickle8.mvswitch.core.DetectResult
+import com.rickle8.mvswitch.core.Detector
 import com.rickle8.mvswitch.core.ScheduledGame
-import com.rickle8.mvswitch.core.SoundModel
-import com.rickle8.mvswitch.core.Verdict
+import com.rickle8.mvswitch.core.summaryUrl
 import com.rickle8.mvswitch.core.excitement
 import com.rickle8.mvswitch.core.listGames
 import com.rickle8.mvswitch.core.scoreboardUrl
@@ -71,6 +71,9 @@ data class EngineState(
     val learnedAdSecs: Int = 0,
     val usingLearned: Boolean = false,
     val labeling: String? = null,
+    val adsRemembered: Int = 0,
+    val voiceLearned: Boolean = false,
+    val why: String? = null,
 )
 
 object Engine {
@@ -90,19 +93,14 @@ object Engine {
     private var nav: Navigator? = null
     private var ctrl: Controller? = null
     private var feed: GameFeed? = null
-    private var verdict: Verdict? = null
     private var mic: MicClassifier? = null
     private var remote: Remote? = null
     private var previewFeed: GameFeed? = null
     private val logLines = ArrayDeque<LogLine>()
     private val timeFmt = SimpleDateFormat("h:mm:ss", Locale.US)
 
-    private val model = SoundModel()
-    private val recentFrames = ArrayDeque<Frame>()
-    @Volatile private var labelUntil = 0.0
-    @Volatile private var labelAsAd = false
-    private var unsavedSamples = 0
-    private val modelFile by lazy { java.io.File(app.filesDir, "sound_model.json") }
+    private lateinit var detector: Detector
+    @Volatile private var lastResult: DetectResult? = null
 
     @Volatile var restarting = false
     @Volatile private var paused = false
@@ -121,7 +119,7 @@ object Engine {
         app = context.applicationContext
         store = SettingsStore(app)
         _settings.value = store.load()
-        runCatching { if (modelFile.exists()) model.load(modelFile.readText()) }
+        detector = Detector(app.filesDir).also { runCatching { it.load() } }
         scope.launch(Dispatchers.IO) { previewLoop() }
     }
 
@@ -151,7 +149,8 @@ object Engine {
                 assumedBreakSecs = new.breakSecs.toDouble()
                 proactive = new.proactive
             }
-            verdict?.apply { adThreshold = new.adThreshold; gameThreshold = new.gameThreshold }
+            detector.verdict.adThreshold = new.adThreshold
+            detector.verdict.gameThreshold = new.gameThreshold
         }
     }
 
@@ -163,13 +162,21 @@ object Engine {
         }
     }
 
+    private fun fetchSummary(league: String, eventId: String): JSONObject {
+        http.newCall(Request.Builder().url(summaryUrl(league, eventId)).build()).execute().use {
+            if (!it.isSuccessful) throw java.io.IOException("ESPN returned ${it.code}")
+            return JSONObject(it.body!!.string())
+        }
+    }
+
     suspend fun schedule(league: String): List<ScheduledGame> = withContext(Dispatchers.IO) {
         listGames(fetchBoard(league), league)
     }
 
     private fun boxCount(s: Settings) = LAYOUTS[s.layout]?.size ?: 4
 
-    private fun makeFeed(s: Settings) = GameFeed(s.slots, ::fetchBoard, ::now, pollSecs = 15.0)
+    private fun makeFeed(s: Settings) =
+        GameFeed(s.slots, ::fetchBoard, ::now, pollSecs = 15.0, fetchSummary = ::fetchSummary)
 
     private fun makeRemote(s: Settings): Remote = when (s.tvType) {
         TvType.SAMSUNG -> {
@@ -210,25 +217,29 @@ object Engine {
             } else info?.status == com.rickle8.mvswitch.core.GameStatus.BREAK
             BoxView(box, slot, info, excitement(info, slot), onBreak)
         }
-        val v = verdict
+        val r = lastResult
+        val micLive = mic != null
         _state.value = EngineState(
             running = running,
             starting = starting || (running && nav == null),
             paused = paused,
             lockedBox = lockedBox,
             currentBox = if (running) nav?.current else null,
-            heard = if (running && mic == null) Heard.GAME else v?.state ?: Heard.UNSURE,
-            adPct = v?.adFraction()?.let { (it * 100).toInt() },
-            topSounds = mic?.lastTop?.map { it.first }.orEmpty(),
-            micOn = mic != null,
+            heard = if (running && !micLive) Heard.GAME else if (running) r?.heard ?: Heard.UNSURE else Heard.UNSURE,
+            adPct = if (running && micLive) r?.adPct else null,
+            topSounds = if (running && micLive) r?.topSounds.orEmpty() else emptyList(),
+            micOn = micLive,
             error = error,
             boxes = boxes,
             log = synchronized(logLines) { logLines.toList() },
             testStatus = testStatus,
-            learnedGameSecs = model.gameSeconds,
-            learnedAdSecs = model.adSeconds,
-            usingLearned = model.ready,
-            labeling = if (now() < labelUntil) (if (labelAsAd) "commercial" else "game") else null,
+            learnedGameSecs = detector.model.gameSeconds,
+            learnedAdSecs = detector.model.adSeconds,
+            usingLearned = detector.model.ready,
+            labeling = detector.labelingNow(n),
+            adsRemembered = detector.prints.size,
+            voiceLearned = detector.voices.ready,
+            why = if (running && micLive) r?.why else null,
         )
     }
 
@@ -253,12 +264,13 @@ object Engine {
             try {
                 runLoop()
             } finally {
-                saveModel()
+                synchronized(detector) { detector.save() }
                 synchronized(lock) {
                     mic?.close(); mic = null
                     (remote as? SamsungRemote)?.close()
-                    remote = null; nav = null; ctrl = null; verdict = null; feed = null
+                    remote = null; nav = null; ctrl = null; feed = null
                 }
+                lastResult = null
                 publish()
             }
         }
@@ -278,7 +290,11 @@ object Engine {
             val f = makeFeed(s)
             synchronized(lock) {
                 remote = r; nav = n; feed = f
-                verdict = Verdict(adThreshold = s.adThreshold, gameThreshold = s.gameThreshold)
+                synchronized(detector) {
+                    detector.verdict.adThreshold = s.adThreshold
+                    detector.verdict.gameThreshold = s.gameThreshold
+                    detector.onSwitch()
+                }
                 ctrl = Controller(
                     n, (1..boxCount(s)).toList(), f, games = s.slots,
                     assumedBreakSecs = s.breakSecs.toDouble(), upgradeMargin = s.hopping.margin,
@@ -311,94 +327,72 @@ object Engine {
         }
         publish()
 
-        while (currentCoroutineContext().isActive) {
-            val m = mic
-            val frame = if (m != null) m.nextFrame(now()) else { delay(1000); null }
-            if (paused) {
-                verdict?.reset()
-                publish()
-                continue
+        // Live data on its own loop so a slow network never stalls the mic.
+        val feedJob = scope.launch(Dispatchers.IO) {
+            while (true) {
+                feed?.let { fd ->
+                    fd.focusBox = nav?.current
+                    runCatching { fd.poll() }
+                }
+                delay(1000)
             }
-            val v = verdict ?: break
-            val scored = frame?.let { learn(it) }
-            val heard = when {
-                m == null -> Heard.GAME
-                scored != null -> v.add(scored)
-                else -> v.state
-            }
-            synchronized(lock) {
-                val c = ctrl ?: return
-                if (lockedBox != null) {
-                    runCatching { feed?.poll() }
-                } else {
-                    try {
-                        if (c.step(heard)) {
-                            m?.drain()
-                            v.reset()
+        }
+        try {
+            while (currentCoroutineContext().isActive) {
+                val m = mic
+                val sec = if (m != null) m.nextSecond() else { delay(1000); null }
+                val n = now()
+                val cur = nav?.current
+                val c = ctrl ?: break
+                val result = if (sec != null) synchronized(detector) {
+                    cur?.let { box -> feed?.let { detector.observePlays(box, it.plays(box), n) } }
+                    detector.process(sec, n, cur, c.bias(cur, n), learning = !paused && lockedBox == null)
+                } else null
+                if (result != null) lastResult = result
+                if (paused) {
+                    publish()
+                    continue
+                }
+                val heard = when {
+                    m == null -> Heard.GAME
+                    result != null -> result.heard
+                    else -> lastResult?.heard ?: Heard.UNSURE
+                }
+                synchronized(lock) {
+                    if (lockedBox == null) {
+                        try {
+                            if (c.step(heard, strongAd = result?.strongAd == true)) {
+                                m?.drain()
+                                synchronized(detector) { detector.onSwitch() }
+                                lastResult = null
+                            }
+                            error = null
+                        } catch (e: Exception) {
+                            c.lastSwitch = now() // back off a few seconds before retrying
+                            if (error != e.message) log(e.message ?: "Error")
+                            error = e.message
                         }
-                        error = null
-                    } catch (e: Exception) {
-                        c.lastSwitch = now() // back off a few seconds before retrying
-                        if (error != e.message) log(e.message ?: "Error")
-                        error = e.message
                     }
                 }
+                publish()
             }
-            publish()
+        } finally {
+            feedJob.cancel()
         }
     }
 
     // ---------------------------------------------------------------- learning
-    /**
-     * Collects training samples and, once trained, swaps the fixed-rule scores
-     * for the learned model's verdict.
-     */
-    private fun learn(frame: Frame): Frame {
-        if (frame.features.isEmpty()) return frame
-        synchronized(recentFrames) {
-            recentFrames.addLast(frame)
-            while (recentFrames.size > 12) recentFrames.removeFirst()
-        }
-        val n = now()
-        val cur = nav?.current
-        when {
-            n < labelUntil -> addSample(frame, labelAsAd)
-            // Auto-label: ESPN just showed a normal play on the game we're hearing,
-            // and we've been on this game a while, so this is game audio.
-            cur != null && !paused && n - (ctrl?.lastSwitch ?: 0.0) > 15 &&
-                ctrl?.recentPlay(cur, n, within = 25.0) != null -> addSample(frame, false)
-        }
-        val p = model.adProbability(frame.features) ?: return frame
-        return frame.withScores(game = 1 - p, ad = p)
-    }
-
-    private fun addSample(frame: Frame, isAd: Boolean) {
-        model.add(frame.features, isAd)
-        if (++unsavedSamples >= 30) saveModel()
-    }
-
-    private fun saveModel() {
-        unsavedSamples = 0
-        val json = model.toJson()
-        scope.launch(Dispatchers.IO) { runCatching { modelFile.writeText(json) } }
-    }
-
-    /** "It's the game" / "It's a commercial": label the last 8 s and the next 12 s. */
+    /** "It's the game" / "It's an ad": label the last 8 s and the next 12 s. */
     fun label(isAd: Boolean) {
-        val past = synchronized(recentFrames) { recentFrames.toList().takeLast(8) }
-        past.forEach { model.add(it.features, isAd) }
-        labelAsAd = isAd
-        labelUntil = now() + 12
-        saveModel()
+        synchronized(detector) { detector.label(isAd, now()) }
         if (isAd) {
             log("Got it, commercial. Learning this sound.")
             scope.launch(Dispatchers.IO) {
                 synchronized(lock) {
                     try {
                         if (lockedBox == null && ctrl?.commercialNow() == true) {
-                            labelUntil = 0.0 // new game now: don't label its audio as an ad
                             mic?.drain()
-                            verdict?.reset()
+                            synchronized(detector) { detector.onSwitch() }
                         }
                     } catch (e: Exception) {
                         log(e.message ?: "TV error")
@@ -406,15 +400,13 @@ object Engine {
                 }
             }
         } else {
-            verdict?.reset()
             log("Got it, game audio. Learning this sound.")
         }
         publish()
     }
 
     fun resetLearning() {
-        model.clear()
-        saveModel()
+        synchronized(detector) { detector.forgetAll() }
         log("Forgot what it learned. Back to the built-in rules.")
     }
 
@@ -432,7 +424,7 @@ object Engine {
                     lockedBox = if (lock) box else null
                     nav?.goTo(box)
                     ctrl?.let { it.lastSwitch = now(); it.breakUntil.remove(box) }
-                    verdict?.reset()
+                    synchronized(detector) { detector.onSwitch() }
                 }
                 log(if (lock) "Locked on box $box" else "You switched to box $box")
             } catch (e: Exception) {

@@ -248,6 +248,10 @@ private fun HearingRow(state: EngineState) {
         Spacer(Modifier.width(12.dp))
         Column(Modifier.weight(1f)) {
             Text(label, color = color, fontWeight = FontWeight.SemiBold, fontSize = 16.sp)
+            if (state.micOn && !state.paused && state.why != null) {
+                Text(state.why, color = C.text, fontSize = 13.sp,
+                    maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
             if (state.micOn && state.topSounds.isNotEmpty()) {
                 Text(state.topSounds.joinToString(" · "), color = C.muted, fontSize = 12.sp,
                     maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -287,7 +291,9 @@ private fun LearnRow(state: EngineState) {
             Text("It's an ad", color = if (on) C.amber else C.muted)
         }
     }
-    val learned = "Learned ${fmtSecs(state.learnedGameSecs)} of game, ${fmtSecs(state.learnedAdSecs)} of ads."
+    val learned = "Learned ${fmtSecs(state.learnedGameSecs)} of game, ${fmtSecs(state.learnedAdSecs)} of ads" +
+        (if (state.adsRemembered > 0) ", remembers ${state.adsRemembered} ad${if (state.adsRemembered == 1) "" else "s"}" else "") +
+        (if (state.voiceLearned) ", knows the announcers." else ".")
     val status = when {
         !state.running -> "$learned These work once you tap Start switching."
         !state.micOn -> "Mic is off, so it can't learn sounds. \"It's an ad\" still skips to another game. " +
@@ -295,7 +301,7 @@ private fun LearnRow(state: EngineState) {
         state.labeling != null -> "Recording this as ${state.labeling}…"
         state.usingLearned -> "$learned Using what it learned."
         else -> "$learned Tap \"It's an ad\" a few times during commercials (it also skips the ad). " +
-            "Game sound is learned automatically from live plays."
+            "Game sound and the announcers' voices are learned automatically from live plays."
     }
     Text(status, color = C.muted, fontSize = 12.sp, modifier = Modifier.padding(top = 6.dp))
 }

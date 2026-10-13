@@ -149,10 +149,12 @@ fun SettingsScreen(state: EngineState, settings: Settings, update: UpdateState, 
                 }
                 Spacer(Modifier.height(12.dp))
                 Text("Learned sounds: ${state.learnedGameSecs}s game, ${state.learnedAdSecs}s ads" +
-                    if (state.usingLearned) " (in use)" else " (needs 20s of each)",
-                    color = C.muted, fontSize = 12.sp)
+                    (if (state.usingLearned) " (in use)" else " (needs 25s of each)") +
+                    "\nAds it can recognize on replay: ${state.adsRemembered}" +
+                    "\nAnnouncer voices: " + (if (state.voiceLearned) "learned" else "still listening"),
+                    color = C.muted, fontSize = 12.sp, lineHeight = 18.sp)
                 TextButton(onClick = { Engine.resetLearning() }) {
-                    Text("Forget learned sounds", color = C.red)
+                    Text("Forget everything it learned", color = C.red)
                 }
             }
             HorizontalDivider(Modifier.padding(vertical = 14.dp), color = C.line)

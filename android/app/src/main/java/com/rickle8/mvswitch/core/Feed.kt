@@ -136,26 +136,118 @@ fun listGames(board: JSONObject, league: String): List<ScheduledGame> {
 fun scoreboardUrl(league: String) =
     "https://site.api.espn.com/apis/site/v2/sports/$league/scoreboard"
 
+fun summaryUrl(league: String, eventId: String) =
+    "https://site.api.espn.com/apis/site/v2/sports/$league/summary?event=$eventId"
+
+/** Plays that usually lead to a TV break soon (used to bias the mic). */
+val LIKELY_BREAK = Regex(
+    "touchdown|field goal|extra point|two-point|safety|timeout|two.minute|" +
+        "end of (the )?(quarter|half|period|game|regulation)|end period|end of half|injur|" +
+        "challenge|review|kicks \\d+ yards|kickoff|intercept|fumble|turnover on downs|punts? ",
+    RegexOption.IGNORE_CASE,
+)
+
+/**
+ * One play. [t] = when it actually happened (from ESPN's wall clock when
+ * available), [seen] = when this app first got it. Both on the app's clock.
+ */
+data class Play(val text: String, val t: Double, val seen: Double, val seq: Long = -1)
+
+/** Plays from an ESPN game summary, oldest first: (sequence, text, wall clock ms). */
+fun parseSummaryPlays(summary: JSONObject): List<Triple<Long, String, Long?>> {
+    val raw = mutableListOf<JSONObject>()
+    val drives = summary.optJSONObject("drives")
+    if (drives != null) {
+        drives.optJSONArray("previous")?.let { prev ->
+            for (i in 0 until prev.length()) {
+                val ps = prev.optJSONObject(i)?.optJSONArray("plays") ?: continue
+                for (j in 0 until ps.length()) ps.optJSONObject(j)?.let { raw += it }
+            }
+        }
+        drives.optJSONObject("current")?.optJSONArray("plays")?.let { ps ->
+            for (j in 0 until ps.length()) ps.optJSONObject(j)?.let { raw += it }
+        }
+    }
+    if (raw.isEmpty()) summary.optJSONArray("plays")?.let { ps -> // basketball, hockey
+        for (j in 0 until ps.length()) ps.optJSONObject(j)?.let { raw += it }
+    }
+    val out = raw.mapNotNull { p ->
+        val seq = p.optString("sequenceNumber").toLongOrNull() ?: p.optString("id").toLongOrNull() ?: return@mapNotNull null
+        val type = p.optJSONObject("type")?.optString("text").orEmpty()
+        val text = p.optString("text")
+        val combined = when {
+            type.isBlank() -> text
+            text.isBlank() -> type
+            text.contains(type, ignoreCase = true) -> text
+            else -> "$type: $text"
+        }
+        val wall = p.optString("wallclock").takeIf { it.isNotBlank() }?.let {
+            runCatching { java.time.Instant.parse(it).toEpochMilli() }.getOrNull()
+        }
+        Triple(seq, combined, wall)
+    }
+    return out.distinctBy { it.first }.sortedBy { it.first }
+}
+
 class GameFeed(
     slots: Map<Int, GameSlot>,
     private val fetch: (String) -> JSONObject,
     private val clock: () -> Double,
     private val pollSecs: Double = 15.0,
     private val breakPlaySecs: Double = 150.0,
+    private val fetchSummary: ((String, String) -> JSONObject)? = null,
+    private val wallNow: () -> Long = { System.currentTimeMillis() },
+    private val summarySecs: Double = 5.0,
 ) {
     private val slots = slots.filterValues { it.team.isNotBlank() }
     private var lastPoll = -1e9
-    val status = mutableMapOf<Int, GameStatus>().apply { slots.keys.forEach { put(it, GameStatus.UNKNOWN) } }
-    val info = mutableMapOf<Int, GameInfo>()
-    private val plays = mutableMapOf<Int, Pair<String, Double>>() // box -> (text, first seen)
+    val status: MutableMap<Int, GameStatus> =
+        java.util.concurrent.ConcurrentHashMap<Int, GameStatus>().apply { slots.keys.forEach { put(it, GameStatus.UNKNOWN) } }
+    val info: MutableMap<Int, GameInfo> = java.util.concurrent.ConcurrentHashMap()
+    private val rawStatus = HashMap<Int, GameStatus>()
+    private val eventIds = HashMap<Int, String>()
+    private val log = HashMap<Int, ArrayDeque<Play>>()
+    private val lastSeq = HashMap<Int, Long>()
+    private val lastSummary = HashMap<Int, Double>()
+    private val summaryOk = HashMap<Int, Double>()
+
+    /** The game whose play-by-play is polled every few seconds (the one you're hearing). */
+    @Volatile var focusBox: Int? = null
     var lastError: String? = null
         private set
+
+    /** Record a play. Public for tests. */
+    @Synchronized
+    fun recordPlay(box: Int, text: String, t: Double, seen: Double = t, seq: Long = -1) {
+        val q = log.getOrPut(box) { ArrayDeque() }
+        q.addLast(Play(text, t, seen, seq))
+        while (q.size > 40) q.removeFirst()
+    }
+
+    private fun applyPlayStatus(box: Int, now: Double) {
+        val raw = rawStatus[box] ?: return
+        val latest = log[box]?.lastOrNull()
+        // Plays with a real wall-clock time are aged from when they happened; others from when seen.
+        val age = latest?.let { if (it.seq >= 0) now - it.t else now - it.seen } ?: Double.MAX_VALUE
+        val s = if (raw == GameStatus.LIVE && latest != null && BREAK_PLAY.containsMatchIn(latest.text) &&
+            age < breakPlaySecs
+        ) GameStatus.BREAK else raw
+        status[box] = s
+        info[box]?.status = s
+    }
 
     @Synchronized
     fun poll(force: Boolean = false): Map<Int, GameStatus> {
         val now = clock()
-        if (!force && now - lastPoll < pollSecs) return status
-        lastPoll = now
+        if (force || now - lastPoll >= pollSecs) {
+            lastPoll = now
+            pollScoreboard(now)
+        }
+        pollSummary(now)
+        return status
+    }
+
+    private fun pollScoreboard(now: Double) {
         val boards = mutableMapOf<String, JSONObject>()
         lastError = null
         for ((box, slot) in slots) {
@@ -170,32 +262,62 @@ class GameFeed(
                 status[box] = GameStatus.UNKNOWN
                 continue
             }
+            event.optString("id").takeIf { it.isNotBlank() }?.let { eventIds[box] = it }
             val gi = parseEvent(event, slot.league)
-            val play = gi.lastPlay
-            if (play != null) {
-                val prev = plays[box]
-                if (prev == null) {
-                    plays[box] = play to (now - breakPlaySecs) // already on the board: old news
-                } else if (prev.first != play) {
-                    plays[box] = play to now
-                }
-                val (text, seen) = plays.getValue(box)
-                if (gi.status == GameStatus.LIVE && BREAK_PLAY.containsMatchIn(text) &&
-                    now - seen < breakPlaySecs
-                ) gi.status = GameStatus.BREAK
-            }
+            rawStatus[box] = gi.status
             info[box] = gi
-            status[box] = gi.status
+            // The scoreboard only has the latest play. Use it when play-by-play isn't flowing.
+            val play = gi.lastPlay
+            val pbpFresh = (summaryOk[box] ?: -1e9) > now - 30
+            if (play != null && !pbpFresh) {
+                val prev = log[box]?.lastOrNull()
+                if (prev == null) recordPlay(box, play, now - breakPlaySecs) // already on the board: old news
+                else if (prev.text != play && !prev.text.endsWith(play)) recordPlay(box, play, now)
+            }
+            applyPlayStatus(box, now)
         }
-        return status
+    }
+
+    private fun pollSummary(now: Double) {
+        val box = focusBox ?: return
+        val fs = fetchSummary ?: return
+        val id = eventIds[box] ?: return
+        val raw = rawStatus[box]
+        if (raw != GameStatus.LIVE && raw != GameStatus.BREAK) return
+        if (now - (lastSummary[box] ?: -1e9) < summarySecs) return
+        lastSummary[box] = now
+        val plays = try {
+            parseSummaryPlays(fs(slots.getValue(box).league, id))
+        } catch (e: Exception) {
+            lastError = e.message ?: e.javaClass.simpleName
+            return
+        }
+        if (plays.isEmpty()) return
+        summaryOk[box] = now
+        val wall = wallNow()
+        val first = !lastSeq.containsKey(box)
+        if (first) log[box]?.clear()
+        val after = lastSeq[box] ?: Long.MIN_VALUE
+        val fresh = plays.filter { it.first > after }
+        for ((seq, text, wallMs) in (if (first) fresh.takeLast(40) else fresh)) {
+            val t = if (wallMs != null) now - maxOf(0.0, (wall - wallMs) / 1000.0)
+            else if (first) now - breakPlaySecs else now
+            // seq >= 0 marks plays with a real wall-clock time (safe for learning).
+            recordPlay(box, text, t, if (first) minOf(t, now - breakPlaySecs) else now, if (wallMs != null) seq else -1)
+        }
+        lastSeq[box] = plays.last().first
+        applyPlayStatus(box, now)
     }
 
     @Synchronized
-    fun latestPlay(box: Int): Pair<String, Double>? = plays[box]
+    fun latestPlay(box: Int): Pair<String, Double>? = log[box]?.lastOrNull()?.let { it.text to it.seen }
+
+    @Synchronized
+    fun plays(box: Int): List<Play> = log[box]?.toList().orEmpty()
 
     @Synchronized
     fun playChangedSince(box: Int, t: Double): Boolean {
-        val p = plays[box] ?: return false
-        return p.second > t && !BREAK_PLAY.containsMatchIn(p.first)
+        val p = log[box]?.lastOrNull() ?: return false
+        return p.seen > t && !BREAK_PLAY.containsMatchIn(p.text)
     }
 }

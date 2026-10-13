@@ -146,10 +146,7 @@ class LogicTest {
     }
 
     private fun injectPlay(feed: GameFeed, box: Int, p: Pair<String, Double>) {
-        val field = GameFeed::class.java.getDeclaredField("plays")
-        field.isAccessible = true
-        @Suppress("UNCHECKED_CAST")
-        (field.get(feed) as MutableMap<Int, Pair<String, Double>>)[box] = p
+        feed.recordPlay(box, p.first, p.second, p.second)
     }
 
     @Test fun commercialGoesToMostExcitingGame() {
@@ -248,17 +245,20 @@ class LogicTest {
     @Test fun learnedModelSeparatesYourTvsGameFromAds() {
         val m = SoundModel()
         val rnd = java.util.Random(1)
-        fun sample(music: Float, speech: Float, crowd: Float) = features(mapOf(
-            "Music" to (music + rnd.nextFloat() * 0.1f), "Speech" to (speech + rnd.nextFloat() * 0.1f),
-            "Crowd" to (crowd + rnd.nextFloat() * 0.05f)), -25.0 + rnd.nextGaussian() * 2)
-        assertNull(m.adProbability(sample(0.1f, 0.7f, 0.05f)))
-        repeat(40) { m.add(sample(0.3f, 0.6f, 0.02f), isAd = false) }   // this TV's game has some music
-        repeat(40) { m.add(sample(0.7f, 0.3f, 0.0f), isAd = true) }
+        fun sample(ad: Boolean) = DoubleArray(Features.SIZE) { i ->
+            rnd.nextGaussian() + if (i < 40) (if (ad) 0.7 else -0.7) else 0.0
+        }
+        assertNull(m.adProbability(sample(false)))
+        repeat(60) { m.add(sample(false), isAd = false) }
+        repeat(60) { m.add(sample(true), isAd = true) }
         assertTrue(m.ready)
-        assertTrue(m.adProbability(sample(0.3f, 0.6f, 0.02f))!! < 0.3)
-        assertTrue(m.adProbability(sample(0.7f, 0.3f, 0.0f))!! > 0.7)
-        val copy = SoundModel().apply { load(m.toJson()) }
-        assertEquals(40, copy.adSeconds)
+        var right = 0
+        repeat(100) { if (m.adProbability(sample(false))!! < 0.5) right++ }
+        repeat(100) { if (m.adProbability(sample(true))!! > 0.5) right++ }
+        assertTrue("accuracy $right/200", right >= 170)
+        val bytes = java.io.ByteArrayOutputStream().also { m.save(it) }.toByteArray()
+        val copy = SoundModel().apply { load(bytes.inputStream()) }
+        assertEquals(60, copy.adSeconds)
     }
 
     @Test fun micAdIgnoredRightAfterAPlay() {
