@@ -44,6 +44,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.asCoroutineDispatcher
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -288,10 +291,10 @@ object Engine {
     /** Today's games in every sport whose name or teams match [query] (live first). */
     suspend fun searchGames(query: String): List<ScheduledGame> = withContext(Dispatchers.IO) {
         val q = query.trim().lowercase()
-        val all = kotlinx.coroutines.coroutineScope {
+        val all: List<ScheduledGame> = coroutineScope {
             com.rickle8.mvswitch.data.LEAGUES.map { (league, _) ->
-                kotlinx.coroutines.async { runCatching { schedule(league) }.getOrDefault(emptyList()) }
-            }.map { it.await() }.flatten()
+                async { runCatching { schedule(league) }.getOrDefault(emptyList()) }
+            }.awaitAll().flatten()
         }
         all.filter { g ->
             listOf(g.shortName, g.away, g.home, g.name).any { it.lowercase().contains(q) }
