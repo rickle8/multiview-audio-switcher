@@ -32,14 +32,30 @@ import com.rickle8.mvswitch.service.Updater
 class MainActivity : ComponentActivity() {
     private val permissions = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions(),
-    ) { SwitcherService.start(this) }
+    ) {
+        SwitcherService.start(this)
+        askBatteryOnce()
+    }
+
+    /** Long Sundays: ask once to be left alone by battery optimization so Android never kills it. */
+    private fun askBatteryOnce() {
+        val pm = getSystemService(android.os.PowerManager::class.java)
+        if (pm.isIgnoringBatteryOptimizations(packageName) || Engine.settings.value.askedBattery) return
+        Engine.update { it.copy(askedBattery = true) }
+        runCatching {
+            startActivity(android.content.Intent(
+                android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+                android.net.Uri.parse("package:$packageName"),
+            ))
+        }
+    }
 
     private fun startSwitching() {
         val wanted = buildList {
             if (Engine.settings.value.useMic) add(Manifest.permission.RECORD_AUDIO)
             if (Build.VERSION.SDK_INT >= 33) add(Manifest.permission.POST_NOTIFICATIONS)
         }
-        if (wanted.isEmpty()) SwitcherService.start(this) else permissions.launch(wanted.toTypedArray())
+        if (wanted.isEmpty()) { SwitcherService.start(this); askBatteryOnce() } else permissions.launch(wanted.toTypedArray())
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {

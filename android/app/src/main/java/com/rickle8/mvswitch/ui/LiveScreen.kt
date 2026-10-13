@@ -117,9 +117,19 @@ fun LiveScreen(
         ControlPanel(state, settings, onStart, onStop, onGoToGames)
 
         SectionLabel("Multiview")
-        MultiviewGrid(settings.layout, state.boxes, state.currentBox, state.lockedBox) { tapped = it }
+        MultiviewGrid(settings.layout, state.boxes, state.currentBox, state.lockedBox) {
+            if (state.running) tapped = it else onGoToGames()
+        }
+        state.boxes.filter { it.noGame }.forEach {
+            Text("Box ${it.box}: ${it.slot?.team} isn't playing today. Tap it to pick this week's game.",
+                color = C.amber, fontSize = 13.sp, modifier = Modifier.padding(top = 8.dp))
+        }
+        state.feedError?.let {
+            Text("Live scores unavailable right now ($it). Switching still works from the mic.",
+                color = C.muted, fontSize = 12.sp, modifier = Modifier.padding(top = 8.dp))
+        }
         if (!state.running) {
-            Text("Scores update every few seconds. Tap a game once running to move the audio there.",
+            Text("Scores update every few seconds. Once running, tap a game to move the audio there.",
                 color = C.muted, fontSize = 13.sp, modifier = Modifier.padding(top = 8.dp))
         }
 
@@ -364,6 +374,7 @@ private fun BoxCard(v: BoxView, hasAudio: Boolean, locked: Boolean, modifier: Mo
     val info = v.info
     val (chip, chipColor) = when {
         v.slot == null -> "EMPTY" to C.muted
+        v.noGame -> "NO GAME" to C.amber
         info == null -> "—" to C.muted
         info.status == GameStatus.FINAL -> "FINAL" to C.muted
         info.status == GameStatus.PREGAME -> "LATER" to C.blue

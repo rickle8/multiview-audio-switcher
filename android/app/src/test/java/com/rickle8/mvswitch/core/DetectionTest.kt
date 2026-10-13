@@ -209,8 +209,12 @@ class DetectionTest {
     // ------------------------------------------------------------ detector end to end
     private val names = Array(Features.N_YAMNET) { "class$it" }
 
-    private fun second(audio: FloatArray, s: Int) =
-        MicSecond(audio.copyOfRange(s * Dsp.SR, (s + 1) * Dsp.SR), FloatArray(Features.N_YAMNET) { 0.01f }, names)
+    private val namesWithSpeech = Array(Features.N_YAMNET) { if (it == 0) "Speech" else "class$it" }
+
+    private fun second(audio: FloatArray, s: Int, speech: Float = 0f) =
+        MicSecond(audio.copyOfRange(s * Dsp.SR, (s + 1) * Dsp.SR),
+            FloatArray(Features.N_YAMNET) { if (it == 0) speech else 0.01f },
+            if (speech > 0) namesWithSpeech else names)
 
     @Test fun learnsGameAudioBetweenPlays() {
         val d = Detector()
@@ -218,8 +222,8 @@ class DetectionTest {
         for (s in 0 until 125) d.process(second(audio, s), s.toDouble(), 1, Bias.NORMAL, learning = true)
         val plays = listOf(10.0, 40.0, 70.0, 100.0).mapIndexed { i, t -> Play("Rush: up the middle", t, t + 20, i.toLong()) }
         d.observePlays(1, plays, 124.0)
-        // Stretch 10..100 had plays < 50 s apart; usable part is 70..110.
-        assertTrue("learned ${d.model.gameSeconds}", d.model.gameSeconds in 35..45)
+        // Stretch 10..100 had plays < 50 s apart; allowing for TV delay the usable part is 100..110.
+        assertTrue("learned ${d.model.gameSeconds}", d.model.gameSeconds in 9..13)
     }
 
     @Test fun tappedAdIsRecognizedWhenItAirsAgain() {
@@ -249,7 +253,9 @@ class DetectionTest {
         val audio = throughRoom(jingle(5, 90), 4)
         var t = 0.0
         for (s in 0 until 10) d.process(second(audio, s), t++, 1, Bias.NORMAL, true)
-        val hit = d.process(second(audio, 10), t++, 1, Bias.NORMAL, true, cue = "we'll be right back")
+        // Phrase "heard" but nobody is talking (music/noise): ignored.
+        assertFalse(d.process(second(audio, 10), t, 1, Bias.NORMAL, true, cue = "stay with us").strongAd)
+        val hit = d.process(second(audio, 10, speech = 0.7f), t++, 1, Bias.NORMAL, true, cue = "we'll be right back")
         assertTrue(hit.strongAd)
         assertEquals(Heard.AD, hit.heard)
         assertEquals("we'll be right back", hit.cue)
@@ -257,7 +263,7 @@ class DetectionTest {
         d.onSwitch()
         // Same phrase again 20 s later (e.g. a replay of the call): ignored.
         for (s in 11 until 30) d.process(second(audio, s), t++, 1, Bias.NORMAL, true)
-        val again = d.process(second(audio, 30), t++, 1, Bias.NORMAL, true, cue = "stay with us")
+        val again = d.process(second(audio, 30, speech = 0.7f), t++, 1, Bias.NORMAL, true, cue = "stay with us")
         assertFalse(again.strongAd)
         // Phrases don't teach the classifier that announcer audio is an ad.
         assertEquals(0, d.model.adSeconds)
@@ -273,5 +279,17 @@ class DetectionTest {
         assertTrue(c.step(Heard.AD, strongAd = true, strongWhy = "Announcer said \u201cstay with us\u201d"))
         assertEquals(2, nav.current) // ...but the announcer's call still wins
         assertTrue(logs.last().startsWith("Announcer said"))
+    }
+
+    @Test fun autoSavedPrintNeedsConfirmation() {
+        val db = AdPrints()
+        val x = jingle(900, 20)
+        val (fp, last) = prints(x)
+        val id = db.add(fp.range(0, last), auto = true, now = 0)!!
+        assertFalse(db.trusted(id))
+        db.confirm(id)
+        assertTrue(db.trusted(id))
+        val bytes = java.io.ByteArrayOutputStream().also { db.save(it) }.toByteArray()
+        assertTrue(AdPrints().apply { load(bytes.inputStream()) }.trusted(id))
     }
 }

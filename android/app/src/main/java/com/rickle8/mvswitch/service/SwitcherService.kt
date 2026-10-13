@@ -33,6 +33,7 @@ class SwitcherService : Service() {
         private const val ACTION_STOP = "stop"
         private const val ACTION_PAUSE = "pause"
         private const val ACTION_RESUME = "resume"
+        private const val ACTION_AD = "ad"
 
         fun start(context: Context) {
             ContextCompat.startForegroundService(context, Intent(context, SwitcherService::class.java))
@@ -97,6 +98,7 @@ class SwitcherService : Service() {
             }
             ACTION_PAUSE -> { Engine.setPaused(true); return START_NOT_STICKY }
             ACTION_RESUME -> { Engine.setPaused(false); return START_NOT_STICKY }
+            ACTION_AD -> { Engine.label(isAd = true); return START_NOT_STICKY }
         }
         val useMic = Engine.micAllowed()
         val type = if (useMic) ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
@@ -141,6 +143,7 @@ class SwitcherService : Service() {
             .setOngoing(true)
             .setOnlyAlertOnce(true)
             .setContentIntent(open)
+            .addAction(0, "It's an ad", action(ACTION_AD, 3))
             .addAction(0, if (st.paused) "Resume" else "Pause",
                 action(if (st.paused) ACTION_RESUME else ACTION_PAUSE, 1))
             .addAction(0, "Stop", action(ACTION_STOP, 2))
@@ -151,7 +154,7 @@ class SwitcherService : Service() {
         if (wakeLock == null) {
             wakeLock = getSystemService(PowerManager::class.java)
                 .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "mvswitch:run")
-                .apply { acquire(6 * 60 * 60 * 1000L) } // max 6 hours
+                .apply { acquire(16 * 60 * 60 * 1000L) } // a full Sunday plus the night game
         }
         if (wifiLock == null) {
             @Suppress("DEPRECATION")

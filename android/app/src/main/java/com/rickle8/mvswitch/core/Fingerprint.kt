@@ -126,7 +126,7 @@ data class AdMatch(val segment: Int, val count: Int, val ratio: Double, val spre
 
 /** Library of commercials heard before. */
 class AdPrints(private val maxSegments: Int = 80) {
-    private class Segment(val id: Int, val created: Long, var lastUsed: Long, val auto: Boolean,
+    private class Segment(val id: Int, val created: Long, var lastUsed: Long, var auto: Boolean,
                           val hashes: IntArray, val times: ShortArray)
 
     private val segments = LinkedHashMap<Int, Segment>()
@@ -153,6 +153,18 @@ class AdPrints(private val maxSegments: Int = 80) {
         }
         rebuild()
         return id
+    }
+
+    /**
+     * Auto-saved prints (the app was sure it heard an ad) aren't trusted to
+     * override anything until a replay is also judged an ad by the classifier.
+     */
+    @Synchronized
+    fun trusted(id: Int): Boolean = segments[id]?.auto == false
+
+    @Synchronized
+    fun confirm(id: Int) {
+        segments[id]?.auto = false
     }
 
     @Synchronized

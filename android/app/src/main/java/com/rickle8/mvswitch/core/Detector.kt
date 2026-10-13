@@ -6,8 +6,16 @@ import kotlin.math.ln
 import kotlin.math.max
 import kotlin.math.sqrt
 
-/** One second from the mic: raw audio plus YAMNet's score for each of its 521 sound types. */
-class MicSecond(val samples: FloatArray, val scores: FloatArray, val names: Array<String>)
+/**
+ * One second from the mic: raw audio, YAMNet's score for each of its 521 sound
+ * types, and a level-boosted copy for speech recognition.
+ */
+class MicSecond(
+    val samples: FloatArray,
+    val scores: FloatArray,
+    val names: Array<String>,
+    val boosted: FloatArray = samples,
+)
 
 data class DetectResult(
     val heard: Heard,
@@ -133,7 +141,7 @@ class Detector(private val dir: File? = null) {
     }
 
     private fun maybeSave(now: Double) {
-        if (dirty && now - lastSave > 60) { lastSave = now; save() }
+        if (dirty && now - lastSave > 300) { lastSave = now; save() }
     }
 
     // ------------------------------------------------------------ main step
@@ -144,8 +152,11 @@ class Detector(private val dir: File? = null) {
      * A break phrase only counts if it was said in the announcers' voice (once
      * the app knows it), so a commercial saying "stay with us" doesn't fool it.
      */
-    private fun acceptCue(now: Double): Boolean {
+    private fun acceptCue(now: Double, speech: Double): Boolean {
         if (now - lastCue < 60) return false
+        // Someone has to actually be talking (not music or crowd noise).
+        val talking = maxOf(speech, history.filter { now - it.t <= 3 }.maxOfOrNull { it.speech } ?: 0.0)
+        if (talking < 0.25) return false
         if (voices.ready) {
             val recent = recentVoice.filter { now - it.first <= 4 }.map { it.second }
             if (recent.isNotEmpty() && recent.max() < -0.5) return false
@@ -180,9 +191,8 @@ class Detector(private val dir: File? = null) {
         val m = prints.match(query, System.currentTimeMillis())
         // A real replay lines up steadily across the whole window, not in one burst.
         val solid = m != null && m.ratio >= 0.04 && m.spread >= 3
-        val strong = solid && (m!!.count >= 14 || (m.count >= 10 && prevMatch?.segment == m.segment))
+        val printMatch = solid && (m!!.count >= 14 || (m.count >= 10 && prevMatch?.segment == m.segment))
         prevMatch = if (solid && m!!.count >= 10) m else null
-        if (strong) lastMatch = m!!.segment to now
 
         // 2. Classifier (learned, or fixed rules until trained).
         val learnedP = model.adProbability(x)
@@ -192,11 +202,24 @@ class Detector(private val dir: File? = null) {
         val voice = voices.evidence(audio, speech)
         if (voice != null) recentVoice.addLast(now to voice)
         while (recentVoice.isNotEmpty() && now - recentVoice.first().first > 10) recentVoice.removeFirst()
-        val cueHit = cue != null && acceptCue(now)
+        val cueHit = cue != null && acceptCue(now, speech)
         if (voice != null && game + ad > 0.05) {
             val p = sigmoid(logit(ad / (game + ad)) - voice)
             val total = game + ad
             game = total * (1 - p); ad = total * p
+        }
+
+        // Fingerprint verdict: trusted prints win outright; auto-saved ones need the classifier to agree.
+        val pNow = if (game + ad > 0.05) ad / (game + ad) else 0.5
+        var strong = false
+        if (printMatch) {
+            val seg = m!!.segment
+            if (prints.trusted(seg)) strong = true
+            else if (pNow >= 0.5) {
+                strong = true
+                if (pNow >= 0.6) { prints.confirm(seg); dirty = true }
+            }
+            if (strong) lastMatch = seg to now
         }
 
         // 4. Sudden change in sound.
@@ -275,8 +298,9 @@ class Detector(private val dir: File? = null) {
     }
 
     /** "It's the game" / "It's an ad": label the last 8 s and the next 12 s. */
-    fun label(isAd: Boolean, now: Double) {
-        history.filter { now - it.t <= 8 }.forEach { labelRec(it, isAd) }
+    fun label(isAd: Boolean, now: Double, box: Int? = null) {
+        // Only the game you're hearing now: an earlier box's audio isn't what you meant.
+        history.filter { now - it.t <= 8 && (box == null || it.box == box) }.forEach { labelRec(it, isAd) }
         labelAsAd = isAd
         labelUntil = now + 12
         if (isAd) {
@@ -306,7 +330,7 @@ class Detector(private val dir: File? = null) {
             start = exact[i - 1].t
         }
         val end = exact.last().t
-        val from = start + 60
+        val from = start + 90 // YouTube TV can run up to ~90 s behind live
         val to = minOf(now, end + 10)
         if (to <= from) return
         history.filter { !it.labeled && it.box == box && it.t in from..to }.forEach { labelRec(it, false) }

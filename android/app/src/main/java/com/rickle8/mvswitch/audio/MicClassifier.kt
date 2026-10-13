@@ -33,6 +33,7 @@ class MicClassifier(private val context: Context) {
     private var record: AudioRecord? = null
     private val buffer = FloatArray(SAMPLE_RATE)
     private val names = Array(Features.N_YAMNET) { "" }
+    private var level = 0.02 // slow-moving average loudness (RMS)
 
     @SuppressLint("MissingPermission") // checked by the UI before the service starts
     fun start() {
@@ -75,11 +76,19 @@ class MicClassifier(private val context: Context) {
             if (n <= 0) return null
             filled += n
         }
+        // Raw mic audio can be quiet. Boost a copy toward a steady level for the sound
+        // classifier and speech recognition (slowly, so real loud/quiet changes still show).
+        var sum = 0.0
+        for (v in buffer) sum += v * v
+        val rms = kotlin.math.sqrt(sum / buffer.size)
+        if (rms > 1e-4) level = level * 0.9 + rms * 0.1
+        val gain = (0.08 / level).coerceIn(1.0, 20.0).toFloat()
+        val boosted = FloatArray(buffer.size) { (buffer[it] * gain).coerceIn(-1f, 1f) }
         val audio = AudioData.create(
             AudioData.AudioDataFormat.builder().setNumOfChannels(1).setSampleRate(SAMPLE_RATE.toFloat()).build(),
             buffer.size,
         )
-        audio.load(buffer)
+        audio.load(boosted)
         val result = classifier.classify(audio)
         val totals = FloatArray(Features.N_YAMNET)
         var count = 0
@@ -97,7 +106,7 @@ class MicClassifier(private val context: Context) {
         }
         if (count == 0) return null
         for (i in totals.indices) totals[i] /= count
-        return MicSecond(buffer.copyOf(), totals, names.copyOf())
+        return MicSecond(buffer.copyOf(), totals, names.copyOf(), boosted)
     }
 
     fun stop() {

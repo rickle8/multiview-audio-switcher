@@ -204,6 +204,15 @@ class RokuRemote(private val host: String) : Remote, TvApps {
         runCatching { client.newCall(req).execute().close() }
     }
 
+    /** Roku TVs (not sticks) can be turned on over the network. */
+    fun powerOn() {
+        val req = Request.Builder().url("http://$host:8060/keypress/PowerOn")
+            .post(ByteArray(0).toRequestBody("text/plain".toMediaType())).build()
+        runCatching { client.newCall(req).execute().close() }
+    }
+
+    fun awake(): Boolean = get("/query/device-info")?.contains("<power-mode>PowerOn</power-mode>") ?: false
+
     override fun isOnScreen(appId: String): Boolean? {
         val xml = get("/query/active-app") ?: return false
         return Regex("<app id=\"([^\"]+)\"").find(xml)?.groupValues?.get(1) == appId

@@ -39,6 +39,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.ui.draw.clip
+import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.launch
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
@@ -78,6 +83,8 @@ fun SettingsScreen(state: EngineState, settings: Settings, update: UpdateState, 
             }
             if (settings.tvType != TvType.TEST) {
                 Spacer(Modifier.height(14.dp))
+                FindTv()
+                Spacer(Modifier.height(10.dp))
                 var host by remember(settings.tvHost) { mutableStateOf(settings.tvHost) }
                 val save = {
                     Engine.update { it.copy(tvHost = host.trim(), samsungToken =
@@ -103,7 +110,8 @@ fun SettingsScreen(state: EngineState, settings: Settings, update: UpdateState, 
                 Text(
                     if (settings.tvType == TvType.SAMSUNG)
                         "On the TV: Settings > General > Network > Network Status > IP Settings. " +
-                            "Your phone must be on the same Wi-Fi."
+                            "Your phone must be on the same Wi-Fi. To let Start turn the TV on, also enable " +
+                            "Settings > General > Network > Expert Settings > Power On with Mobile."
                     else "On the Roku: Settings > Network > About. Also turn on Settings > System > " +
                         "Advanced system settings > Control by mobile apps.",
                     color = C.muted, fontSize = 12.sp, modifier = Modifier.padding(top = 6.dp),
@@ -298,6 +306,48 @@ fun SettingsScreen(state: EngineState, settings: Settings, update: UpdateState, 
             )
         }
         Spacer(Modifier.height(24.dp))
+    }
+}
+
+@Composable
+private fun FindTv() {
+    val scope = rememberCoroutineScope()
+    var scanning by remember { mutableStateOf(false) }
+    var found by remember { mutableStateOf<List<com.rickle8.mvswitch.remote.FoundTv>?>(null) }
+    androidx.compose.material3.OutlinedButton(
+        onClick = {
+            scanning = true
+            scope.launch { found = Engine.findTvs(); scanning = false }
+        },
+        enabled = !scanning,
+        modifier = Modifier.fillMaxWidth().height(48.dp),
+        shape = RoundedCornerShape(14.dp),
+    ) {
+        Text(if (scanning) "Looking for TVs…" else "Find my TV", color = C.text)
+    }
+    found?.let { list ->
+        if (list.isEmpty()) {
+            Text("No Samsung TVs or Rokus answered. Make sure the TV is on and on the same Wi-Fi, or type its IP below.",
+                color = C.muted, fontSize = 12.sp, modifier = Modifier.padding(top = 6.dp))
+        }
+        list.forEach { tv ->
+            Row(
+                Modifier.fillMaxWidth().padding(top = 6.dp)
+                    .clip(RoundedCornerShape(12.dp)).background(C.surface2)
+                    .clickable {
+                        Engine.update { it.copy(tvType = tv.type, tvHost = tv.host) }
+                        found = null
+                    }
+                    .padding(12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text(tv.name, color = C.text, fontWeight = FontWeight.Medium)
+                    Text("${tv.type.label} · ${tv.host}", color = C.muted, fontSize = 12.sp)
+                }
+                Text("Use", color = C.accent, fontWeight = FontWeight.Bold)
+            }
+        }
     }
 }
 

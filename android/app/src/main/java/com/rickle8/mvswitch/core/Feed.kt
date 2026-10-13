@@ -198,6 +198,8 @@ class GameFeed(
     private val fetchSummary: ((String, String) -> JSONObject)? = null,
     private val wallNow: () -> Long = { System.currentTimeMillis() },
     private val summarySecs: Double = 5.0,
+    /** Other games' play-by-play is checked less often. */
+    private val otherSummarySecs: Double = 20.0,
 ) {
     private val slots = slots.filterValues { it.team.isNotBlank() }
     private var lastPoll = -1e9
@@ -214,6 +216,9 @@ class GameFeed(
     /** The game whose play-by-play is polled every few seconds (the one you're hearing). */
     @Volatile var focusBox: Int? = null
     var lastError: String? = null
+        private set
+    /** True once the scoreboard has been read successfully at least once. */
+    @Volatile var loaded = false
         private set
 
     /** Record a play. Public for tests. */
@@ -243,7 +248,9 @@ class GameFeed(
             lastPoll = now
             pollScoreboard(now)
         }
-        pollSummary(now)
+        val focus = focusBox
+        focus?.let { pollSummary(it, now, summarySecs) }
+        for (box in slots.keys) if (box != focus) pollSummary(box, now, otherSummarySecs)
         return status
     }
 
@@ -259,9 +266,11 @@ class GameFeed(
                 continue // keep last known status
             }
             if (event == null) {
+                loaded = true
                 status[box] = GameStatus.UNKNOWN
                 continue
             }
+            loaded = true
             event.optString("id").takeIf { it.isNotBlank() }?.let { eventIds[box] = it }
             val gi = parseEvent(event, slot.league)
             rawStatus[box] = gi.status
@@ -278,13 +287,12 @@ class GameFeed(
         }
     }
 
-    private fun pollSummary(now: Double) {
-        val box = focusBox ?: return
+    private fun pollSummary(box: Int, now: Double, every: Double) {
         val fs = fetchSummary ?: return
         val id = eventIds[box] ?: return
         val raw = rawStatus[box]
         if (raw != GameStatus.LIVE && raw != GameStatus.BREAK) return
-        if (now - (lastSummary[box] ?: -1e9) < summarySecs) return
+        if (now - (lastSummary[box] ?: -1e9) < every) return
         lastSummary[box] = now
         val plays = try {
             parseSummaryPlays(fs(slots.getValue(box).league, id))

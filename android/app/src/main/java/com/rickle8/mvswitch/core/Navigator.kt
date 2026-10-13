@@ -38,6 +38,36 @@ fun keyPath(neighbors: Map<Int, Map<Key, Int>>, start: Int, goal: Int): List<Key
     throw IllegalArgumentException("No path from box $start to box $goal")
 }
 
+/**
+ * Shortest key sequence that lands on [target] no matter which box is
+ * highlighted now (edges don't wrap). In a 2x2 grid that's always 2 presses.
+ */
+fun syncPath(neighbors: Map<Int, Map<Key, Int>>, target: Int): List<Key>? {
+    val boxes = neighbors.keys.sorted()
+    val bit = boxes.withIndex().associate { (i, b) -> b to (1 shl i) }
+    val goal = bit[target] ?: return null
+    val start = boxes.fold(0) { acc, b -> acc or bit.getValue(b) }
+    val keys = listOf(Key.UP, Key.LEFT, Key.DOWN, Key.RIGHT)
+    val prev = HashMap<Int, Pair<Int, Key>>()
+    val queue = ArrayDeque(listOf(start))
+    val seen = hashSetOf(start)
+    while (queue.isNotEmpty()) {
+        val set = queue.removeFirst()
+        if (set == goal) {
+            val path = ArrayList<Key>()
+            var cur = set
+            while (cur != start) { val (p, k) = prev.getValue(cur); path += k; cur = p }
+            return path.reversed()
+        }
+        for (k in keys) {
+            var next = 0
+            for (b in boxes) if (set and bit.getValue(b) != 0) next = next or bit.getValue(neighbors[b]?.get(k) ?: b)
+            if (seen.add(next)) { prev[next] = set to k; queue.addLast(next) }
+        }
+    }
+    return null
+}
+
 /** Where the highlight ends up after pressing keys (edges don't wrap). */
 fun simulate(neighbors: Map<Int, Map<Key, Int>>, start: Int, keys: List<Key>): Int =
     keys.fold(start) { box, k -> neighbors[box]?.get(k) ?: box }
@@ -58,6 +88,10 @@ class Navigator(
     private val log: (String) -> Unit = {},
 ) {
     var current: Int? = startBox
+    /** Per target box: keys that reach it from anywhere. */
+    private val sync: Map<Int, List<Key>>? =
+        if (home) neighbors.keys.associateWith { syncPath(neighbors, it) ?: emptyList() }
+            .takeIf { m -> m.values.all { it.isNotEmpty() } || neighbors.size == 1 } else null
     val homeSeq: List<Key> =
         if (home) listOf(Key.UP, Key.LEFT).flatMap { k -> List(homePresses) { k } } else emptyList()
     val homeBox: Int?
@@ -78,15 +112,21 @@ class Navigator(
     }
 
     fun resync() {
-        if (homeSeq.isEmpty()) return
-        pressAll(homeSeq)
-        current = homeBox
-        log("Highlight reset to box $homeBox")
+        val s = sync?.get(1)
+        if (s != null) {
+            pressAll(s)
+            current = 1
+        } else {
+            if (homeSeq.isEmpty()) return
+            pressAll(homeSeq)
+            current = homeBox
+        }
+        log("Highlight reset to box $current")
     }
 
     fun goTo(box: Int) {
         if (box == current) return
-        val keys = if (homeBox != null) {
+        val keys = sync?.get(box) ?: if (homeBox != null) {
             homeSeq + keyPath(neighbors, homeBox, box)
         } else {
             keyPath(neighbors, current ?: 1, box)

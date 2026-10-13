@@ -37,6 +37,9 @@ data class Settings(
     /** Pause switching while YouTube TV isn't on screen, so arrows never go to another app. */
     val autoPause: Boolean = true,
     val youTubeTvAppId: String = "",
+    /** Samsung TV's network MAC, learned automatically; lets Start turn the TV on. */
+    val tvMac: String = "",
+    val askedBattery: Boolean = false,
 ) {
     val adThreshold: Double get() = 0.75 - 0.25 * micSensitivity
     val gameThreshold: Double get() = adThreshold - 0.2
@@ -53,6 +56,8 @@ data class Settings(
         .put("openYouTubeTv", openYouTubeTv)
         .put("autoPause", autoPause)
         .put("youTubeTvAppId", youTubeTvAppId)
+        .put("tvMac", tvMac)
+        .put("askedBattery", askedBattery)
         .put("slots", JSONObject().apply {
             slots.forEach { (box, s) ->
                 put(box.toString(), JSONObject().put("league", s.league).put("team", s.team)
@@ -93,6 +98,8 @@ data class Settings(
                 openYouTubeTv = j.optBoolean("openYouTubeTv", d.openYouTubeTv),
                 autoPause = j.optBoolean("autoPause", d.autoPause),
                 youTubeTvAppId = j.optString("youTubeTvAppId", ""),
+                tvMac = j.optString("tvMac", ""),
+                askedBattery = j.optBoolean("askedBattery", false),
             )
         }
     }

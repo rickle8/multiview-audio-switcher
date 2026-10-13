@@ -5,6 +5,7 @@ import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -277,5 +278,15 @@ class LogicTest {
         c.t = 100.0
         assertTrue(ctrl.commercialNow())
         assertNotEquals(1, nav.current)
+    }
+
+    @Test fun syncPathsAreShortAndAvoidBoxOne() {
+        val grid = LAYOUTS.getValue(4)
+        for (t in 1..4) assertEquals(2, syncPath(grid, t)!!.size)
+        // From box 3 to box 4 the audio never passes through box 1.
+        val path = syncPath(grid, 4)!!
+        var b = 3
+        for (k in path) { b = grid[b]?.get(k) ?: b; assertNotEquals(1, b) }
+        for ((_, g) in LAYOUTS) for (t in g.keys) assertNotNull(syncPath(g, t))
     }
 }
