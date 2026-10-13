@@ -44,6 +44,16 @@ class MainActivity : ComponentActivity() {
         }
         return super.onKeyDown(keyCode, event)
     }
+    override fun onStart() {
+        super.onStart()
+        Engine.visible = true
+    }
+
+    override fun onStop() {
+        Engine.visible = false
+        super.onStop()
+    }
+
     private val permissions = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions(),
     ) {

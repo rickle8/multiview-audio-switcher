@@ -171,6 +171,7 @@ fun LiveScreen(
 }
 
 private fun statusLine(s: EngineState): String = when {
+    s.tvWaiting != null && (s.running || s.starting) -> s.tvWaiting
     s.starting -> "Connecting to the TV…"
     !s.running -> "Not running"
     s.waitingForMultiview -> "Waiting for multiview"

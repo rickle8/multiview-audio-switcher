@@ -396,6 +396,21 @@ class SamsungRemoteTest {
         assertFalse(r.linked)
     }
 
+    @Test fun olderTvUsesThePlainConnection() {
+        val tv = FakeTv()
+        tv.restGet = { url ->
+            if (url.endsWith("/api/v2/")) HttpReply(200, JSONObject().put("device",
+                JSONObject().put("TokenAuthSupport", "false")).toString())
+            else HttpReply(404, "")
+        }
+        val r = remote(tv)
+        r.press(Key.HOME)
+        val url = tv.keySocket.url
+        assertTrue(url, url.startsWith("ws://10.0.0.5:8001/api/v2/channels/samsung.remote.control?"))
+        assertFalse(url.contains("token="))
+        r.close()
+    }
+
     @Test fun closedRemoteRefusesWork() {
         val tv = FakeTv()
         val r = remote(tv)

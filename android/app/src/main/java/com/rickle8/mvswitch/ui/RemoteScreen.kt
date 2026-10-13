@@ -226,7 +226,19 @@ fun RemoteScreen(state: EngineState, settings: Settings, modifier: Modifier) {
         }
         TvStatus(state, settings)
         state.remoteMsg?.let { Text(it, color = C.amber, fontSize = 13.sp, modifier = Modifier.padding(top = 4.dp)) }
-        if (state.held) {
+        if (state.running && (state.waitingForMultiview || state.autoPaused)) {
+            Panel(Modifier.padding(top = 10.dp)) {
+                Text(
+                    if (state.waitingForMultiview) "Put multiview up on the TV, then tap Go to start switching."
+                    else "Auto switching is paused while YouTube TV isn't on screen.",
+                    color = C.text, fontSize = 14.sp,
+                )
+                TextButton(onClick = { Engine.go() }) {
+                    Text(if (state.waitingForMultiview) "Go" else "I'm back in multiview", color = C.accent,
+                        fontWeight = FontWeight.SemiBold)
+                }
+            }
+        } else if (state.held) {
             Text("Auto switching is waiting while you use the remote.", color = C.muted, fontSize = 12.sp,
                 modifier = Modifier.padding(top = 4.dp))
         }

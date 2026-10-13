@@ -180,12 +180,18 @@ object Engine {
 
     fun now(): Double = SystemClock.elapsedRealtime() / 1000.0
 
+    /** The app is on screen (scores are only fetched for the screen while it's showing). */
+    @Volatile var visible = false
+        set(v) { field = v; if (v) publish() }
+
     fun init(context: Context) {
         if (this::app.isInitialized) return
         app = context.applicationContext
         store = SettingsStore(app)
         _settings.value = store.load()
-        detector = Detector(app.filesDir).also { runCatching { it.load() } }
+        detector = Detector(app.filesDir)
+        // Learned sounds load in the background (a few MB); anything that needs them waits on the lock.
+        scope.launch(Dispatchers.IO) { synchronized(detector) { runCatching { detector.load() } }; publish() }
         scope.launch(Dispatchers.IO) { speechDir = runCatching { SpeechModel.install(app) }.getOrNull() }
         scope.launch(Dispatchers.IO) { previewLoop() }
     }
@@ -380,7 +386,7 @@ object Engine {
 
     private suspend fun previewLoop() {
         while (true) {
-            if (job?.isActive != true && _settings.value.slots.isNotEmpty()) {
+            if (visible && job?.isActive != true && _settings.value.slots.isNotEmpty()) {
                 val pf = previewFeed ?: makeFeed(_settings.value, preview = true).also { previewFeed = it }
                 runCatching { pf.poll() }
                 publish()
@@ -766,7 +772,8 @@ object Engine {
     /** Buttons on the Remote tab. */
     fun press(key: Key) = onTv("press ${key.name.lowercase()}") { r ->
         val n = nav
-        if (key in ARROWS && n != null && job?.isActive == true && now() >= holdUntil) {
+        val switching = job?.isActive == true && !paused && !autoPaused && !waitingForMultiview && now() >= holdUntil
+        if (key in ARROWS && n != null && switching) {
             synchronized(lock) {
                 r.press(key)
                 // In multiview the arrows move the audio: keep track of where it went.
@@ -795,9 +802,9 @@ object Engine {
             repeat(count) {
                 r.press(key)
                 if (!live || count > 1) Thread.sleep(when {
-                    key == Key.SOURCE || key == Key.HOME -> 1800L
-                    count > 1 -> 300L
-                    else -> 550L
+                    key == Key.SOURCE || key == Key.HOME -> 1500L // the menu takes a moment to open
+                    count > 1 -> 220L
+                    else -> 500L
                 })
             }
         }

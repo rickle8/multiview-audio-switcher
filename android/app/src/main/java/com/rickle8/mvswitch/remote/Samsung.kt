@@ -180,8 +180,9 @@ class SamsungRemote(
         val label = if (useToken) "Remote" else "App-control"
 
         fun url(): String {
-            val tok = if (useToken) token?.let { "&token=" + enc(it) }.orEmpty() else ""
-            return "$scheme://$host:$port$path?name=${enc(b64(NAME))}$tok"
+            val (sch, prt) = endpoint()
+            val tok = if (useToken && sch == "wss") token?.let { "&token=" + enc(it) }.orEmpty() else ""
+            return "$sch://$host:$prt$path?name=${enc(b64(NAME))}$tok"
         }
 
         val live: Boolean get() = conn?.let { it.ready && !it.dead } == true
@@ -299,6 +300,24 @@ class SamsungRemote(
         } finally {
             unregister(w)
         }
+    }
+
+    /** 2016 TVs only speak plain websockets on port 8001 (no tokens). */
+    @Volatile private var secure: Boolean? = null
+
+    private fun endpoint(): Pair<String, Int> {
+        if (scheme != "wss" || port != 8002) return scheme to port // tests pick their own
+        val known = secure
+        if (known != null) return if (known) "wss" to 8002 else "ws" to 8001
+        val device = http.get("http://$host:8001/api/v2/")?.takeIf { it.code in 200..299 }
+            ?.let { runCatching { JSONObject(it.body).optJSONObject("device") }.getOrNull() }
+        if (device != null) {
+            val ok = !device.optString("TokenAuthSupport").equals("false", ignoreCase = true)
+            secure = ok
+            if (!ok) log("Older TV: using the plain connection on port 8001")
+            return if (ok) "wss" to 8002 else "ws" to 8001
+        }
+        return "wss" to 8002
     }
 
     /** The key connection, verified alive. Must hold [sendLock]. */
