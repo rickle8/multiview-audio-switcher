@@ -16,6 +16,8 @@ android {
         targetSdk = 34
         versionCode = buildNumber
         versionName = "1.0.$buildNumber"
+        // Modern 64-bit phones only: keeps the download small.
+        ndk { abiFilters += listOf("arm64-v8a") }
     }
 
     signingConfigs {
