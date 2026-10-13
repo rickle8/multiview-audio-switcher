@@ -9,6 +9,8 @@ val GAME_CLASSES = setOf(
     "Crowd", "Cheering", "Applause", "Hubbub, speech noise, speech babble",
     "Chatter", "Whistle", "Shout", "Yell",
 )
+/** A crowd reacting: what follows a big play by a second or two. */
+val CROWD_CLASSES = setOf("Crowd", "Cheering", "Applause", "Yell", "Shout")
 val SPEECH_CLASSES = setOf("Speech", "Male speech, man speaking", "Narration, monologue")
 val AD_CLASSES = setOf(
     "Music", "Pop music", "Hip hop music", "Rock music", "Electronic music",
@@ -48,6 +50,8 @@ data class Bias(
         /** The game just came back from a break with nothing since that causes another. */
         val UNLIKELY = Bias(10.0, 14.0, 0.08, "just back from a break")
         val TRANSITION_BUT_UNLIKELY = Bias(5.0, 5.0, 0.0, "sound changed suddenly")
+        /** The game clock is running: commercials only air when it's stopped. */
+        val CLOCK = Bias(10.0, 16.0, 0.12, "game clock is running")
         /** Just switched games: if this one is also in a break, notice fast and move on. */
         val LANDED = Bias(5.0, 4.0, 0.0, "checking the game it just switched to")
     }
@@ -82,6 +86,12 @@ class Verdict(
         val ad = useful.sumOf { it.ad }
         if (game + ad < 0.05 * useful.size) return null
         return ad / (game + ad)
+    }
+
+    /** The game is back (the network's coming-back music): no need to wait. */
+    fun forceGame(t: Double) {
+        state = Heard.GAME
+        adSince = null
     }
 
     /** A replayed commercial was recognized: no need to wait. */

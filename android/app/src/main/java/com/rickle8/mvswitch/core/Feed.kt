@@ -214,6 +214,13 @@ class GameFeed(
     private val lastSeq = HashMap<Int, Long>()
     private val lastSummary = HashMap<Int, Double>()
     private val summaryOk = HashMap<Int, Double>()
+    /** Last game clock seen, per box and source ("board"/"pbp"): period to seconds left. */
+    private val lastClock = HashMap<String, Pair<Int, Double>>()
+    private val clockMoved = java.util.concurrent.ConcurrentHashMap<Int, Double>()
+    /** How long after a play happened this app first saw it (ESPN's own delay), seconds. */
+    private val lagSamples = ArrayDeque<Double>()
+    private val names = java.util.concurrent.ConcurrentHashMap<Int, Set<String>>()
+    private val namesAt = HashMap<Int, Double>()
 
     /** The game whose play-by-play is polled every few seconds (the one you're hearing). */
     @Volatile var focusBox: Int? = null
@@ -281,6 +288,8 @@ class GameFeed(
             val gi = parseEvent(event, slot.league)
             rawStatus[box] = gi.status
             info[box] = gi
+            if (gi.status == GameStatus.LIVE || gi.status == GameStatus.BREAK) noteClock(box, "board", gi.period, gi.clock, now)
+            if (!names.containsKey(box)) teamNames(event).takeIf { it.isNotEmpty() }?.let { names[box] = it }
             // The scoreboard only has the latest play. Use it when play-by-play isn't flowing.
             val play = gi.lastPlay
             val pbpFresh = (summaryOk[box] ?: -1e9) > now - 30
@@ -301,11 +310,21 @@ class GameFeed(
         if (raw != GameStatus.LIVE && raw != GameStatus.BREAK) return
         if (now - (lastSummary[box] ?: -1e9) < every) return
         lastSummary[box] = now
-        val plays = try {
-            parseSummaryPlays(fs(slots.getValue(box).league, id))
+        val json = try {
+            fs(slots.getValue(box).league, id)
         } catch (e: Exception) {
             lastError = e.message ?: e.javaClass.simpleName
             return
+        }
+        val plays = parseSummaryPlays(json)
+        json.optJSONObject("header")?.optJSONArray("competitions")?.optJSONObject(0)?.optJSONObject("status")?.let { st ->
+            if (st.has("clock")) noteClock(box, "pbp", st.optInt("period", 0), st.optDouble("clock"), now)
+        }
+        if (now - (namesAt[box] ?: -1e9) > 600) {
+            namesAt[box] = now
+            val found = HashSet<String>()
+            athleteNames(json, found, 0)
+            if (found.isNotEmpty()) names[box] = (names[box].orEmpty() + found).take(150).toSet()
         }
         if (plays.isEmpty()) return
         summaryOk[box] = now
@@ -315,6 +334,10 @@ class GameFeed(
             if (first) log[box]?.clear()
             val after = lastSeq[box] ?: Long.MIN_VALUE
             val fresh = plays.filter { it.first > after }
+            if (!first) for ((_, _, wallMs) in fresh) if (wallMs != null) {
+                val lag = (wall - wallMs) / 1000.0
+                if (lag in 0.0..180.0) { lagSamples.addLast(lag); while (lagSamples.size > 30) lagSamples.removeFirst() }
+            }
             for ((seq, text, wallMs) in (if (first) fresh.takeLast(40) else fresh)) {
                 val t = if (wallMs != null) now - maxOf(0.0, (wall - wallMs) / 1000.0)
                 else if (first) now - breakPlaySecs else now
@@ -325,6 +348,34 @@ class GameFeed(
         }
         applyPlayStatus(box, now)
     }
+
+    /** A countdown clock sport where breaks only happen with the clock stopped. */
+    private fun clockSport(box: Int): Boolean = slots[box]?.league?.let {
+        it.startsWith("football") || it.startsWith("basketball") || it.startsWith("hockey")
+    } == true
+
+    private fun noteClock(box: Int, source: String, period: Int, clock: Double?, now: Double) {
+        if (clock == null || clock.isNaN() || !clockSport(box)) return
+        val key = "$box:$source"
+        val prev = lastClock[key]
+        lastClock[key] = period to clock
+        if (prev != null && prev.first == period && clock < prev.second - 0.5) clockMoved[box] = now
+    }
+
+    /** When this app last saw the game clock running for [box] (app clock), or null. */
+    fun clockMovedAt(box: Int): Double? = clockMoved[box]
+
+    /** ESPN's own delay: how long after a play happens it shows up here. Null until known. */
+    @Synchronized
+    fun espnLag(): Double? = if (lagSamples.size < 3) null else lagSamples.sorted()[lagSamples.size / 2]
+
+    /** Play-by-play for this box arrived recently, so its plays can be trusted to tell when it's back. */
+    fun pbpFresh(box: Int, now: Double): Boolean = (summaryOk[box] ?: -1e9) > now - 60
+
+    fun league(box: Int): String = slots[box]?.league.orEmpty()
+
+    /** Player and team names for every game, lowercase (for the announcers' words). */
+    fun names(): Set<String> = names.values.flatten().toSet()
 
     @Synchronized
     fun latestPlay(box: Int): Pair<String, Double>? = log[box]?.lastOrNull()?.let { it.text to it.seen }
@@ -337,4 +388,39 @@ class GameFeed(
         val p = log[box]?.lastOrNull() ?: return false
         return p.seen > t && !BREAK_PLAY.containsMatchIn(p.text)
     }
+}
+
+private val NAME_SUFFIX = setOf("jr", "sr", "ii", "iii", "iv", "v")
+
+private fun cleanName(full: String): String? {
+    val words = full.lowercase().replace('-', ' ').replace(Regex("[^a-z' ]"), " ").split(' ')
+        .filter { it.isNotBlank() && it !in NAME_SUFFIX }
+    val last = words.lastOrNull() ?: return null
+    return last.takeIf { it.length >= 3 }
+}
+
+/** Last names of every athlete mentioned in an ESPN game summary. */
+fun athleteNames(j: Any?, out: MutableSet<String>, depth: Int) {
+    if (depth > 14 || out.size >= 150) return
+    when (j) {
+        is JSONObject -> {
+            j.optJSONObject("athlete")?.let { a ->
+                (a.optString("lastName").ifBlank { null }?.let { cleanName(it) }
+                    ?: cleanName(a.optString("displayName")))?.let { out += it }
+            }
+            for (k in j.keys()) athleteNames(j.opt(k), out, depth + 1)
+        }
+        is org.json.JSONArray -> for (i in 0 until j.length()) athleteNames(j.opt(i), out, depth + 1)
+    }
+}
+
+/** Team nicknames from a scoreboard event ("bears", "packers"). */
+fun teamNames(event: JSONObject): Set<String> {
+    val out = HashSet<String>()
+    val comps = event.optJSONArray("competitions")?.optJSONObject(0)?.optJSONArray("competitors") ?: return out
+    for (i in 0 until comps.length()) {
+        val t = comps.optJSONObject(i)?.optJSONObject("team") ?: continue
+        t.optString("name").lowercase().replace(Regex("[^a-z' ]"), " ").trim().takeIf { it.length >= 3 }?.let { out += it }
+    }
+    return out
 }

@@ -91,6 +91,12 @@ class Detector(private val dir: File? = null) {
     val prints = AdPrints()
     val voices = AnnouncerModel()
     val verdict = Verdict()
+    /** Stream delay and real break lengths, learned from your games. */
+    val timing = BroadcastTiming()
+    /** The network's going-to-break music, learned from what repeats when breaks start. */
+    val bumpers = AdPrints(30)
+    /** The network's coming-back music, learned from what repeats when games return. */
+    val comebacks = AdPrints(20)
     private val stft = Stft()
     private val fp = Fingerprinter()
     private val transitions = TransitionDetector()
@@ -98,6 +104,8 @@ class Detector(private val dir: File? = null) {
     private class Rec(
         val t: Double, val box: Int?, val x: DoubleArray, val audio: SecondAudio,
         val speech: Double, val frameTo: Long, val pAd: Double?, var labeled: Boolean = false,
+        /** Crowd cheering/yelling this second (for timing the stream delay). */
+        val crowd: Double = 0.0,
     )
 
     private val history = ArrayDeque<Rec>()
@@ -110,6 +118,9 @@ class Detector(private val dir: File? = null) {
     private var dirty = false
     private var lastSave = 0.0
     private val recentVoice = ArrayDeque<Pair<Double, Double>>()
+    /** Words heard recently: +1 a game word (player, "first down"), -1 an ad word ("terms apply"). */
+    private val recentWords = ArrayDeque<Triple<Double, Int, String>>()
+    private var lastBoundary = -1e9
     private var lastCue = -1e9
     var lastWhy: String? = null
         private set
@@ -124,6 +135,9 @@ class Detector(private val dir: File? = null) {
         file("sound_model2.bin")?.takeIf { it.exists() }?.let { f -> runCatching { f.inputStream().use { model.load(it) } } }
         file("ad_prints.bin")?.takeIf { it.exists() }?.let { f -> runCatching { f.inputStream().use { prints.load(it) } } }
         file("voices.bin")?.takeIf { it.exists() }?.let { f -> runCatching { f.inputStream().use { voices.load(it) } } }
+        file("bumpers.bin")?.takeIf { it.exists() }?.let { f -> runCatching { f.inputStream().use { bumpers.load(it) } } }
+        file("comebacks.bin")?.takeIf { it.exists() }?.let { f -> runCatching { f.inputStream().use { comebacks.load(it) } } }
+        file("timing.json")?.takeIf { it.exists() }?.let { f -> runCatching { timing.load(f.readText()) } }
         file("sound_model.json")?.delete() // old format
     }
 
@@ -138,6 +152,9 @@ class Detector(private val dir: File? = null) {
         write("sound_model2.bin") { model.save(it) }
         write("ad_prints.bin") { prints.save(it) }
         write("voices.bin") { voices.save(it) }
+        write("bumpers.bin") { bumpers.save(it) }
+        write("comebacks.bin") { comebacks.save(it) }
+        write("timing.json") { it.write(timing.toJson().toString().toByteArray()) }
     }
 
     private fun maybeSave(now: Double) {
@@ -165,8 +182,29 @@ class Detector(private val dir: File? = null) {
         return true
     }
 
+    /** A boundary clip (break music) seen again where it was learned: trust it from now on. */
+    private fun learnBoundary(lib: AdPrints, latest: Long, wall: Long) {
+        val q = fp.range(latest - (20 * FpParams.FPS).toLong(), latest)
+        val m = lib.match(q, wall)
+        if (m != null && m.count >= 20 && m.spread >= 5) {
+            lib.confirm(m.segment)
+            lib.touch(m.segment, wall)
+        } else {
+            lib.add(q, auto = true, now = wall)
+        }
+        dirty = true
+    }
+
+    private fun trustedHit(lib: AdPrints, query: List<Long>, wall: Long): Boolean {
+        val m = lib.match(query, wall) ?: return false
+        if (!lib.trusted(m.segment) || m.count < 12 || m.spread < 4 || m.ratio < 0.04) return false
+        lib.touch(m.segment, wall)
+        return true
+    }
+
     fun process(
         sec: MicSecond, now: Double, box: Int?, bias: Bias, learning: Boolean, cue: String? = null,
+        gameWords: List<String> = emptyList(), adWords: List<String> = emptyList(),
     ): DetectResult {
         val mags = stft.push(sec.samples)
         val firstAbs = stft.nextFrame - mags.size
@@ -183,12 +221,14 @@ class Detector(private val dir: File? = null) {
         sec.names.forEachIndexed { i, n -> if (i < sec.scores.size) byName[n] = sec.scores[i] }
         val top = sec.scores.indices.sortedByDescending { sec.scores[it] }.take(3).mapNotNull { sec.names.getOrNull(it) }
         val speech = SPEECH_CLASSES.maxOf { (byName[it] ?: 0f).toDouble() }
+        val crowd = CROWD_CLASSES.sumOf { (byName[it] ?: 0f).toDouble() }
         val x = Features.build(sec.scores, audio)
 
         // 1. Repeat-ad fingerprint.
         val latest = fp.latestFrame
         val query = fp.range(latest - (4 * FpParams.FPS).toLong(), latest)
-        val m = prints.match(query, System.currentTimeMillis())
+        val wall = System.currentTimeMillis()
+        val m = prints.match(query, wall)
         // A real replay lines up steadily across the whole window, not in one burst.
         val solid = m != null && m.ratio >= 0.04 && m.spread >= 3
         val printMatch = solid && (m!!.count >= 14 || (m.count >= 10 && prevMatch?.segment == m.segment))
@@ -209,6 +249,19 @@ class Detector(private val dir: File? = null) {
             game = total * (1 - p); ad = total * p
         }
 
+        // 3b. What the announcers (or the ad) actually said.
+        gameWords.forEach { recentWords.addLast(Triple(now, 1, it)) }
+        adWords.forEach { recentWords.addLast(Triple(now, -1, it)) }
+        while (recentWords.isNotEmpty() && now - recentWords.first().first > 10) recentWords.removeFirst()
+        val gameSaid = recentWords.count { it.second > 0 }
+        val adSaid = recentWords.count { it.second < 0 }
+        if ((gameSaid > 0 || adSaid > 0) && game + ad > 0.02) {
+            val shift = -1.1 * minOf(gameSaid, 3) + 0.9 * minOf(adSaid, 3)
+            val p = sigmoid(logit(ad / (game + ad)) + shift)
+            val total = game + ad
+            game = total * (1 - p); ad = total * p
+        }
+
         // Fingerprint verdict: trusted prints win outright; auto-saved ones need the classifier to agree.
         val pNow = if (game + ad > 0.05) ad / (game + ad) else 0.5
         var strong = false
@@ -222,6 +275,12 @@ class Detector(private val dir: File? = null) {
             if (strong) { lastMatch = seg to now; prints.touch(seg, System.currentTimeMillis()) }
         }
 
+        // 3c. The network's break music (learned): a break is starting, or the game is back.
+        val bumperHit = verdict.state != Heard.AD && now - lastBoundary > 60 && trustedHit(bumpers, query, wall)
+        val comebackHit = verdict.state == Heard.AD && now - lastBoundary > 30 && trustedHit(comebacks, query, wall)
+        if (bumperHit || comebackHit) lastBoundary = now
+        if (bumperHit) strong = true
+
         // 4. Sudden change in sound.
         transitions.update(audio, now)
         val recentTransition = now - transitions.lastTransition < 20
@@ -234,15 +293,19 @@ class Detector(private val dir: File? = null) {
         val before = verdict.state
         val frame = Frame(now, game, ad, loud)
         if (strong || cueHit) { verdict.add(frame, effBias); verdict.forceAd(now) } else verdict.add(frame, effBias)
+        if (comebackHit) verdict.forceGame(now)
         val heard = verdict.state
         val pAd = if (game + ad > 0.05) ad / (game + ad) else null
 
-        val rec = Rec(now, box, x, audio, speech, latest, pAd)
+        val rec = Rec(now, box, x, audio, speech, latest, pAd, crowd = crowd)
         history.addLast(rec)
         while (history.isNotEmpty() && now - history.first().t > 150) history.removeFirst()
 
         // ------------------------------------------------------- learning
         if (learning) {
+            // What plays right as a break starts (or ends) and repeats break after break is the network's music.
+            if (before == Heard.GAME && heard == Heard.AD && !bumperHit) learnBoundary(bumpers, latest, wall)
+            if (before == Heard.AD && heard == Heard.GAME && !comebackHit) learnBoundary(comebacks, latest, wall)
             if (now < labelUntil) labelRec(rec, labelAsAd)
             if (strong) {
                 // A replayed ad: its audio is perfect training data for "commercial".
@@ -260,9 +323,14 @@ class Detector(private val dir: File? = null) {
         if (pendingPrintFrom != null && now >= pendingPrintUntil) finishPendingPrint()
         maybeSave(now)
 
+        val lastWord = recentWords.lastOrNull()
         val why = when {
             cueHit -> "Announcer said \u201c$cue\u201d"
+            bumperHit -> "Heard the network's break music"
+            comebackHit -> "Heard the network's coming-back music"
             strong -> "Recognized an ad it's heard before"
+            lastWord != null && now - lastWord.first <= 4 ->
+                (if (lastWord.second > 0) "Announcer said" else "Heard") + " \u201c${lastWord.third}\u201d"
             recentTransition && heard == Heard.AD -> "Sound changed suddenly"
             voice != null && voice >= 1.0 -> "Announcers talking"
             voice != null && voice <= -1.5 -> "Different voice than the announcers"
@@ -321,7 +389,19 @@ class Detector(private val dir: File? = null) {
      * 50 s apart had no break in it. TV streams run 10-60 s behind real time,
      * so only the part that is game audio for any delay in that range is used.
      */
+    /** How loud the crowd/announcers reacted at second [t] on [box], or null if the mic wasn't on it. */
+    private fun reaction(box: Int, t: Double): Double? {
+        val r = history.firstOrNull { it.box == box && kotlin.math.abs(it.t - t) <= 0.5 } ?: return null
+        return r.crowd + 0.015 * r.audio.loudDb
+    }
+
     fun observePlays(box: Int, plays: List<Play>, now: Double) {
+        // Line up big plays with the crowd's reaction to learn how far behind the TV runs.
+        for (p in plays) {
+            if (p.seq >= 0 && BIG_PLAY.containsMatchIn(p.text)) {
+                if (timing.delay.observe("$box:${p.seq}", p.t, now) { reaction(box, it) }) dirty = true
+            }
+        }
         val exact = plays.filter { it.seq >= 0 }.sortedBy { it.t }
         if (exact.size < 2) return
         var start = exact.last().t
@@ -338,6 +418,7 @@ class Detector(private val dir: File? = null) {
 
     fun forgetAll() {
         model.clear(); prints.clear(); voices.clear()
+        bumpers.clear(); comebacks.clear(); timing.clear()
         history.forEach { it.labeled = false }
         save()
     }

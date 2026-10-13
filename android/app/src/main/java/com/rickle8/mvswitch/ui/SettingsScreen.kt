@@ -215,16 +215,19 @@ fun SettingsScreen(state: EngineState, settings: Settings, update: UpdateState, 
                 Text("Learned sounds: ${state.learnedGameSecs}s game, ${state.learnedAdSecs}s ads" +
                     (if (state.usingLearned) " (in use)" else " (needs 25s of each)") +
                     "\nAds it can recognize on replay: ${state.adsRemembered}" +
-                    "\nAnnouncer voices: " + (if (state.voiceLearned) "learned" else "still listening"),
+                    "\nAnnouncer voices: " + (if (state.voiceLearned) "learned" else "still listening") +
+                    "\nYour stream runs " + (state.streamDelay?.let { "about $it s behind live" } ?: "(timing big plays to find out)") +
+                    "\nBreaks timed: ${state.breaksTimed} · Network break music known: ${state.breakMusic}",
                     color = C.muted, fontSize = 12.sp, lineHeight = 18.sp)
                 TextButton(onClick = { Engine.resetLearning() }) {
                     Text("Forget everything it learned", color = C.red)
                 }
             }
             HorizontalDivider(Modifier.padding(vertical = 14.dp), color = C.line)
-            ToggleRow("Listen for announcer break phrases",
-                "Switches when the announcers say things like \u201cwe'll be right back\u201d or \u201cstay with us.\u201d " +
-                    "Runs offline on the phone. Only counts the announcers' voices once it knows them.",
+            ToggleRow("Listen to what the announcers say",
+                "Switches when they say things like \u201cwe'll be right back.\u201d Player names and game talk " +
+                    "(\u201cthird down\u201d) mean the game is on; ad talk (\u201cterms apply\u201d) means it isn't. " +
+                    "Runs offline on the phone.",
                 settings.useCues) { v -> Engine.update { it.copy(useCues = v) } }
             if (settings.useCues) {
                 Spacer(Modifier.height(10.dp))

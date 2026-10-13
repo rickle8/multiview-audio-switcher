@@ -20,6 +20,7 @@ import com.rickle8.mvswitch.core.Navigator
 import com.rickle8.mvswitch.core.Remote
 import com.rickle8.mvswitch.core.ScheduledGame
 import com.rickle8.mvswitch.core.excitement
+import com.rickle8.mvswitch.core.gameTerms
 import com.rickle8.mvswitch.core.listGames
 import com.rickle8.mvswitch.core.scoreboardUrl
 import com.rickle8.mvswitch.core.simulate
@@ -115,6 +116,11 @@ data class EngineState(
     val nowOnTv: String? = null,
     /** "Volume 23" or "Muted", when the TV says. */
     val tvVolume: String? = null,
+    /** How far behind live the TV stream runs, once learned (seconds). */
+    val streamDelay: Int? = null,
+    val breaksTimed: Int = 0,
+    /** Network break / coming-back music clips it recognizes. */
+    val breakMusic: Int = 0,
 )
 
 object Engine {
@@ -358,7 +364,7 @@ object Engine {
             val slot = s.slots[box]
             val info = f?.info?.get(box)
             val onBreak = if (running) {
-                ctrl?.inBreak(box, n, f?.status ?: emptyMap()) ?: false
+                ctrl?.looksOnBreak(box, n, f?.status ?: emptyMap()) ?: false
             } else info?.status == GameStatus.BREAK
             val noGame = slot != null && f?.loaded == true && f.status[box] == GameStatus.UNKNOWN
             BoxView(box, slot, info, excitement(info, slot), onBreak, noGame)
@@ -398,6 +404,9 @@ object Engine {
             askInput = askInput,
             nowOnTv = nowOnTv,
             tvVolume = tvVolume,
+            streamDelay = detector.timing.delay.seconds?.toInt(),
+            breaksTimed = detector.timing.breaks.count(),
+            breakMusic = detector.bumpers.trustedCount + detector.comebacks.trustedCount,
         )
     }
 
@@ -546,7 +555,7 @@ object Engine {
                     n, (1..boxCount(s)).toList(), f, games = s.slots,
                     assumedBreakSecs = s.breakSecs.toDouble(), upgradeMargin = s.hopping.margin,
                     minDwellSecs = s.hopping.dwellSecs, proactive = s.proactive,
-                    clock = ::now, log = ::log,
+                    clock = ::now, log = ::log, timing = detector.timing,
                 )
             }
         } catch (e: Exception) {
@@ -599,7 +608,7 @@ object Engine {
         if (!opened) {
             try {
                 synchronized(lock) { nav?.resync() }
-                log("Running. Audio on box ${nav?.current}." + if (spotter != null) " Listening for announcer phrases." else "")
+                log("Running. Audio on box ${nav?.current}." + if (spotter != null) " Listening to the announcers." else "")
             } catch (e: Exception) {
                 error = e.message
                 log(e.message ?: "TV error")
@@ -624,6 +633,7 @@ object Engine {
             }
         }
         var micFails = 0
+        var vocabAt = -1e9
         try {
             while (currentCoroutineContext().isActive) {
                 val m = mic
@@ -639,7 +649,17 @@ object Engine {
                         }
                     } else micFails = 0
                 }
-                val cue = sec?.let { x -> spotter?.let { sp -> runCatching { sp.accept(x.boosted) }.getOrNull() } }
+                // Keep the speech recognizer listening for these games' players and terms.
+                if (now() - vocabAt > 60) {
+                    vocabAt = now()
+                    spotter?.let { sp ->
+                        val words = s.slots.values.map { it.league }.distinct().flatMap { gameTerms(it) } +
+                            (feed?.names().orEmpty())
+                        runCatching { sp.setGameWords(words) }
+                    }
+                }
+                val said = sec?.let { x -> spotter?.let { sp -> runCatching { sp.accept(x.boosted) }.getOrNull() } }
+                val cue = said?.cue
                 val n = now()
                 val cur = nav?.current
                 val c = ctrl ?: break
@@ -648,7 +668,7 @@ object Engine {
                     cur?.let { box -> feed?.let { detector.observePlays(box, it.plays(box), n) } }
                     detector.process(sec, n, cur, c.bias(cur, n),
                         learning = !paused && !autoPaused && !waitingForMultiview && !held && lockedBox == null,
-                        cue = cue)
+                        cue = cue, gameWords = said?.gameWords.orEmpty(), adWords = said?.adWords.orEmpty())
                 } else null
                 if (result != null) lastResult = result
                 if (paused || autoPaused || waitingForMultiview || held) {
@@ -670,7 +690,7 @@ object Engine {
                     if (lockedBox == null) {
                         try {
                             if (c.step(heard, strongAd = result?.strongAd == true,
-                                    strongWhy = if (result?.cue != null) result.why else null)) {
+                                    strongWhy = if (result?.strongAd == true) result.why else null)) {
                                 m?.drain()
                                 synchronized(detector) { detector.onSwitch() }
                                 lastResult = null

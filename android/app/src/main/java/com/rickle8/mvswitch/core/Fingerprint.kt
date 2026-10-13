@@ -135,6 +135,7 @@ class AdPrints(private val maxSegments: Int = 80) {
     private var nextId = 1
 
     val size get() = segments.size
+    val trustedCount: Int @Synchronized get() = segments.values.count { !it.auto }
 
     @Synchronized
     fun add(packed: List<Long>, auto: Boolean, now: Long): Int? {
@@ -210,6 +211,8 @@ class AdPrints(private val maxSegments: Int = 80) {
     fun match(query: List<Long>, now: Long): AdMatch? {
         if (query.isEmpty() || index.isEmpty()) return null
         val q0 = query.minOf { it ushr 21 }
+        // Spread is counted in ~0.25 s slots (wider for long queries so they still fit in 64).
+        val slot = maxOf(8L, ((query.maxOf { it ushr 21 } - q0) / 63) + 1).toInt()
         val counts = HashMap<Int, Int>()
         val slots = HashMap<Int, Long>()
         for (q in query) {
@@ -222,7 +225,7 @@ class AdPrints(private val maxSegments: Int = 80) {
                 val t = (e and 0xFFFF).toInt()
                 val key = seg * 131072 + (t - qt + 65536)
                 counts[key] = (counts[key] ?: 0) + 1
-                slots[key] = (slots[key] ?: 0L) or (1L shl minOf(63, qt / 8))
+                slots[key] = (slots[key] ?: 0L) or (1L shl minOf(63, qt / slot))
                 i++
             }
         }
