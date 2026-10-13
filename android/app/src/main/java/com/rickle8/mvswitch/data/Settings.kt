@@ -1,6 +1,7 @@
 package com.rickle8.mvswitch.data
 
 import android.content.Context
+import com.rickle8.mvswitch.audio.DEFAULT_CUE_PHRASES
 import com.rickle8.mvswitch.core.GameSlot
 import org.json.JSONObject
 
@@ -28,6 +29,14 @@ data class Settings(
     val breakSecs: Int = 150,
     val league: String = "football/nfl",
     val githubToken: String = "",
+    /** Listen for announcer break phrases ("we'll be right back"). */
+    val useCues: Boolean = true,
+    val cuePhrases: List<String> = DEFAULT_CUE_PHRASES,
+    /** Open YouTube TV on the TV when switching starts (if it isn't already on screen). */
+    val openYouTubeTv: Boolean = true,
+    /** Pause switching while YouTube TV isn't on screen, so arrows never go to another app. */
+    val autoPause: Boolean = true,
+    val youTubeTvAppId: String = "",
 ) {
     val adThreshold: Double get() = 0.75 - 0.25 * micSensitivity
     val gameThreshold: Double get() = adThreshold - 0.2
@@ -39,6 +48,11 @@ data class Settings(
         .put("proactive", proactive).put("hopping", hopping.name).put("breakSecs", breakSecs)
         .put("league", league)
         .put("githubToken", githubToken)
+        .put("useCues", useCues)
+        .put("cuePhrases", org.json.JSONArray(cuePhrases))
+        .put("openYouTubeTv", openYouTubeTv)
+        .put("autoPause", autoPause)
+        .put("youTubeTvAppId", youTubeTvAppId)
         .put("slots", JSONObject().apply {
             slots.forEach { (box, s) ->
                 put(box.toString(), JSONObject().put("league", s.league).put("team", s.team)
@@ -72,6 +86,13 @@ data class Settings(
                 breakSecs = j.optInt("breakSecs", d.breakSecs),
                 league = j.optString("league", d.league),
                 githubToken = j.optString("githubToken", ""),
+                useCues = j.optBoolean("useCues", d.useCues),
+                cuePhrases = j.optJSONArray("cuePhrases")?.let { a ->
+                    (0 until a.length()).map { a.optString(it) }.filter { it.isNotBlank() }
+                }?.takeIf { it.isNotEmpty() } ?: d.cuePhrases,
+                openYouTubeTv = j.optBoolean("openYouTubeTv", d.openYouTubeTv),
+                autoPause = j.optBoolean("autoPause", d.autoPause),
+                youTubeTvAppId = j.optString("youTubeTvAppId", ""),
             )
         }
     }

@@ -4,3 +4,4 @@ local.properties
 .idea/
 *.iml
 app/src/main/assets/yamnet.tflite
+app/src/main/assets/vosk-model/

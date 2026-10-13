@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.GridView
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.SettingsRemote
 import androidx.compose.material.icons.filled.SportsFootball
 import androidx.compose.material3.Icon
 import androidx.compose.material3.NavigationBar
@@ -59,6 +60,7 @@ class MainActivity : ComponentActivity() {
                             val items = listOf(
                                 Triple("Live", Icons.Filled.SportsFootball, 0),
                                 Triple("Games", Icons.Filled.GridView, 1),
+                                Triple("Remote", Icons.Filled.SettingsRemote, 3),
                                 Triple("Settings", Icons.Filled.Settings, 2),
                             )
                             for ((label, icon, i) in items) {
@@ -86,6 +88,7 @@ class MainActivity : ComponentActivity() {
                             onStop = { SwitcherService.stop(this) },
                             onGoToGames = { tab = 1 })
                         1 -> GamesScreen(settings, mod)
+                        3 -> RemoteScreen(state, settings, mod)
                         else -> SettingsScreen(state, settings, update, mod)
                     }
                 }

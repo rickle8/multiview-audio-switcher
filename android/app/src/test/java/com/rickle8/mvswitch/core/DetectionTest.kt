@@ -243,4 +243,35 @@ class DetectionTest {
         }
         assertTrue(recognized)
     }
+
+    @Test fun announcerBreakPhraseSwitchesOnceThenCoolsDown() {
+        val d = Detector()
+        val audio = throughRoom(jingle(5, 90), 4)
+        var t = 0.0
+        for (s in 0 until 10) d.process(second(audio, s), t++, 1, Bias.NORMAL, true)
+        val hit = d.process(second(audio, 10), t++, 1, Bias.NORMAL, true, cue = "we'll be right back")
+        assertTrue(hit.strongAd)
+        assertEquals(Heard.AD, hit.heard)
+        assertEquals("we'll be right back", hit.cue)
+        assertTrue(hit.why!!.contains("right back"))
+        d.onSwitch()
+        // Same phrase again 20 s later (e.g. a replay of the call): ignored.
+        for (s in 11 until 30) d.process(second(audio, s), t++, 1, Bias.NORMAL, true)
+        val again = d.process(second(audio, 30), t++, 1, Bias.NORMAL, true, cue = "stay with us")
+        assertFalse(again.strongAd)
+        // Phrases don't teach the classifier that announcer audio is an ad.
+        assertEquals(0, d.model.adSeconds)
+    }
+
+    @Test fun controllerLogsTheCue() {
+        var now = 100.0
+        val logs = mutableListOf<String>()
+        val nav = Navigator(object : Remote { override fun press(key: Key) {} }, LAYOUTS.getValue(2), home = false, sleep = {})
+        val f = GameFeed(emptyMap(), { JSONObject() }, { now }, pollSecs = 1e9)
+        f.recordPlay(1, "Rush: up the middle for 4 yards", 95.0, 95.0) // a play just happened...
+        val c = Controller(nav, listOf(1, 2), f, clock = { now }, log = { logs += it })
+        assertTrue(c.step(Heard.AD, strongAd = true, strongWhy = "Announcer said \u201cstay with us\u201d"))
+        assertEquals(2, nav.current) // ...but the announcer's call still wins
+        assertTrue(logs.last().startsWith("Announcer said"))
+    }
 }

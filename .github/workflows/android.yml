@@ -33,6 +33,14 @@ jobs:
           curl -fsSL -o app/src/main/assets/yamnet.tflite \
             https://storage.googleapis.com/mediapipe-models/audio_classifier/yamnet/float32/1/yamnet.tflite
 
+      - name: Download offline speech model (Vosk, small English)
+        run: |
+          curl -fsSL -o /tmp/vosk.zip https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip
+          unzip -q /tmp/vosk.zip -d /tmp/vosk
+          rm -rf app/src/main/assets/vosk-model
+          mv /tmp/vosk/vosk-model-small-en-us-0.15 app/src/main/assets/vosk-model
+          du -sh app/src/main/assets/vosk-model
+
       - name: Unit tests
         run: gradle --no-daemon testDebugUnitTest 2>&1 | tee ../build.log; exit ${PIPESTATUS[0]}
         shell: bash

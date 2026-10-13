@@ -2,7 +2,11 @@ package com.rickle8.mvswitch.service
 
 import android.content.Context
 import android.os.SystemClock
+import com.rickle8.mvswitch.audio.KeywordSpotter
 import com.rickle8.mvswitch.audio.MicClassifier
+import com.rickle8.mvswitch.audio.SpeechModel
+import com.rickle8.mvswitch.core.Key
+import com.rickle8.mvswitch.remote.TvApps
 import com.rickle8.mvswitch.core.Controller
 import com.rickle8.mvswitch.core.GameFeed
 import com.rickle8.mvswitch.core.GameInfo
@@ -74,6 +78,12 @@ data class EngineState(
     val adsRemembered: Int = 0,
     val voiceLearned: Boolean = false,
     val why: String? = null,
+    /** YouTube TV was just opened: waiting for you to put multiview up. */
+    val waitingForMultiview: Boolean = false,
+    /** Paused on its own because YouTube TV isn't on screen. */
+    val autoPaused: Boolean = false,
+    val cuesOn: Boolean = false,
+    val remoteMsg: String? = null,
 )
 
 object Engine {
@@ -102,6 +112,14 @@ object Engine {
     private lateinit var detector: Detector
     @Volatile private var lastResult: DetectResult? = null
 
+    @Volatile private var spotter: KeywordSpotter? = null
+    @Volatile private var speechDir: java.io.File? = null
+    @Volatile private var waitingForMultiview = false
+    @Volatile private var autoPaused = false
+    @Volatile private var needResync = false
+    @Volatile private var remoteMsg: String? = null
+    private var manualRemote: Remote? = null
+
     @Volatile var restarting = false
     @Volatile private var paused = false
     @Volatile private var lockedBox: Int? = null
@@ -120,6 +138,7 @@ object Engine {
         store = SettingsStore(app)
         _settings.value = store.load()
         detector = Detector(app.filesDir).also { runCatching { it.load() } }
+        scope.launch(Dispatchers.IO) { speechDir = runCatching { SpeechModel.install(app) }.getOrNull() }
         scope.launch(Dispatchers.IO) { previewLoop() }
     }
 
@@ -130,6 +149,9 @@ object Engine {
         if (new == old) return
         _settings.value = new
         store.save(new)
+        if (new.tvType != old.tvType || new.tvHost != old.tvHost) {
+            (manualRemote as? SamsungRemote)?.close(); manualRemote = null
+        }
         if (new.slots.mapValues { it.value.team } != old.slots.mapValues { it.value.team } ||
             new.layout != old.layout) previewFeed = null
         val running = job?.isActive == true
@@ -137,7 +159,8 @@ object Engine {
         fun games(x: Settings) = x.slots.mapValues { it.value.league to it.value.team }
         val structural = new.tvType != old.tvType || new.tvHost != old.tvHost ||
             new.layout != old.layout || games(new) != games(old) || new.useMic != old.useMic ||
-            new.homing != old.homing || new.homePresses != old.homePresses
+            new.homing != old.homing || new.homePresses != old.homePresses ||
+            new.useCues != old.useCues || new.cuePhrases != old.cuePhrases
         if (structural) {
             log("Settings changed, restarting")
             SwitcherService.restart(app)
@@ -240,6 +263,10 @@ object Engine {
             adsRemembered = detector.prints.size,
             voiceLearned = detector.voices.ready,
             why = if (running && micLive) r?.why else null,
+            waitingForMultiview = running && waitingForMultiview,
+            autoPaused = running && autoPaused,
+            cuesOn = running && spotter != null,
+            remoteMsg = remoteMsg,
         )
     }
 
@@ -260,11 +287,15 @@ object Engine {
         error = null
         paused = false
         lockedBox = null
+        waitingForMultiview = false
+        autoPaused = false
+        needResync = false
         job = scope.launch(Dispatchers.IO) {
             try {
                 runLoop()
             } finally {
                 synchronized(detector) { detector.save() }
+                spotter?.close(); spotter = null
                 synchronized(lock) {
                     mic?.close(); mic = null
                     (remote as? SamsungRemote)?.close()
@@ -318,14 +349,79 @@ object Engine {
         } else {
             log("Microphone off. Using live game data only.")
         }
-        try {
-            synchronized(lock) { nav?.resync() }
-            log("Running. Audio on box ${nav?.current}.")
-        } catch (e: Exception) {
-            error = e.message
-            log(e.message ?: "TV error")
+        if (mic != null && s.useCues) {
+            val dir = speechDir ?: runCatching { SpeechModel.install(app) }.getOrNull()
+            spotter = when {
+                dir == null -> { log("Speech model not available; skipping announcer phrases."); null }
+                else -> runCatching { KeywordSpotter(dir, s.cuePhrases) }
+                    .onFailure { log("Couldn't start speech recognition (${it.message}).") }.getOrNull()
+            }
+        }
+
+        // YouTube TV: find it, open it if needed, and watch whether it's on screen.
+        val apps = remote as? TvApps
+        var ytId = s.youTubeTvAppId.ifBlank { null }
+        if (apps != null && ytId == null && (s.openYouTubeTv || s.autoPause)) {
+            ytId = runCatching { apps.findApp("youtube tv") }.getOrNull()
+            ytId?.let { id -> update { it.copy(youTubeTvAppId = id) } }
+        }
+        var opened = false
+        if (apps != null && ytId != null && s.openYouTubeTv) {
+            val onScreen = runCatching { apps.isOnScreen(ytId) }.getOrNull()
+            if (onScreen != true) {
+                runCatching { apps.launch(ytId) }
+                    .onSuccess {
+                        opened = true
+                        waitingForMultiview = true
+                        log("Opening YouTube TV. Put multiview up, then tap Go.")
+                    }
+                    .onFailure { log("Couldn't open YouTube TV (${it.message}).") }
+            }
+        }
+        if (!opened) {
+            try {
+                synchronized(lock) { nav?.resync() }
+                log("Running. Audio on box ${nav?.current}." + if (spotter != null) " Listening for announcer phrases." else "")
+            } catch (e: Exception) {
+                error = e.message
+                log(e.message ?: "TV error")
+            }
         }
         publish()
+
+        val watchJob = if (apps != null && ytId != null && s.autoPause) scope.launch(Dispatchers.IO) {
+            var misses = 0
+            var offSince = 0.0
+            while (true) {
+                delay(15_000)
+                if (waitingForMultiview) continue
+                when (runCatching { apps.isOnScreen(ytId) }.getOrNull()) {
+                    null -> { log("This TV doesn't report what's on screen; auto-pause is off."); break }
+                    true -> {
+                        misses = 0
+                        if (autoPaused) {
+                            autoPaused = false
+                            needResync = true
+                            log("YouTube TV is back on screen. Resuming.")
+                        }
+                    }
+                    false -> {
+                        misses++
+                        if (misses == 2 && !autoPaused) {
+                            autoPaused = true
+                            offSince = now()
+                            log("YouTube TV isn't on screen. Paused until it's back.")
+                        }
+                        if (autoPaused && now() - offSince > 20 * 60) {
+                            log("YouTube TV has been off screen for 20 minutes. Stopping.")
+                            SwitcherService.stop(app)
+                            break
+                        }
+                    }
+                }
+                publish()
+            }
+        } else null
 
         // Live data on its own loop so a slow network never stalls the mic.
         val feedJob = scope.launch(Dispatchers.IO) {
@@ -341,17 +437,24 @@ object Engine {
             while (currentCoroutineContext().isActive) {
                 val m = mic
                 val sec = if (m != null) m.nextSecond() else { delay(1000); null }
+                val cue = sec?.let { x -> spotter?.let { sp -> runCatching { sp.accept(x.samples) }.getOrNull() } }
                 val n = now()
                 val cur = nav?.current
                 val c = ctrl ?: break
                 val result = if (sec != null) synchronized(detector) {
                     cur?.let { box -> feed?.let { detector.observePlays(box, it.plays(box), n) } }
-                    detector.process(sec, n, cur, c.bias(cur, n), learning = !paused && lockedBox == null)
+                    detector.process(sec, n, cur, c.bias(cur, n),
+                        learning = !paused && !autoPaused && !waitingForMultiview && lockedBox == null, cue = cue)
                 } else null
                 if (result != null) lastResult = result
-                if (paused) {
+                if (paused || autoPaused || waitingForMultiview) {
                     publish()
                     continue
+                }
+                if (needResync) {
+                    needResync = false
+                    runCatching { synchronized(lock) { nav?.resync() } }
+                    synchronized(detector) { detector.onSwitch() }
                 }
                 val heard = when {
                     m == null -> Heard.GAME
@@ -361,7 +464,8 @@ object Engine {
                 synchronized(lock) {
                     if (lockedBox == null) {
                         try {
-                            if (c.step(heard, strongAd = result?.strongAd == true)) {
+                            if (c.step(heard, strongAd = result?.strongAd == true,
+                                    strongWhy = if (result?.cue != null) result.why else null)) {
                                 m?.drain()
                                 synchronized(detector) { detector.onSwitch() }
                                 lastResult = null
@@ -378,6 +482,7 @@ object Engine {
             }
         } finally {
             feedJob.cancel()
+            watchJob?.cancel()
         }
     }
 
@@ -414,6 +519,60 @@ object Engine {
     fun setPaused(p: Boolean) {
         paused = p
         log(if (p) "Paused" else "Resumed")
+    }
+
+    /** Multiview is up after opening YouTube TV: start switching. */
+    fun go() {
+        waitingForMultiview = false
+        autoPaused = false
+        needResync = true
+        log("Running. Audio on box 1.")
+    }
+
+    private fun remoteForManual(): Remote? {
+        if (job?.isActive == true) remote?.let { return it }
+        manualRemote?.let { return it }
+        return runCatching { makeRemote(_settings.value) }.getOrNull()?.also { manualRemote = it }
+    }
+
+    /** Buttons on the Remote tab. */
+    fun press(key: Key) {
+        scope.launch(Dispatchers.IO) {
+            try {
+                val r = remoteForManual() ?: throw IllegalStateException("Set up your TV in Settings first")
+                synchronized(lock) {
+                    r.press(key)
+                    // Arrows in multiview move the audio: keep track of where it went.
+                    val n = nav
+                    if (n != null && job?.isActive == true && key in setOf(Key.LEFT, Key.RIGHT, Key.UP, Key.DOWN)) {
+                        n.current = com.rickle8.mvswitch.core.simulate(n.neighbors, n.current ?: 1, listOf(key))
+                        ctrl?.lastSwitch = now()
+                        synchronized(detector) { detector.onSwitch() }
+                    }
+                }
+                if (remoteMsg != null) { remoteMsg = null; publish() }
+            } catch (e: Exception) {
+                remoteMsg = e.message ?: "TV error"
+                publish()
+            }
+        }
+    }
+
+    fun openYouTubeTv() {
+        scope.launch(Dispatchers.IO) {
+            try {
+                val apps = remoteForManual() as? TvApps
+                    ?: throw IllegalStateException("Opening apps works with Samsung and Roku")
+                val id = _settings.value.youTubeTvAppId.ifBlank { null } ?: apps.findApp("youtube tv")
+                    ?.also { id -> update { it.copy(youTubeTvAppId = id) } }
+                    ?: throw IllegalStateException("Couldn't find YouTube TV on the TV")
+                apps.launch(id)
+                remoteMsg = "Opening YouTube TV…"
+            } catch (e: Exception) {
+                remoteMsg = e.message ?: "TV error"
+            }
+            publish()
+        }
     }
 
     fun switchTo(box: Int, lock: Boolean = false) {

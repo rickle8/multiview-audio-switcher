@@ -16,6 +16,8 @@ data class DetectResult(
     val adPct: Int?,
     val why: String?,
     val topSounds: List<String>,
+    /** An announcer break phrase that triggered this ("we'll be right back"). */
+    val cue: String? = null,
 )
 
 /**
@@ -99,6 +101,8 @@ class Detector(private val dir: File? = null) {
     private var pendingPrintUntil = 0.0
     private var dirty = false
     private var lastSave = 0.0
+    private val recentVoice = ArrayDeque<Pair<Double, Double>>()
+    private var lastCue = -1e9
     var lastWhy: String? = null
         private set
 
@@ -136,7 +140,23 @@ class Detector(private val dir: File? = null) {
     private fun logit(p: Double) = ln(p.coerceIn(1e-4, 1 - 1e-4) / (1 - p.coerceIn(1e-4, 1 - 1e-4)))
     private fun sigmoid(a: Double) = 1 / (1 + exp(-a))
 
-    fun process(sec: MicSecond, now: Double, box: Int?, bias: Bias, learning: Boolean): DetectResult {
+    /**
+     * A break phrase only counts if it was said in the announcers' voice (once
+     * the app knows it), so a commercial saying "stay with us" doesn't fool it.
+     */
+    private fun acceptCue(now: Double): Boolean {
+        if (now - lastCue < 60) return false
+        if (voices.ready) {
+            val recent = recentVoice.filter { now - it.first <= 4 }.map { it.second }
+            if (recent.isNotEmpty() && recent.max() < -0.5) return false
+        }
+        lastCue = now
+        return true
+    }
+
+    fun process(
+        sec: MicSecond, now: Double, box: Int?, bias: Bias, learning: Boolean, cue: String? = null,
+    ): DetectResult {
         val mags = stft.push(sec.samples)
         val firstAbs = stft.nextFrame - mags.size
         fp.push(mags, firstAbs)
@@ -170,6 +190,9 @@ class Detector(private val dir: File? = null) {
 
         // 3. Announcer voice.
         val voice = voices.evidence(audio, speech)
+        if (voice != null) recentVoice.addLast(now to voice)
+        while (recentVoice.isNotEmpty() && now - recentVoice.first().first > 10) recentVoice.removeFirst()
+        val cueHit = cue != null && acceptCue(now)
         if (voice != null && game + ad > 0.05) {
             val p = sigmoid(logit(ad / (game + ad)) - voice)
             val total = game + ad
@@ -187,7 +210,7 @@ class Detector(private val dir: File? = null) {
 
         val before = verdict.state
         val frame = Frame(now, game, ad, loud)
-        if (strong) { verdict.add(frame, effBias); verdict.forceAd(now) } else verdict.add(frame, effBias)
+        if (strong || cueHit) { verdict.add(frame, effBias); verdict.forceAd(now) } else verdict.add(frame, effBias)
         val heard = verdict.state
         val pAd = if (game + ad > 0.05) ad / (game + ad) else null
 
@@ -215,6 +238,7 @@ class Detector(private val dir: File? = null) {
         maybeSave(now)
 
         val why = when {
+            cueHit -> "Announcer said \u201c$cue\u201d"
             strong -> "Recognized an ad it's heard before"
             recentTransition && heard == Heard.AD -> "Sound changed suddenly"
             voice != null && voice >= 1.0 -> "Announcers talking"
@@ -223,7 +247,8 @@ class Detector(private val dir: File? = null) {
         }
         lastWhy = why
         val frac = verdict.adFraction(effBias.windowSecs)
-        return DetectResult(heard, strong, frac?.let { (it * 100).toInt() }, why, top)
+        return DetectResult(heard, strong || cueHit, frac?.let { (it * 100).toInt() }, why, top,
+            if (cueHit) cue else null)
     }
 
     private fun labelRec(r: Rec, isAd: Boolean) {

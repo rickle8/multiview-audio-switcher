@@ -125,6 +125,16 @@ fun SettingsScreen(state: EngineState, settings: Settings, update: UpdateState, 
                 color = if (state.testStatus?.startsWith("Failed") == true) C.red else C.muted,
                 fontSize = 13.sp, modifier = Modifier.padding(top = 8.dp),
             )
+            if (settings.tvType != TvType.TEST) {
+                HorizontalDivider(Modifier.padding(vertical = 14.dp), color = C.line)
+                ToggleRow("Open YouTube TV when starting",
+                    "If it isn't already on screen, Start opens it on the TV. Then you put multiview up and tap Go.",
+                    settings.openYouTubeTv) { v -> Engine.update { it.copy(openYouTubeTv = v) } }
+                Spacer(Modifier.height(12.dp))
+                ToggleRow("Pause when YouTube TV isn't on screen",
+                    "So it never presses arrows in another app. Resumes when YouTube TV is back; stops after 20 minutes.",
+                    settings.autoPause) { v -> Engine.update { it.copy(autoPause = v) } }
+            }
             HorizontalDivider(Modifier.padding(vertical = 14.dp), color = C.line)
             ToggleRow("Reset highlight before each switch",
                 "Presses up/left first so it never loses track. Turn off if that opens a menu on your TV.",
@@ -155,6 +165,35 @@ fun SettingsScreen(state: EngineState, settings: Settings, update: UpdateState, 
                     color = C.muted, fontSize = 12.sp, lineHeight = 18.sp)
                 TextButton(onClick = { Engine.resetLearning() }) {
                     Text("Forget everything it learned", color = C.red)
+                }
+            }
+            HorizontalDivider(Modifier.padding(vertical = 14.dp), color = C.line)
+            ToggleRow("Listen for announcer break phrases",
+                "Switches when the announcers say things like \u201cwe'll be right back\u201d or \u201cstay with us.\u201d " +
+                    "Runs offline on the phone. Only counts the announcers' voices once it knows them.",
+                settings.useCues) { v -> Engine.update { it.copy(useCues = v) } }
+            if (settings.useCues) {
+                Spacer(Modifier.height(10.dp))
+                var text by remember(settings.cuePhrases) { mutableStateOf(settings.cuePhrases.joinToString("\n")) }
+                val parsed = text.split("\n", ",").map { it.trim() }.filter { it.isNotBlank() }
+                OutlinedTextField(
+                    value = text,
+                    onValueChange = { text = it },
+                    label = { Text("Phrases (one per line)") },
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(12.dp),
+                    minLines = 3,
+                    maxLines = 8,
+                )
+                Row {
+                    if (parsed != settings.cuePhrases && parsed.isNotEmpty()) {
+                        TextButton(onClick = { Engine.update { it.copy(cuePhrases = parsed) }; focus.clearFocus() }) {
+                            Text("Save phrases", color = C.accent)
+                        }
+                    }
+                    TextButton(onClick = {
+                        Engine.update { it.copy(cuePhrases = com.rickle8.mvswitch.audio.DEFAULT_CUE_PHRASES) }
+                    }) { Text("Reset to defaults", color = C.muted) }
                 }
             }
             HorizontalDivider(Modifier.padding(vertical = 14.dp), color = C.line)

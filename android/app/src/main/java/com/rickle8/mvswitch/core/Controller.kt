@@ -132,7 +132,7 @@ class Controller(
     }
 
     /** Returns true if it switched (caller should reset the audio window). */
-    fun step(heard: Heard, strongAd: Boolean = false): Boolean {
+    fun step(heard: Heard, strongAd: Boolean = false, strongWhy: String? = null): Boolean {
         val now = clock()
         val cur = nav.current ?: return false
         if (heard == Heard.GAME) {
@@ -148,7 +148,8 @@ class Controller(
         }
         when (heard) {
             Heard.AD -> {
-                if (strongAd) return goToBreak(cur, now, status, "Recognized a commercial on box $cur")
+                if (strongAd) return goToBreak(cur, now, status,
+                    (strongWhy ?: "Recognized a commercial") + " on box $cur")
                 val play = recentPlay(cur, now)
                 if (play != null) {
                     if (guardLogged != play) {

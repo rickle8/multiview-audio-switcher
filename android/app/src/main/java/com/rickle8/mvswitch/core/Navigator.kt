@@ -1,6 +1,6 @@
 package com.rickle8.mvswitch.core
 
-enum class Key { LEFT, RIGHT, UP, DOWN, SELECT }
+enum class Key { LEFT, RIGHT, UP, DOWN, SELECT, BACK, HOME, PLAY, PAUSE, VOL_UP, VOL_DOWN, MUTE }
 
 interface Remote {
     fun press(key: Key)

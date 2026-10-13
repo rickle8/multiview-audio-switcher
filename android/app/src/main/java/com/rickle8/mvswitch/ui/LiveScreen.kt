@@ -163,6 +163,8 @@ fun LiveScreen(
 private fun statusLine(s: EngineState): String = when {
     s.starting -> "Connecting to the TV…"
     !s.running -> "Not running"
+    s.waitingForMultiview -> "Waiting for multiview"
+    s.autoPaused -> "Paused · YouTube TV isn't on screen"
     s.paused -> "Paused"
     s.lockedBox != null -> "Locked on box ${s.lockedBox}"
     else -> "Auto switching · audio on box ${s.currentBox ?: "?"}"
@@ -193,6 +195,22 @@ private fun ControlPanel(
                 }
                 Text("Put your phone near the TV. It keeps working with the screen off.",
                     color = C.muted, fontSize = 13.sp, modifier = Modifier.padding(top = 10.dp))
+            }
+        } else if (state.waitingForMultiview) {
+            Text("YouTube TV is opening. Put multiview up on the TV (the Remote tab works), then tap Go.",
+                color = C.text, fontSize = 15.sp)
+            Spacer(Modifier.height(12.dp))
+            Button(onClick = { Engine.go() }, modifier = Modifier.fillMaxWidth().height(56.dp),
+                shape = RoundedCornerShape(14.dp)) {
+                Icon(Icons.Filled.PlayArrow, null)
+                Spacer(Modifier.width(8.dp))
+                Text("Go", fontSize = 17.sp, fontWeight = FontWeight.SemiBold)
+            }
+            Spacer(Modifier.height(10.dp))
+            Button(onClick = onStop, modifier = Modifier.fillMaxWidth().height(48.dp),
+                shape = RoundedCornerShape(14.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = C.surface2, contentColor = C.red)) {
+                Text("Cancel")
             }
         } else {
             HearingRow(state)
@@ -234,6 +252,7 @@ private fun ControlPanel(
 @Composable
 private fun HearingRow(state: EngineState) {
     val (label, color) = when {
+        state.autoPaused -> "Paused while YouTube TV is off screen" to C.muted
         !state.micOn -> "Mic off · using live scores only" to C.muted
         state.paused -> "Paused" to C.muted
         state.heard == Heard.AD -> "Hearing a commercial" to C.amber
