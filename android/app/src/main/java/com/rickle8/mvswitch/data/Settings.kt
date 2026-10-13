@@ -5,6 +5,14 @@ import com.rickle8.mvswitch.audio.DEFAULT_CUE_PHRASES
 import com.rickle8.mvswitch.core.GameSlot
 import org.json.JSONObject
 
+/** A one-tap button on the Remote tab: open an app or switch to an input. */
+data class Shortcut(val kind: String, val label: String, val value: String) {
+    companion object {
+        const val APP = "app"
+        const val INPUT = "input"
+    }
+}
+
 enum class TvType(val label: String) { SAMSUNG("Samsung TV"), ROKU("Roku"), TEST("Test mode") }
 
 enum class Hopping(val label: String, val margin: Double, val dwellSecs: Double) {
@@ -40,6 +48,11 @@ data class Settings(
     /** Samsung TV's network MAC, learned automatically; lets Start turn the TV on. */
     val tvMac: String = "",
     val askedBattery: Boolean = false,
+    val shortcuts: List<Shortcut> = emptyList(),
+    /** Your names for HDMI inputs, e.g. 2 -> "PS5". */
+    val inputNames: Map<Int, String> = emptyMap(),
+    /** Phone volume buttons change the TV volume while the Remote tab is open. */
+    val volumeButtons: Boolean = true,
 ) {
     val adThreshold: Double get() = 0.75 - 0.25 * micSensitivity
     val gameThreshold: Double get() = adThreshold - 0.2
@@ -58,6 +71,11 @@ data class Settings(
         .put("youTubeTvAppId", youTubeTvAppId)
         .put("tvMac", tvMac)
         .put("askedBattery", askedBattery)
+        .put("shortcuts", org.json.JSONArray(shortcuts.map {
+            JSONObject().put("kind", it.kind).put("label", it.label).put("value", it.value)
+        }))
+        .put("inputNames", JSONObject().apply { inputNames.forEach { (k, v) -> put(k.toString(), v) } })
+        .put("volumeButtons", volumeButtons)
         .put("slots", JSONObject().apply {
             slots.forEach { (box, s) ->
                 put(box.toString(), JSONObject().put("league", s.league).put("team", s.team)
@@ -100,6 +118,15 @@ data class Settings(
                 youTubeTvAppId = j.optString("youTubeTvAppId", ""),
                 tvMac = j.optString("tvMac", ""),
                 askedBattery = j.optBoolean("askedBattery", false),
+                shortcuts = j.optJSONArray("shortcuts")?.let { a ->
+                    (0 until a.length()).mapNotNull { i ->
+                        a.optJSONObject(i)?.let { Shortcut(it.optString("kind"), it.optString("label"), it.optString("value")) }
+                    }
+                }.orEmpty(),
+                inputNames = j.optJSONObject("inputNames")?.let { o ->
+                    o.keys().asSequence().mapNotNull { k -> k.toIntOrNull()?.let { it to o.optString(k) } }.toMap()
+                }.orEmpty(),
+                volumeButtons = j.optBoolean("volumeButtons", true),
             )
         }
     }

@@ -6,7 +6,10 @@ import com.rickle8.mvswitch.audio.KeywordSpotter
 import com.rickle8.mvswitch.audio.MicClassifier
 import com.rickle8.mvswitch.audio.SpeechModel
 import com.rickle8.mvswitch.core.Key
+import com.rickle8.mvswitch.data.Shortcut
 import com.rickle8.mvswitch.remote.FoundTv
+import com.rickle8.mvswitch.remote.TvApp
+import com.rickle8.mvswitch.remote.TvExtras
 import com.rickle8.mvswitch.remote.TvApps
 import com.rickle8.mvswitch.remote.TvNetwork
 import com.rickle8.mvswitch.core.Controller
@@ -159,6 +162,8 @@ object Engine {
         store.save(new)
         if (new.tvType != old.tvType || new.tvHost != old.tvHost) {
             (manualRemote as? SamsungRemote)?.close(); manualRemote = null
+            appsCache = null
+            synchronized(iconCache) { iconCache.clear() }
         }
         if (new.slots.mapValues { it.value.team } != old.slots.mapValues { it.value.team } ||
             new.layout != old.layout) previewFeed = null
@@ -604,6 +609,91 @@ object Engine {
             } catch (e: Exception) {
                 remoteMsg = e.message ?: "TV error"
                 publish()
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------- full remote
+    @Volatile private var appsCache: List<TvApp>? = null
+    private val iconCache = HashMap<String, ByteArray?>()
+
+    private fun runOnTv(what: String, block: (Remote) -> Unit) {
+        scope.launch(Dispatchers.IO) {
+            try {
+                val r = remoteForManual() ?: throw IllegalStateException("Set up your TV in Settings first")
+                synchronized(lock) { block(r) }
+                if (remoteMsg != null) { remoteMsg = null; publish() }
+            } catch (e: Exception) {
+                remoteMsg = e.message ?: "Couldn't $what"
+                publish()
+            }
+        }
+    }
+
+    /** Everything installed on the TV (cached; [refresh] to reload). */
+    suspend fun apps(refresh: Boolean = false): List<TvApp> = withContext(Dispatchers.IO) {
+        if (!refresh) appsCache?.let { return@withContext it }
+        val apps = (remoteForManual() as? TvApps)?.let { a -> runCatching { a.listApps() }.getOrNull() }.orEmpty()
+        if (apps.isNotEmpty()) {
+            appsCache = apps
+            // First time: suggest shortcuts for the streaming apps you have.
+            if (_settings.value.shortcuts.isEmpty()) {
+                val favorites = listOf("YouTube TV", "Prime Video", "Netflix", "YouTube", "Disney+", "Max", "Hulu",
+                    "Peacock", "Paramount+", "ESPN")
+                val picks = favorites.mapNotNull { f -> apps.firstOrNull { it.name.equals(f, true) } }.take(6)
+                if (picks.isNotEmpty()) update { s -> s.copy(shortcuts = picks.map { Shortcut(Shortcut.APP, it.name, it.id) }) }
+            }
+        }
+        apps
+    }
+
+    suspend fun appIcon(appId: String): ByteArray? = withContext(Dispatchers.IO) {
+        synchronized(iconCache) { if (iconCache.containsKey(appId)) return@withContext iconCache[appId] }
+        val bytes = (remoteForManual() as? TvExtras)?.let { runCatching { it.icon(appId) }.getOrNull() }
+        synchronized(iconCache) { iconCache[appId] = bytes }
+        bytes
+    }
+
+    fun launchApp(appId: String) = runOnTv("open the app") { r ->
+        (r as? TvApps ?: throw IllegalStateException("Opening apps works with Samsung and Roku")).launch(appId)
+    }
+
+    fun switchInput(n: Int) = runOnTv("switch inputs") { r ->
+        (r as? TvExtras ?: throw IllegalStateException("Inputs work with Samsung and Roku TVs")).input(n)
+    }
+
+    fun sendText(text: String) = runOnTv("type") { r ->
+        (r as? TvExtras ?: throw IllegalStateException("Typing works with Samsung and Roku")).sendText(text)
+    }
+
+    fun runShortcut(s: Shortcut) = when (s.kind) {
+        Shortcut.APP -> launchApp(s.value)
+        Shortcut.INPUT -> s.value.toIntOrNull()?.let { switchInput(it) }
+        else -> Unit
+    }
+
+    /** Power: turns the TV on if it's off (Wake-on-LAN / Roku power key), otherwise off. */
+    fun power() {
+        scope.launch(Dispatchers.IO) {
+            val s = _settings.value
+            val awake = when (s.tvType) {
+                TvType.SAMSUNG -> TvNetwork.samsungAwake(s.tvHost)
+                TvType.ROKU -> RokuRemote(s.tvHost).awake()
+                TvType.TEST -> true
+            }
+            if (awake && s.tvType == TvType.SAMSUNG && s.tvMac.isBlank()) {
+                // Learn the MAC now so the power button can turn the TV back on later.
+                TvNetwork.samsungInfo(s.tvHost)?.optString("wifiMac")?.takeIf { it.length >= 12 }
+                    ?.let { mac -> update { it.copy(tvMac = mac) } }
+            }
+            if (awake) press(Key.POWER)
+            else if (s.tvType == TvType.SAMSUNG && s.tvMac.isBlank()) {
+                remoteMsg = "Can't turn it on yet: use the remote once while the TV is on so the app can learn how."
+                publish()
+            } else {
+                remoteMsg = "Turning on the TV…"; publish()
+                wakeTv(s)
+                remoteMsg = null; publish()
             }
         }
     }

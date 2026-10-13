@@ -30,6 +30,20 @@ import com.rickle8.mvswitch.service.SwitcherService
 import com.rickle8.mvswitch.service.Updater
 
 class MainActivity : ComponentActivity() {
+    /** True while the Remote tab is showing: phone volume buttons then control the TV. */
+    @Volatile private var remoteTabOpen = false
+
+    override fun onKeyDown(keyCode: Int, event: android.view.KeyEvent?): Boolean {
+        if (remoteTabOpen && Engine.settings.value.volumeButtons &&
+            Engine.settings.value.tvType != com.rickle8.mvswitch.data.TvType.TEST
+        ) {
+            when (keyCode) {
+                android.view.KeyEvent.KEYCODE_VOLUME_UP -> { Engine.press(com.rickle8.mvswitch.core.Key.VOL_UP); return true }
+                android.view.KeyEvent.KEYCODE_VOLUME_DOWN -> { Engine.press(com.rickle8.mvswitch.core.Key.VOL_DOWN); return true }
+            }
+        }
+        return super.onKeyDown(keyCode, event)
+    }
     private val permissions = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions(),
     ) {
@@ -69,6 +83,7 @@ class MainActivity : ComponentActivity() {
                 val settings by Engine.settings.collectAsState()
                 val update by Updater.state.collectAsState()
                 var tab by rememberSaveable { mutableIntStateOf(if (settings.slots.isEmpty()) 1 else 0) }
+                androidx.compose.runtime.SideEffect { remoteTabOpen = tab == 3 }
                 Scaffold(
                     containerColor = C.bg,
                     bottomBar = {

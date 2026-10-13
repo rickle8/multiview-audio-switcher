@@ -144,6 +144,10 @@ fun SettingsScreen(state: EngineState, settings: Settings, update: UpdateState, 
                     settings.autoPause) { v -> Engine.update { it.copy(autoPause = v) } }
             }
             HorizontalDivider(Modifier.padding(vertical = 14.dp), color = C.line)
+            ToggleRow("Phone volume buttons control the TV",
+                "While the Remote tab is open.",
+                settings.volumeButtons) { v -> Engine.update { it.copy(volumeButtons = v) } }
+            HorizontalDivider(Modifier.padding(vertical = 14.dp), color = C.line)
             ToggleRow("Reset highlight before each switch",
                 "Presses up/left first so it never loses track. Turn off if that opens a menu on your TV.",
                 settings.homing) { v -> Engine.update { it.copy(homing = v) } }
