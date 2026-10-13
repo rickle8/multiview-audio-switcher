@@ -202,8 +202,11 @@ object Engine {
             val o = _settings.value
             var n = change(o)
             if (n.tvType != o.tvType) {
-                // Another kind of TV: nothing learned about the old one applies.
-                n = n.copy(youTubeTvAppId = "", tvMac = "", samsungToken = null, inputSteps = emptyMap(), directInputs = 0)
+                n = n.copy(youTubeTvAppId = "") // app ids differ between TV makers
+                // Samsung <-> Roku: nothing learned about the old TV applies. (Trying Test mode keeps it all.)
+                if (n.tvType != TvType.TEST && o.tvType != TvType.TEST) {
+                    n = n.copy(tvMac = "", samsungToken = null, inputSteps = emptyMap(), directInputs = 0)
+                }
             } else if (n.tvHost.trim() != o.tvHost.trim()) {
                 n = n.copy(tvMac = "") // learned again the next time the TV is on
             }
