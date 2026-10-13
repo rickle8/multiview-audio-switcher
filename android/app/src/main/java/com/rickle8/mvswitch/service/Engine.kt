@@ -1,48 +1,56 @@
 package com.rickle8.mvswitch.service
 
 import android.content.Context
+import android.os.Build
 import android.os.SystemClock
 import com.rickle8.mvswitch.audio.KeywordSpotter
 import com.rickle8.mvswitch.audio.MicClassifier
 import com.rickle8.mvswitch.audio.SpeechModel
-import com.rickle8.mvswitch.core.Key
-import com.rickle8.mvswitch.data.Shortcut
-import com.rickle8.mvswitch.remote.FoundTv
-import com.rickle8.mvswitch.remote.TvApp
-import com.rickle8.mvswitch.remote.TvExtras
-import com.rickle8.mvswitch.remote.TvApps
-import com.rickle8.mvswitch.remote.TvNetwork
 import com.rickle8.mvswitch.core.Controller
+import com.rickle8.mvswitch.core.DetectResult
+import com.rickle8.mvswitch.core.Detector
 import com.rickle8.mvswitch.core.GameFeed
 import com.rickle8.mvswitch.core.GameInfo
 import com.rickle8.mvswitch.core.GameSlot
+import com.rickle8.mvswitch.core.GameStatus
 import com.rickle8.mvswitch.core.Heard
+import com.rickle8.mvswitch.core.Key
 import com.rickle8.mvswitch.core.LAYOUTS
 import com.rickle8.mvswitch.core.Navigator
 import com.rickle8.mvswitch.core.Remote
-import com.rickle8.mvswitch.core.DetectResult
-import com.rickle8.mvswitch.core.Detector
 import com.rickle8.mvswitch.core.ScheduledGame
-import com.rickle8.mvswitch.core.summaryUrl
 import com.rickle8.mvswitch.core.excitement
 import com.rickle8.mvswitch.core.listGames
 import com.rickle8.mvswitch.core.scoreboardUrl
+import com.rickle8.mvswitch.core.simulate
+import com.rickle8.mvswitch.core.summaryUrl
 import com.rickle8.mvswitch.data.Settings
 import com.rickle8.mvswitch.data.SettingsStore
+import com.rickle8.mvswitch.data.Shortcut
 import com.rickle8.mvswitch.data.TvType
+import com.rickle8.mvswitch.remote.FoundTv
+import com.rickle8.mvswitch.remote.OkTvHttp
+import com.rickle8.mvswitch.remote.OkWsOpener
 import com.rickle8.mvswitch.remote.RokuRemote
 import com.rickle8.mvswitch.remote.SamsungRemote
 import com.rickle8.mvswitch.remote.TestRemote
+import com.rickle8.mvswitch.remote.TvApp
+import com.rickle8.mvswitch.remote.TvApps
+import com.rickle8.mvswitch.remote.TvExtras
+import com.rickle8.mvswitch.remote.TvNetwork
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -50,6 +58,7 @@ import org.json.JSONObject
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 
 data class BoxView(
@@ -92,6 +101,16 @@ data class EngineState(
     val cuesOn: Boolean = false,
     val remoteMsg: String? = null,
     val feedError: String? = null,
+    /** Holding off on switching for a bit because you're using the remote. */
+    val held: Boolean = false,
+    /** Samsung: whether the TV connection is up right now (null for other TVs). */
+    val tvLinked: Boolean? = null,
+    /** While connecting: what it's waiting for ("Press Allow on the TV"). */
+    val tvWaiting: String? = null,
+    /** The TV's on-screen keyboard is open, so typed text goes there. */
+    val tvKeyboard: Boolean = false,
+    /** The first direct input key was just sent: ask whether the TV switched to this input. */
+    val askInput: Int? = null,
 )
 
 object Engine {
@@ -106,15 +125,18 @@ object Engine {
     private val _state = MutableStateFlow(EngineState())
     val state: StateFlow<EngineState> = _state
 
+    /** Held while switching (navigator + controller), so a press never lands in the middle of a switch. */
     private val lock = Any()
+    private val settingsLock = Any()
+    private val publishLock = Any()
     private var job: Job? = null
-    private var nav: Navigator? = null
-    private var ctrl: Controller? = null
-    private var feed: GameFeed? = null
-    private var mic: MicClassifier? = null
-    private var remote: Remote? = null
-    private var previewFeed: GameFeed? = null
+    @Volatile private var nav: Navigator? = null
+    @Volatile private var ctrl: Controller? = null
+    @Volatile private var feed: GameFeed? = null
+    @Volatile private var mic: MicClassifier? = null
+    @Volatile private var previewFeed: GameFeed? = null
     private val logLines = ArrayDeque<LogLine>()
+    private val tvLines = ArrayDeque<LogLine>()
     private val timeFmt = SimpleDateFormat("h:mm:ss", Locale.US)
 
     private lateinit var detector: Detector
@@ -124,15 +146,33 @@ object Engine {
     @Volatile private var speechDir: java.io.File? = null
     @Volatile private var waitingForMultiview = false
     @Volatile private var autoPaused = false
+    @Volatile private var autoPausedAt = 0.0
+    /** The YouTube TV on-screen watcher is running (so auto-pause can also resume on its own). */
+    @Volatile private var watching = false
     @Volatile private var needResync = false
+    @Volatile private var holdUntil = 0.0
     @Volatile private var remoteMsg: String? = null
-    private var manualRemote: Remote? = null
+    @Volatile private var askInput: Int? = null
 
     @Volatile var restarting = false
     @Volatile private var paused = false
     @Volatile private var lockedBox: Int? = null
     @Volatile private var error: String? = null
     @Volatile private var testStatus: String? = null
+
+    // ---------------------------------------------------------------- the TV connection
+    private val tvThread = Executors.newSingleThreadExecutor { r -> Thread(r, "tv-remote").apply { isDaemon = true } }
+    /** Remote-tab commands run here: one at a time, in the order they were tapped. */
+    private val tvQueue = tvThread.asCoroutineDispatcher()
+    private val tvLock = Any()
+    @Volatile private var tv: Remote? = null
+    @Volatile private var tvKey: String? = null
+    @Volatile private var tvWaiting: String? = null
+    @Volatile private var tvKeyboard = false
+
+    private val ARROWS = setOf(Key.LEFT, Key.RIGHT, Key.UP, Key.DOWN)
+    /** Keys that don't take you anywhere, so switching carries on. */
+    private val PASSIVE = setOf(Key.VOL_UP, Key.VOL_DOWN, Key.MUTE)
 
     fun micAllowed(): Boolean = _settings.value.useMic &&
         androidx.core.content.ContextCompat.checkSelfPermission(app, android.Manifest.permission.RECORD_AUDIO) ==
@@ -152,16 +192,22 @@ object Engine {
 
     // ---------------------------------------------------------------- settings
     fun update(change: (Settings) -> Settings) {
-        val old = _settings.value
-        val new = change(old).let {
-            // A different TV has a different YouTube TV app id (and MAC address).
-            if (it.tvType != old.tvType || it.tvHost != old.tvHost) it.copy(youTubeTvAppId = "", tvMac = "") else it
+        val (old, new) = synchronized(settingsLock) {
+            val o = _settings.value
+            var n = change(o)
+            if (n.tvType != o.tvType) {
+                // Another kind of TV: nothing learned about the old one applies.
+                n = n.copy(youTubeTvAppId = "", tvMac = "", samsungToken = null, inputSteps = emptyMap(), directInputs = 0)
+            } else if (n.tvHost.trim() != o.tvHost.trim()) {
+                n = n.copy(tvMac = "") // learned again the next time the TV is on
+            }
+            if (n == o) return
+            _settings.value = n
+            store.save(n)
+            o to n
         }
-        if (new == old) return
-        _settings.value = new
-        store.save(new)
-        if (new.tvType != old.tvType || new.tvHost != old.tvHost) {
-            (manualRemote as? SamsungRemote)?.close(); manualRemote = null
+        if (new.tvType != old.tvType || new.tvHost.trim() != old.tvHost.trim()) {
+            closeTv()
             appsCache = null
             synchronized(iconCache) { iconCache.clear() }
         }
@@ -170,13 +216,13 @@ object Engine {
         val running = job?.isActive == true
         if (!running) { publish(); return }
         fun games(x: Settings) = x.slots.mapValues { it.value.league to it.value.team }
-        val structural = new.tvType != old.tvType || new.tvHost != old.tvHost ||
+        val structural = new.tvType != old.tvType || new.tvHost.trim() != old.tvHost.trim() ||
             new.layout != old.layout || games(new) != games(old) || new.useMic != old.useMic ||
             new.homing != old.homing || new.homePresses != old.homePresses ||
             new.useCues != old.useCues || new.cuePhrases != old.cuePhrases
         if (structural) {
             log("Settings changed, restarting")
-            SwitcherService.restart(app)
+            SwitcherService.restart(app, micChanged = new.useMic != old.useMic)
         } else {
             // Plain field updates: no lock, so the screen never waits on a switch in progress.
             ctrl?.apply {
@@ -188,6 +234,7 @@ object Engine {
             }
             detector.verdict.adThreshold = new.adThreshold
             detector.verdict.gameThreshold = new.gameThreshold
+            publish()
         }
     }
 
@@ -217,14 +264,44 @@ object Engine {
 
     private fun makeRemote(s: Settings): Remote = when (s.tvType) {
         TvType.SAMSUNG -> {
-            require(s.tvHost.isNotBlank()) { "Enter your TV's IP address in Settings" }
-            SamsungRemote(s.tvHost, s.samsungToken) { token -> update { it.copy(samsungToken = token) } }
+            val host = s.tvHost.trim()
+            require(host.isNotBlank()) { "Enter your TV's IP address in Settings" }
+            SamsungRemote(host, s.samsungToken, { token ->
+                // Saved off this thread: the connection may be holding locks while it waits.
+                scope.launch { update { if (it.tvHost.trim() == host) it.copy(samsungToken = token) else it } }
+            }, OkWsOpener(host), OkTvHttp, log = ::tvLog).apply {
+                onKeyboard = { open -> tvKeyboard = open; publish() }
+                onWaiting = { what -> tvWaiting = what; publish() }
+            }
         }
         TvType.ROKU -> {
             require(s.tvHost.isNotBlank()) { "Enter your Roku's IP address in Settings" }
-            RokuRemote(s.tvHost)
+            RokuRemote(s.tvHost.trim())
         }
         TvType.TEST -> TestRemote()
+    }
+
+    /** The one connection to the TV, shared by switching and the Remote tab. */
+    private fun tvRemote(): Remote = synchronized(tvLock) {
+        val s = _settings.value
+        val key = "${s.tvType}|${s.tvHost.trim()}"
+        val cur = tv
+        if (cur != null && tvKey == key) return cur
+        (cur as? SamsungRemote)?.close()
+        tv = null
+        tvKey = null
+        val r = makeRemote(s)
+        tv = r
+        tvKey = key
+        r
+    }
+
+    private fun closeTv() = synchronized(tvLock) {
+        (tv as? SamsungRemote)?.close()
+        tv = null
+        tvKey = null
+        tvKeyboard = false
+        tvWaiting = null
     }
 
     private fun makeNav(s: Settings, r: Remote) = Navigator(
@@ -233,15 +310,25 @@ object Engine {
     )
 
     // ---------------------------------------------------------------- log/state
+    private fun stamp(): String = synchronized(timeFmt) { timeFmt.format(Date()) }
+
     fun log(text: String) {
         synchronized(logLines) {
-            logLines.addFirst(LogLine(timeFmt.format(Date()), text))
+            logLines.addFirst(LogLine(stamp(), text))
             while (logLines.size > 40) logLines.removeLast()
         }
         publish()
     }
 
-    private fun publish(starting: Boolean = false) {
+    /** Connection details: kept out of the Activity list, but in the diagnostics report. */
+    private fun tvLog(text: String) {
+        synchronized(tvLines) {
+            tvLines.addFirst(LogLine(stamp(), text))
+            while (tvLines.size > 80) tvLines.removeLast()
+        }
+    }
+
+    private fun publish(starting: Boolean = false) = synchronized(publishLock) {
         val s = _settings.value
         val running = job?.isActive == true
         val f = if (running) feed else previewFeed
@@ -251,8 +338,8 @@ object Engine {
             val info = f?.info?.get(box)
             val onBreak = if (running) {
                 ctrl?.inBreak(box, n, f?.status ?: emptyMap()) ?: false
-            } else info?.status == com.rickle8.mvswitch.core.GameStatus.BREAK
-            val noGame = slot != null && f?.loaded == true && f.status[box] == com.rickle8.mvswitch.core.GameStatus.UNKNOWN
+            } else info?.status == GameStatus.BREAK
+            val noGame = slot != null && f?.loaded == true && f.status[box] == GameStatus.UNKNOWN
             BoxView(box, slot, info, excitement(info, slot), onBreak, noGame)
         }
         val r = lastResult
@@ -283,6 +370,11 @@ object Engine {
             cuesOn = running && spotter != null,
             remoteMsg = remoteMsg,
             feedError = f?.lastError,
+            held = running && n < holdUntil,
+            tvLinked = (tv as? SamsungRemote)?.linked,
+            tvWaiting = tvWaiting,
+            tvKeyboard = tvKeyboard,
+            askInput = askInput,
         )
     }
 
@@ -309,8 +401,9 @@ object Engine {
         waitingForMultiview = false
         autoPaused = false
         needResync = false
+        holdUntil = 0.0
         job = scope.launch(Dispatchers.IO) {
-            old?.join() // a restart waits for the previous run to fully let go of the mic and TV
+            old?.join() // a restart waits for the previous run to fully let go of the mic
             stopping = false
             try {
                 runLoop()
@@ -319,9 +412,9 @@ object Engine {
                 spotter?.close(); spotter = null
                 synchronized(lock) {
                     mic?.close(); mic = null
-                    (remote as? SamsungRemote)?.close()
-                    remote = null; nav = null; ctrl = null; feed = null
+                    nav = null; ctrl = null; feed = null
                 }
+                watching = false
                 lastResult = null
                 publish()
             }
@@ -329,34 +422,50 @@ object Engine {
         publish(starting = true)
     }
 
-    fun stop() {
+    fun stop(quiet: Boolean = false) {
         stopping = true
         job?.cancel()
-        log("Stopped")
+        if (!quiet) log("Stopped")
     }
 
-    /** Turn the TV on if it's off (Samsung: Wake-on-LAN, Roku TV: power key). */
-    private suspend fun wakeTv(s: Settings) {
+    /** Remember the Samsung's MAC address so the app can turn the TV on later. */
+    private fun learnMac(s: Settings) {
+        if (s.tvType != TvType.SAMSUNG || s.tvMac.isNotBlank() || s.tvHost.isBlank()) return
+        val info = TvNetwork.samsungInfo(s.tvHost) ?: return
+        val mac = TvNetwork.normalizeMac(info.optString("wifiMac")) ?: return
+        update { if (it.tvHost == s.tvHost && it.tvMac.isBlank()) it.copy(tvMac = mac) else it }
+    }
+
+    /** Turn the TV on if it's off (Samsung: Wake-on-LAN, Roku TV: power key). True if it's on. */
+    private suspend fun wakeTv(s: Settings): Boolean {
         when (s.tvType) {
             TvType.SAMSUNG -> {
-                if (s.tvHost.isBlank() || TvNetwork.samsungAwake(s.tvHost)) return
-                if (s.tvMac.isBlank()) return
+                if (s.tvHost.isBlank()) return false
+                if (TvNetwork.samsungAwake(s.tvHost)) return true
+                if (s.tvMac.isBlank()) return false
                 log("Turning on the TV…")
-                runCatching { TvNetwork.wake(s.tvMac) }
+                runCatching { TvNetwork.wake(s.tvMac, s.tvHost) }
                 repeat(12) {
                     delay(2500)
-                    if (TvNetwork.samsungAwake(s.tvHost)) { delay(4000); return } // give it a moment to finish booting
-                    if (it % 4 == 3) runCatching { TvNetwork.wake(s.tvMac) }
+                    if (TvNetwork.samsungAwake(s.tvHost)) {
+                        delay(4000) // give it a moment to finish starting up
+                        return true
+                    }
+                    if (it % 4 == 3) runCatching { TvNetwork.wake(s.tvMac, s.tvHost) }
                 }
-                log("The TV didn't wake up. On the TV, turn on Settings > General > Network > Expert Settings > Power On with Mobile.")
+                log("The TV didn't wake up. On the TV, turn on Settings > General > Network > Expert Settings > " +
+                    "Power On with Mobile.")
+                return false
             }
             TvType.ROKU -> {
-                val roku = RokuRemote(s.tvHost)
-                if (s.tvHost.isBlank() || roku.awake()) return
+                if (s.tvHost.isBlank()) return false
+                val roku = RokuRemote(s.tvHost.trim())
+                if (roku.awake()) return true
                 roku.powerOn()
                 delay(6000)
+                return roku.awake()
             }
-            TvType.TEST -> Unit
+            TvType.TEST -> return true
         }
     }
 
@@ -364,11 +473,11 @@ object Engine {
         val s = _settings.value
         wakeTv(s)
         try {
-            val r = makeRemote(s)
+            val r = tvRemote()
             val n = makeNav(s, r)
             val f = makeFeed(s)
             synchronized(lock) {
-                remote = r; nav = n; feed = f
+                nav = n; feed = f
                 synchronized(detector) {
                     detector.verdict.adThreshold = s.adThreshold
                     detector.verdict.gameThreshold = s.gameThreshold
@@ -406,15 +515,10 @@ object Engine {
             }
         }
 
-        // Remember the Samsung's MAC address so a later Start can turn the TV on.
-        if (s.tvType == TvType.SAMSUNG && s.tvMac.isBlank()) {
-            TvNetwork.samsungInfo(s.tvHost)?.optString("wifiMac")?.takeIf { it.length >= 12 }?.let { mac ->
-                update { it.copy(tvMac = mac) }
-            }
-        }
+        learnMac(s)
 
         // YouTube TV: find it, open it if needed, and watch whether it's on screen.
-        val apps = remote as? TvApps
+        val apps = tv as? TvApps
         var ytId = s.youTubeTvAppId.ifBlank { null }
         if (apps != null && ytId == null && (s.openYouTubeTv || s.autoPause)) {
             ytId = runCatching { apps.findApp("youtube tv") }.getOrNull()
@@ -444,38 +548,10 @@ object Engine {
         }
         publish()
 
-        val watchJob = if (apps != null && ytId != null && s.autoPause) scope.launch(Dispatchers.IO) {
-            var misses = 0
-            var offSince = 0.0
-            while (true) {
-                delay(15_000)
-                if (waitingForMultiview) continue
-                when (runCatching { apps.isOnScreen(ytId) }.getOrNull()) {
-                    null -> { log("This TV doesn't report what's on screen; auto-pause is off."); break }
-                    true -> {
-                        misses = 0
-                        if (autoPaused) {
-                            autoPaused = false
-                            needResync = true
-                            log("YouTube TV is back on screen. Resuming.")
-                        }
-                    }
-                    false -> {
-                        misses++
-                        if (misses == 2 && !autoPaused) {
-                            autoPaused = true
-                            offSince = now()
-                            log("YouTube TV isn't on screen. Paused until it's back.")
-                        }
-                        if (autoPaused && now() - offSince > 20 * 60) {
-                            log("YouTube TV has been off screen for 20 minutes. Stopping.")
-                            SwitcherService.stop(app)
-                            break
-                        }
-                    }
-                }
-                publish()
-            }
+        val yt = ytId
+        val watchJob = if (apps != null && yt != null && s.autoPause) {
+            watching = true
+            scope.launch(Dispatchers.IO) { watchYouTubeTv(apps, yt) }
         } else null
 
         // Live data on its own loop so a slow network never stalls the mic.
@@ -488,27 +564,42 @@ object Engine {
                 delay(1000)
             }
         }
+        var micFails = 0
         try {
             while (currentCoroutineContext().isActive) {
                 val m = mic
                 val sec = if (m != null) m.nextSecond() else { delay(1000); null }
+                if (m != null) {
+                    if (sec == null) {
+                        // The mic stopped delivering audio (another app grabbed it, or audio hiccuped).
+                        micFails++
+                        delay(1000)
+                        if (micFails % 10 == 5) {
+                            if (micFails == 5) log("The microphone stopped working. Restarting it.")
+                            runCatching { m.stop(); m.start() }
+                        }
+                    } else micFails = 0
+                }
                 val cue = sec?.let { x -> spotter?.let { sp -> runCatching { sp.accept(x.boosted) }.getOrNull() } }
                 val n = now()
                 val cur = nav?.current
                 val c = ctrl ?: break
+                val held = n < holdUntil
                 val result = if (sec != null) synchronized(detector) {
                     cur?.let { box -> feed?.let { detector.observePlays(box, it.plays(box), n) } }
                     detector.process(sec, n, cur, c.bias(cur, n),
-                        learning = !paused && !autoPaused && !waitingForMultiview && lockedBox == null, cue = cue)
+                        learning = !paused && !autoPaused && !waitingForMultiview && !held && lockedBox == null,
+                        cue = cue)
                 } else null
                 if (result != null) lastResult = result
-                if (paused || autoPaused || waitingForMultiview) {
+                if (paused || autoPaused || waitingForMultiview || held) {
                     publish()
                     continue
                 }
                 if (needResync) {
                     needResync = false
                     runCatching { synchronized(lock) { nav?.resync() } }
+                        .onFailure { log(it.message ?: "TV error") }
                     synchronized(detector) { detector.onSwitch() }
                 }
                 val heard = when {
@@ -538,6 +629,56 @@ object Engine {
         } finally {
             feedJob.cancel()
             watchJob?.cancel()
+            watching = false
+        }
+    }
+
+    /** Pauses switching while YouTube TV isn't on screen, so arrows never go to another app. */
+    private suspend fun watchYouTubeTv(apps: TvApps, ytId: String) {
+        var misses = 0
+        var hits = 0
+        var unknown = 0
+        while (true) {
+            delay(10_000)
+            if (waitingForMultiview) { misses = 0; hits = 0; continue }
+            when (runCatching { apps.isOnScreen(ytId) }.getOrNull()) {
+                null -> {
+                    if (++unknown >= 3) {
+                        log("This TV doesn't say what's on screen, so it can't pause on its own.")
+                        watching = false
+                        if (autoPaused) {
+                            autoPaused = false
+                            paused = true
+                            log("Paused. Tap Resume when you're back in multiview.")
+                        }
+                        publish()
+                        return
+                    }
+                }
+                true -> {
+                    unknown = 0; misses = 0; hits++
+                    // Twice in a row, and not right after you left: the app may still be closing.
+                    if (autoPaused && hits >= 2 && now() - autoPausedAt > 20) {
+                        autoPaused = false
+                        needResync = true
+                        log("YouTube TV is back on screen. Switching again.")
+                    }
+                }
+                false -> {
+                    unknown = 0; hits = 0; misses++
+                    if (misses >= 2 && !autoPaused) {
+                        autoPaused = true
+                        autoPausedAt = now()
+                        log("YouTube TV isn't on screen. Paused until it's back.")
+                    }
+                    if (autoPaused && now() - autoPausedAt > 20 * 60) {
+                        log("YouTube TV has been off screen for 20 minutes. Stopping.")
+                        SwitcherService.stop(app)
+                        return
+                    }
+                }
+            }
+            publish()
         }
     }
 
@@ -573,67 +714,164 @@ object Engine {
     // ---------------------------------------------------------------- manual controls
     fun setPaused(p: Boolean) {
         paused = p
+        if (!p) holdUntil = 0.0
         log(if (p) "Paused" else "Resumed")
     }
 
-    /** Multiview is up after opening YouTube TV: start switching. */
+    /** Multiview is up (after opening YouTube TV, or coming back to it): start switching. */
     fun go() {
         waitingForMultiview = false
         autoPaused = false
+        paused = false
+        holdUntil = 0.0
         needResync = true
         log("Running. Audio on box 1.")
     }
 
-    private fun remoteForManual(): Remote? {
-        if (job?.isActive == true) remote?.let { return it }
-        manualRemote?.let { return it }
-        return runCatching { makeRemote(_settings.value) }.getOrNull()?.also { manualRemote = it }
+    /** Hold off automatic switching for a bit while you use the remote. */
+    private fun holdSwitching(secs: Double) {
+        if (job?.isActive != true) return
+        val until = now() + secs
+        if (until > holdUntil) holdUntil = until
+    }
+
+    /** You took the TV somewhere else: no arrows until YouTube TV is back. */
+    private fun leftYouTubeTv(where: String) {
+        if (job?.isActive != true || waitingForMultiview) return
+        if (watching) {
+            if (!autoPaused) log("Switching paused while you're on $where. It picks back up when YouTube TV is on screen.")
+            autoPaused = true
+            autoPausedAt = now()
+        } else if (!paused) {
+            paused = true
+            log("Paused while you're on $where. Tap Resume when you're back in multiview.")
+        }
+        publish()
+    }
+
+    /** Runs a Remote-tab command on the TV queue, reporting any problem on the Remote tab. */
+    private fun onTv(what: String, block: (Remote) -> Unit) {
+        scope.launch(tvQueue) {
+            try {
+                block(tvRemote())
+                remoteMsg = null
+            } catch (e: Exception) {
+                remoteMsg = e.message ?: "Couldn't $what"
+                tvLog("Couldn't $what: ${e.message}")
+            }
+            publish()
+        }
     }
 
     /** Buttons on the Remote tab. */
-    fun press(key: Key) {
-        scope.launch(Dispatchers.IO) {
-            try {
-                val r = remoteForManual() ?: throw IllegalStateException("Set up your TV in Settings first")
-                synchronized(lock) {
-                    r.press(key)
-                    // Arrows in multiview move the audio: keep track of where it went.
-                    val n = nav
-                    if (n != null && job?.isActive == true && key in setOf(Key.LEFT, Key.RIGHT, Key.UP, Key.DOWN)) {
-                        n.current = com.rickle8.mvswitch.core.simulate(n.neighbors, n.current ?: 1, listOf(key))
-                        ctrl?.lastSwitch = now()
-                        synchronized(detector) { detector.onSwitch() }
-                    }
-                }
-                if (remoteMsg != null) { remoteMsg = null; publish() }
-            } catch (e: Exception) {
-                remoteMsg = e.message ?: "TV error"
-                publish()
+    fun press(key: Key) = onTv("press ${key.name.lowercase()}") { r ->
+        val n = nav
+        if (key in ARROWS && n != null && job?.isActive == true && now() >= holdUntil) {
+            synchronized(lock) {
+                r.press(key)
+                // In multiview the arrows move the audio: keep track of where it went.
+                n.current = simulate(n.neighbors, n.current ?: 1, listOf(key))
+                ctrl?.lastSwitch = now()
+                synchronized(detector) { detector.onSwitch() }
+            }
+        } else {
+            r.press(key)
+        }
+        // Anything but volume (or arrows in multiview) means you're in a menu: don't fight you.
+        if (key !in PASSIVE && (key !in ARROWS || now() < holdUntil)) holdSwitching(30.0)
+    }
+
+    private fun parseStep(step: String): Pair<Key, Int>? {
+        val parts = step.split('*')
+        val key = runCatching { Key.valueOf(parts[0].trim()) }.getOrNull() ?: return null
+        val count = parts.getOrNull(1)?.trim()?.toIntOrNull()?.coerceIn(1, 20) ?: 1
+        return key to count
+    }
+
+    /** Replays taught steps with the pauses a TV menu needs to keep up. */
+    private fun playSteps(r: Remote, steps: List<String>, live: Boolean = false) {
+        for (step in steps) {
+            val (key, count) = parseStep(step) ?: continue
+            repeat(count) {
+                r.press(key)
+                if (!live || count > 1) Thread.sleep(when {
+                    key == Key.SOURCE || key == Key.HOME -> 1800L
+                    count > 1 -> 300L
+                    else -> 550L
+                })
             }
         }
+    }
+
+    /** One step while teaching an input (the TV follows along live). */
+    fun pressStep(step: String) = onTv("press") { r ->
+        holdSwitching(120.0)
+        playSteps(r, listOf(step), live = true)
+    }
+
+    fun inputName(n: Int) = _settings.value.inputNames[n]?.takeIf { it.isNotBlank() } ?: "HDMI $n"
+
+    /** A Samsung that ignores input keys, and this input hasn't been taught yet. */
+    fun needsTeaching(n: Int): Boolean {
+        val s = _settings.value
+        return s.tvType == TvType.SAMSUNG && s.directInputs < 0 && s.inputSteps[n].isNullOrEmpty()
+    }
+
+    fun switchInput(n: Int) = onTv("switch inputs") { r ->
+        val s = _settings.value
+        val steps = s.inputSteps[n]
+        leftYouTubeTv(inputName(n))
+        when {
+            !steps.isNullOrEmpty() -> playSteps(r, steps)
+            r is TvExtras -> {
+                r.input(n)
+                // Many Samsungs ignore direct input keys and nothing can tell us, so ask once.
+                if (r is SamsungRemote && s.directInputs == 0) askInput = n
+            }
+            else -> throw IllegalStateException("Inputs work with Samsung and Roku TVs")
+        }
+    }
+
+    /** Tries taught steps before saving them. */
+    fun testSteps(n: Int, steps: List<String>) = onTv("switch inputs") { r ->
+        leftYouTubeTv(inputName(n))
+        playSteps(r, steps)
+    }
+
+    fun saveSteps(n: Int, steps: List<String>) = update {
+        it.copy(inputSteps = if (steps.isEmpty()) it.inputSteps - n else it.inputSteps + (n to steps))
+    }
+
+    /** "Did the TV switch?" after the first direct input key. */
+    fun answerInput(worked: Boolean) {
+        askInput = null
+        update { it.copy(directInputs = if (worked) 1 else -1) }
+        publish()
+    }
+
+    fun dismissInputQuestion() {
+        askInput = null
+        publish()
+    }
+
+    /** Samsung's HDMI key: goes to the next HDMI input each press. */
+    fun nextInput() = onTv("switch inputs") { r ->
+        leftYouTubeTv("another input")
+        (r as? SamsungRemote ?: throw IllegalStateException("This button is for Samsung TVs")).nextInput()
     }
 
     // ---------------------------------------------------------------- full remote
     @Volatile private var appsCache: List<TvApp>? = null
     private val iconCache = HashMap<String, ByteArray?>()
-
-    private fun runOnTv(what: String, block: (Remote) -> Unit) {
-        scope.launch(Dispatchers.IO) {
-            try {
-                val r = remoteForManual() ?: throw IllegalStateException("Set up your TV in Settings first")
-                synchronized(lock) { block(r) }
-                if (remoteMsg != null) { remoteMsg = null; publish() }
-            } catch (e: Exception) {
-                remoteMsg = e.message ?: "Couldn't $what"
-                publish()
-            }
-        }
-    }
+    private val iconPermits = Semaphore(3)
 
     /** Everything installed on the TV (cached; [refresh] to reload). */
     suspend fun apps(refresh: Boolean = false): List<TvApp> = withContext(Dispatchers.IO) {
         if (!refresh) appsCache?.let { return@withContext it }
-        val apps = (remoteForManual() as? TvApps)?.let { a -> runCatching { a.listApps() }.getOrNull() }.orEmpty()
+        val r = runCatching { tvRemote() }.getOrNull() as? TvApps
+        val apps = r?.let { a ->
+            runCatching { a.listApps() }.onFailure { remoteMsg = it.message; publish() }.getOrNull()
+        }.orEmpty()
         if (apps.isNotEmpty()) {
             appsCache = apps
             // First time: suggest shortcuts for the streaming apps you have.
@@ -641,7 +879,9 @@ object Engine {
                 val favorites = listOf("YouTube TV", "Prime Video", "Netflix", "YouTube", "Disney+", "Max", "Hulu",
                     "Peacock", "Paramount+", "ESPN")
                 val picks = favorites.mapNotNull { f -> apps.firstOrNull { it.name.equals(f, true) } }.take(6)
-                if (picks.isNotEmpty()) update { s -> s.copy(shortcuts = picks.map { Shortcut(Shortcut.APP, it.name, it.id) }) }
+                if (picks.isNotEmpty()) update { s ->
+                    if (s.shortcuts.isEmpty()) s.copy(shortcuts = picks.map { Shortcut(Shortcut.APP, it.name, it.id) }) else s
+                }
             }
         }
         apps
@@ -649,20 +889,34 @@ object Engine {
 
     suspend fun appIcon(appId: String): ByteArray? = withContext(Dispatchers.IO) {
         synchronized(iconCache) { if (iconCache.containsKey(appId)) return@withContext iconCache[appId] }
-        val bytes = (remoteForManual() as? TvExtras)?.let { runCatching { it.icon(appId) }.getOrNull() }
+        val bytes = iconPermits.withPermit {
+            (runCatching { tvRemote() }.getOrNull() as? TvExtras)?.let { runCatching { it.icon(appId) }.getOrNull() }
+        }
         synchronized(iconCache) { iconCache[appId] = bytes }
         bytes
     }
 
-    fun launchApp(appId: String) = runOnTv("open the app") { r ->
-        (r as? TvApps ?: throw IllegalStateException("Opening apps works with Samsung and Roku")).launch(appId)
+    private fun isYouTubeTv(appId: String): Boolean = appId == _settings.value.youTubeTvAppId ||
+        appsCache?.firstOrNull { it.id == appId }?.name.equals("YouTube TV", ignoreCase = true)
+
+    private fun appName(appId: String): String = appsCache?.firstOrNull { it.id == appId }?.name
+        ?: _settings.value.shortcuts.firstOrNull { it.kind == Shortcut.APP && it.value == appId }?.label
+        ?: "another app"
+
+    fun launchApp(appId: String) = onTv("open the app") { r ->
+        val apps = r as? TvApps ?: throw IllegalStateException("Opening apps works with Samsung and Roku")
+        if (isYouTubeTv(appId)) {
+            if (job?.isActive == true) {
+                waitingForMultiview = true
+                autoPaused = false
+                paused = false
+                log("Opening YouTube TV. Put multiview up, then tap Go.")
+            }
+        } else leftYouTubeTv(appName(appId))
+        apps.launch(appId)
     }
 
-    fun switchInput(n: Int) = runOnTv("switch inputs") { r ->
-        (r as? TvExtras ?: throw IllegalStateException("Inputs work with Samsung and Roku TVs")).input(n)
-    }
-
-    fun sendText(text: String) = runOnTv("type") { r ->
+    fun sendText(text: String) = onTv("type") { r ->
         (r as? TvExtras ?: throw IllegalStateException("Typing works with Samsung and Roku")).sendText(text)
     }
 
@@ -672,29 +926,47 @@ object Engine {
         else -> Unit
     }
 
+    /** Remote tab open: get the TV connection ready so the first tap is instant. */
+    fun warmUp() {
+        val s = _settings.value
+        if (s.tvType != TvType.SAMSUNG || s.tvHost.isBlank()) return
+        scope.launch(tvQueue) {
+            val r = runCatching { tvRemote() }.getOrNull() as? SamsungRemote ?: return@launch
+            runCatching { r.check() }
+                .onSuccess { remoteMsg = null }
+                .onFailure { remoteMsg = it.message }
+            publish()
+        }
+    }
+
     /** Power: turns the TV on if it's off (Wake-on-LAN / Roku power key), otherwise off. */
     fun power() {
         scope.launch(Dispatchers.IO) {
             val s = _settings.value
+            if (s.tvType == TvType.TEST) return@launch
+            if (s.tvHost.isBlank()) { remoteMsg = "Set up your TV in Settings first"; publish(); return@launch }
             val awake = when (s.tvType) {
                 TvType.SAMSUNG -> TvNetwork.samsungAwake(s.tvHost)
-                TvType.ROKU -> RokuRemote(s.tvHost).awake()
+                TvType.ROKU -> RokuRemote(s.tvHost.trim()).awake()
                 TvType.TEST -> true
             }
-            if (awake && s.tvType == TvType.SAMSUNG && s.tvMac.isBlank()) {
-                // Learn the MAC now so the power button can turn the TV back on later.
-                TvNetwork.samsungInfo(s.tvHost)?.optString("wifiMac")?.takeIf { it.length >= 12 }
-                    ?.let { mac -> update { it.copy(tvMac = mac) } }
+            if (awake) {
+                learnMac(s) // so this button can turn it back on later
+                press(Key.POWER)
+                return@launch
             }
-            if (awake) press(Key.POWER)
-            else if (s.tvType == TvType.SAMSUNG && s.tvMac.isBlank()) {
-                remoteMsg = "Can't turn it on yet: use the remote once while the TV is on so the app can learn how."
+            if (s.tvType == TvType.SAMSUNG && _settings.value.tvMac.isBlank()) {
+                remoteMsg = "Can't turn it on yet. Use the remote once while the TV is on so the app can learn how, " +
+                    "or enter the TV's MAC address in Settings."
                 publish()
-            } else {
-                remoteMsg = "Turning on the TV…"; publish()
-                wakeTv(s)
-                remoteMsg = null; publish()
+                return@launch
             }
+            remoteMsg = "Turning on the TV…"; publish()
+            val on = wakeTv(_settings.value)
+            remoteMsg = if (on) null else "The TV didn't turn on. On the TV, turn on Settings > General > Network > " +
+                "Expert Settings > Power On with Mobile."
+            publish()
+            if (on) warmUp()
         }
     }
 
@@ -704,17 +976,16 @@ object Engine {
     fun openYouTubeTv() {
         scope.launch(Dispatchers.IO) {
             try {
-                val apps = remoteForManual() as? TvApps
+                val apps = runCatching { tvRemote() }.getOrNull() as? TvApps
                     ?: throw IllegalStateException("Opening apps works with Samsung and Roku")
                 val id = _settings.value.youTubeTvAppId.ifBlank { null } ?: apps.findApp("youtube tv")
                     ?.also { id -> update { it.copy(youTubeTvAppId = id) } }
                     ?: throw IllegalStateException("Couldn't find YouTube TV on the TV")
-                apps.launch(id)
-                remoteMsg = "Opening YouTube TV…"
+                launchApp(id)
             } catch (e: Exception) {
                 remoteMsg = e.message ?: "TV error"
+                publish()
             }
-            publish()
         }
     }
 
@@ -724,6 +995,7 @@ object Engine {
             try {
                 synchronized(this@Engine.lock) {
                     lockedBox = if (lock) box else null
+                    holdUntil = 0.0
                     nav?.goTo(box)
                     ctrl?.let { it.lastSwitch = now(); it.breakUntil.remove(box) }
                     synchronized(detector) { detector.onSwitch() }
@@ -747,14 +1019,7 @@ object Engine {
             fun status(t: String?) { testStatus = t; publish() }
             try {
                 val running = job?.isActive == true
-                val n: Navigator
-                var tmpRemote: Remote? = null
-                if (running) {
-                    n = nav ?: return@launch
-                } else {
-                    tmpRemote = makeRemote(s)
-                    n = makeNav(s, tmpRemote)
-                }
+                val n: Navigator = if (running) nav ?: return@launch else makeNav(s, tvRemote())
                 status("Connecting… (accept the prompt on the TV if one appears)")
                 synchronized(lock) { n.resync() }
                 for (box in (1..boxCount(s)) + 1) {
@@ -762,11 +1027,44 @@ object Engine {
                     synchronized(lock) { n.goTo(box) }
                     delay(2500)
                 }
-                (tmpRemote as? SamsungRemote)?.close()
                 status("Done. If the audio didn't land where it said, see Help below.")
             } catch (e: Exception) {
                 status("Failed: ${e.message}")
             }
         }
+    }
+
+    /** Everything useful for figuring out a problem, as text to paste into a message. */
+    suspend fun report(): String = withContext(Dispatchers.IO) {
+        val s = _settings.value
+        val st = _state.value
+        val sb = StringBuilder()
+        val version = runCatching { app.packageManager.getPackageInfo(app.packageName, 0).versionName }.getOrNull()
+        sb.appendLine("Multiview Audio $version")
+        sb.appendLine("Android ${Build.VERSION.RELEASE} (SDK ${Build.VERSION.SDK_INT}), ${Build.MANUFACTURER} ${Build.MODEL}")
+        sb.appendLine("TV: ${s.tvType.label} at ${s.tvHost.ifBlank { "(not set)" }}, paired: ${!s.samsungToken.isNullOrBlank()}, " +
+            "MAC known: ${s.tvMac.isNotBlank()}")
+        if (s.tvType == TvType.SAMSUNG && s.tvHost.isNotBlank()) {
+            val d = TvNetwork.samsungInfo(s.tvHost)
+            if (d == null) sb.appendLine("TV info: no answer on port 8001")
+            else sb.appendLine("TV info: ${d.optString("modelName")} (${d.optString("model")}), ${d.optString("OS")}, " +
+                "power ${d.optString("PowerState").ifBlank { "?" }}, network ${d.optString("networkType")}, " +
+                "token auth ${d.optString("TokenAuthSupport")}, firmware ${d.optString("firmwareVersion")}")
+        }
+        sb.appendLine("Connection: " + when (st.tvLinked) { true -> "connected"; false -> "not connected"; null -> "n/a" } +
+            (st.remoteMsg?.let { " ($it)" } ?: ""))
+        sb.appendLine("Inputs: direct keys " + when (s.directInputs) { 1 -> "work"; -1 -> "don't work"; else -> "untested" } +
+            ", taught: ${s.inputSteps.toSortedMap()}")
+        sb.appendLine("YouTube TV app: ${s.youTubeTvAppId.ifBlank { "(not found yet)" }}")
+        sb.appendLine("Switching: ${if (st.running) "running" else "stopped"}, layout ${s.layout}, mic ${s.useMic}, " +
+            "cues ${s.useCues}, paused ${st.paused}, auto-paused ${st.autoPaused}, held ${st.held}")
+        sb.appendLine("Games: " + s.slots.entries.sortedBy { it.key }.joinToString { "${it.key}=${it.value.league}/${it.value.team}" })
+        sb.appendLine()
+        sb.appendLine("TV connection log (newest first):")
+        synchronized(tvLines) { tvLines.forEach { sb.appendLine("${it.time}  ${it.text}") } }
+        sb.appendLine()
+        sb.appendLine("Activity (newest first):")
+        synchronized(logLines) { logLines.forEach { sb.appendLine("${it.time}  ${it.text}") } }
+        sb.toString()
     }
 }

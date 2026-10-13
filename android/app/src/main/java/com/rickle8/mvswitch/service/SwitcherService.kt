@@ -34,23 +34,30 @@ class SwitcherService : Service() {
         private const val ACTION_PAUSE = "pause"
         private const val ACTION_RESUME = "resume"
         private const val ACTION_AD = "ad"
+        private const val ACTION_RESTART = "restart"
 
         fun start(context: Context) {
             ContextCompat.startForegroundService(context, Intent(context, SwitcherService::class.java))
         }
 
         fun stop(context: Context) {
-            context.startService(Intent(context, SwitcherService::class.java).setAction(ACTION_STOP))
+            runCatching { context.startService(Intent(context, SwitcherService::class.java).setAction(ACTION_STOP)) }
+                .onFailure { Engine.stop() }
         }
 
-        fun restart(context: Context) {
+        /**
+         * Settings changed while running. The new run waits for the old one to let go
+         * of the mic on its own. If the mic setting changed, the service also has to
+         * re-declare what it uses, so that goes through the service.
+         */
+        fun restart(context: Context, micChanged: Boolean) {
             Engine.restarting = true
-            Engine.stop()
-            // Give the loop a moment to release the mic, then start fresh.
-            android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
-                start(context) // re-runs startForeground so the mic setting takes effect
-                Engine.restarting = false
-            }, 1500)
+            Engine.stop(quiet = true)
+            if (micChanged && runCatching {
+                    context.startService(Intent(context, SwitcherService::class.java).setAction(ACTION_RESTART))
+                }.isSuccess) return
+            Engine.start()
+            Engine.restarting = false
         }
     }
 
@@ -100,16 +107,30 @@ class SwitcherService : Service() {
             ACTION_RESUME -> { Engine.setPaused(false); return START_NOT_STICKY }
             ACTION_AD -> { Engine.label(isAd = true); return START_NOT_STICKY }
         }
+        // Start, or restart after the mic setting changed (ACTION_RESTART).
         val useMic = Engine.micAllowed()
         val type = if (useMic) ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
         else ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
-        if (Build.VERSION.SDK_INT >= 29) {
-            startForeground(NOTIF_ID, buildNotification(), type)
-        } else {
-            startForeground(NOTIF_ID, buildNotification())
+        try {
+            if (Build.VERSION.SDK_INT >= 29) {
+                startForeground(NOTIF_ID, buildNotification(), type)
+            } else {
+                startForeground(NOTIF_ID, buildNotification())
+            }
+        } catch (e: Exception) {
+            // Android refused (e.g. mic use from the background): run without the mic rather than not at all.
+            val fallback = Build.VERSION.SDK_INT >= 29 && useMic && runCatching {
+                startForeground(NOTIF_ID, buildNotification(), ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
+            }.isSuccess
+            if (!fallback) {
+                Engine.restarting = false
+                stopSelf()
+                return START_NOT_STICKY
+            }
         }
         acquireLocks()
         Engine.start()
+        Engine.restarting = false
         return START_NOT_STICKY
     }
 

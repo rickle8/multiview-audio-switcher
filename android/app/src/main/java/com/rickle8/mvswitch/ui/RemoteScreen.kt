@@ -53,13 +53,13 @@ import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Remove
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
-import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -74,6 +74,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -95,6 +97,7 @@ import com.rickle8.mvswitch.data.TvType
 import com.rickle8.mvswitch.remote.TvApp
 import com.rickle8.mvswitch.service.Engine
 import com.rickle8.mvswitch.service.EngineState
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlin.math.abs
 
@@ -104,6 +107,17 @@ private fun inputLabel(settings: Settings, n: Int) = settings.inputNames[n]?.tak
 private fun tileColor(name: String): Color {
     val palette = listOf(0xFF2BD9A0, 0xFF6CB4FF, 0xFFF5A524, 0xFFFF6B6B, 0xFFB18CFF, 0xFF4DD0E1, 0xFFFF8A65)
     return Color(palette[(name.hashCode() and 0x7fffffff) % palette.size])
+}
+
+/** How a taught step reads on screen: "SOURCE" -> "Source", "LEFT*8" -> "◀×8". */
+private fun stepLabel(step: String): String {
+    val parts = step.split('*')
+    val name = when (parts[0]) {
+        "SOURCE" -> "Source"; "LEFT" -> "◀"; "RIGHT" -> "▶"; "UP" -> "▲"; "DOWN" -> "▼"
+        "SELECT" -> "OK"; "BACK" -> "Back"; "HOME" -> "Home"
+        else -> parts[0].lowercase()
+    }
+    return if (parts.size > 1) "$name×${parts[1]}" else name
 }
 
 @Composable
@@ -142,6 +156,28 @@ private fun PillButton(text: String, modifier: Modifier = Modifier, bg: Color = 
     }
 }
 
+/** Connected / connecting / not connected, for Samsung TVs (Rokus don't keep a connection). */
+@Composable
+private fun TvStatus(state: EngineState, settings: Settings) {
+    if (settings.tvType != TvType.SAMSUNG) return
+    val (text, color) = when {
+        settings.tvHost.isBlank() -> "Add your TV in Settings" to C.amber
+        state.tvWaiting != null -> state.tvWaiting to C.amber
+        state.tvLinked == true -> "Connected to the TV" to C.accent
+        state.remoteMsg != null -> "Not connected · tap to try again" to C.red
+        else -> "Connecting…" to C.muted
+    }
+    Row(
+        Modifier.padding(top = 8.dp).clip(RoundedCornerShape(10.dp)).clickable { Engine.warmUp() }
+            .padding(vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(Modifier.size(8.dp).clip(CircleShape).background(color))
+        Spacer(Modifier.width(8.dp))
+        Text(text, color = color, fontSize = 13.sp, fontWeight = FontWeight.Medium)
+    }
+}
+
 @OptIn(ExperimentalLayoutApi::class, ExperimentalMaterial3Api::class)
 @Composable
 fun RemoteScreen(state: EngineState, settings: Settings, modifier: Modifier) {
@@ -150,16 +186,32 @@ fun RemoteScreen(state: EngineState, settings: Settings, modifier: Modifier) {
     var loadingApps by remember { mutableStateOf(false) }
     var adding by remember { mutableStateOf(false) }
     var removing by remember { mutableStateOf<Shortcut?>(null) }
-    var renaming by remember { mutableStateOf<Int?>(null) }
+    var editingInput by remember { mutableStateOf<Int?>(null) }
+    var teaching by remember { mutableStateOf<Int?>(null) }
     var swipeMode by rememberSaveable { mutableStateOf(false) }
     val isTest = settings.tvType == TvType.TEST
+    val isSamsung = settings.tvType == TvType.SAMSUNG
 
     fun loadApps(refresh: Boolean) {
         if (loadingApps) return
         loadingApps = true
         scope.launch { apps = Engine.apps(refresh); loadingApps = false }
     }
-    LaunchedEffect(settings.tvType, settings.tvHost) { if (!isTest && settings.tvHost.isNotBlank()) loadApps(false) }
+    LaunchedEffect(settings.tvType, settings.tvHost) {
+        apps = null
+        if (!isTest && settings.tvHost.isNotBlank()) loadApps(false)
+    }
+    // Keep the TV connection ready while this tab is open, so taps go through instantly.
+    LaunchedEffect(settings.tvType, settings.tvHost) {
+        while (true) {
+            Engine.warmUp()
+            delay(15_000)
+        }
+    }
+    /** An input tap: teach it first if this TV ignores input keys. */
+    fun tapInput(n: Int) {
+        if (Engine.needsTeaching(n)) teaching = n else Engine.switchInput(n)
+    }
 
     Column(Modifier.then(modifier).fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp)) {
         Spacer(Modifier.height(16.dp))
@@ -172,14 +224,22 @@ fun RemoteScreen(state: EngineState, settings: Settings, modifier: Modifier) {
             KeyButton(Icons.Filled.PowerSettingsNew, "Power", size = 52.dp, bg = C.red.copy(alpha = 0.18f),
                 tint = C.red) { Engine.power() }
         }
-        state.remoteMsg?.let { Text(it, color = C.amber, fontSize = 13.sp, modifier = Modifier.padding(top = 8.dp)) }
+        TvStatus(state, settings)
+        state.remoteMsg?.let { Text(it, color = C.amber, fontSize = 13.sp, modifier = Modifier.padding(top = 4.dp)) }
+        if (state.held) {
+            Text("Auto switching is waiting while you use the remote.", color = C.muted, fontSize = 12.sp,
+                modifier = Modifier.padding(top = 4.dp))
+        }
 
         // ------------------------------------------------ shortcuts
         SectionLabel("Shortcuts")
         FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             settings.shortcuts.forEach { s ->
                 PillButton(s.label, bg = if (s.kind == Shortcut.INPUT) C.blue.copy(alpha = 0.16f) else C.surface2,
-                    onLongClick = { removing = s }) { Engine.runShortcut(s) }
+                    onLongClick = { removing = s }) {
+                    val n = s.value.toIntOrNull()
+                    if (s.kind == Shortcut.INPUT && n != null) tapInput(n) else Engine.runShortcut(s)
+                }
             }
             PillButton("+ Add", bg = C.accent.copy(alpha = 0.14f)) {
                 adding = true
@@ -192,17 +252,36 @@ fun RemoteScreen(state: EngineState, settings: Settings, modifier: Modifier) {
         SectionLabel("Inputs")
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             for (n in 1..4) {
-                PillButton(inputLabel(settings, n), Modifier.weight(1f), onLongClick = { renaming = n }) {
-                    Engine.switchInput(n)
+                PillButton(inputLabel(settings, n), Modifier.weight(1f), onLongClick = { editingInput = n }) {
+                    tapInput(n)
+                }
+            }
+        }
+        state.askInput?.let { n ->
+            Panel(Modifier.padding(top = 10.dp)) {
+                Text("Did the TV switch to ${inputLabel(settings, n)}?", color = C.text, fontWeight = FontWeight.Medium)
+                Text("Some Samsung TVs ignore the app's input buttons. If yours did, you can teach it the way " +
+                    "you'd do it with the TV remote, once.", color = C.muted, fontSize = 12.sp)
+                Row {
+                    TextButton(onClick = { Engine.answerInput(worked = true) }) { Text("Yes", color = C.accent) }
+                    TextButton(onClick = { Engine.answerInput(worked = false); teaching = n }) {
+                        Text("No, teach it", color = C.amber)
+                    }
+                    Spacer(Modifier.weight(1f))
+                    TextButton(onClick = { Engine.dismissInputQuestion() }) { Text("Later", color = C.muted) }
                 }
             }
         }
         Row(Modifier.padding(top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-            Text("Long-press to name one (PS5, PC…).", color = C.muted, fontSize = 12.sp, modifier = Modifier.weight(1f))
-            TextButton(onClick = { Engine.press(Key.SOURCE) }) {
-                Icon(Icons.Filled.Input, null, tint = C.text, modifier = Modifier.size(18.dp))
-                Spacer(Modifier.width(6.dp))
-                Text("Source menu", color = C.text)
+            Text("Long-press to name one (PS5, PC…)" + if (isSamsung) " or teach it." else ".",
+                color = C.muted, fontSize = 12.sp, modifier = Modifier.weight(1f))
+            if (isSamsung) {
+                TextButton(onClick = { Engine.nextInput() }) { Text("Next HDMI", color = C.text) }
+                TextButton(onClick = { Engine.press(Key.SOURCE) }) {
+                    Icon(Icons.Filled.Input, null, tint = C.text, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("Source", color = C.text)
+                }
             }
         }
 
@@ -242,15 +321,22 @@ fun RemoteScreen(state: EngineState, settings: Settings, modifier: Modifier) {
         // ------------------------------------------------ typing
         SectionLabel("Type on the TV")
         val focus = LocalFocusManager.current
+        val typeFocus = remember { FocusRequester() }
         var text by remember { mutableStateOf("") }
         val send = { if (text.isNotBlank()) { Engine.sendText(text); text = ""; focus.clearFocus() } }
+        // The TV opened its keyboard (a search box): jump straight to typing.
+        LaunchedEffect(state.tvKeyboard) { if (state.tvKeyboard) runCatching { typeFocus.requestFocus() } }
+        if (state.tvKeyboard) {
+            Text("The TV is asking for text. Type here and press send.", color = C.accent, fontSize = 13.sp,
+                modifier = Modifier.padding(bottom = 6.dp))
+        }
         OutlinedTextField(
             value = text, onValueChange = { text = it }, singleLine = true,
             placeholder = { Text("Open a search box on the TV, then type here") },
             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
             keyboardActions = KeyboardActions(onSend = { send() }),
             trailingIcon = { IconButton(onClick = send) { Icon(Icons.AutoMirrored.Filled.Send, "Send", tint = C.accent) } },
-            modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(12.dp),
+            modifier = Modifier.fillMaxWidth().focusRequester(typeFocus), shape = RoundedCornerShape(12.dp),
         )
 
         // ------------------------------------------------ all apps
@@ -266,7 +352,7 @@ fun RemoteScreen(state: EngineState, settings: Settings, modifier: Modifier) {
             else -> {
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     apps!!.forEach { app ->
-                        AppTile(app, settings.tvType == TvType.ROKU,
+                        AppTile(app,
                             onClick = { Engine.launchApp(app.id) },
                             onLongClick = {
                                 if (settings.shortcuts.none { it.kind == Shortcut.APP && it.value == app.id }) {
@@ -299,31 +385,125 @@ fun RemoteScreen(state: EngineState, settings: Settings, modifier: Modifier) {
             dismissButton = { TextButton(onClick = { removing = null }) { Text("Cancel") } },
         )
     }
-    renaming?.let { n ->
-        var name by remember(n) { mutableStateOf(settings.inputNames[n].orEmpty()) }
-        AlertDialog(
-            onDismissRequest = { renaming = null }, containerColor = C.surface2,
-            title = { Text("Name HDMI $n") },
-            text = {
-                OutlinedTextField(value = name, onValueChange = { name = it.take(14) }, singleLine = true,
-                    placeholder = { Text("PS5, PC, Xbox…") }, shape = RoundedCornerShape(12.dp))
-            },
-            confirmButton = {
-                TextButton(onClick = {
-                    Engine.update { s ->
-                        val names = if (name.isBlank()) s.inputNames - n else s.inputNames + (n to name.trim())
-                        // Keep any shortcut for this input in sync with its new name.
-                        s.copy(inputNames = names, shortcuts = s.shortcuts.map { sc ->
-                            if (sc.kind == Shortcut.INPUT && sc.value == n.toString())
-                                sc.copy(label = name.trim().ifBlank { "HDMI $n" }) else sc
-                        })
-                    }
-                    renaming = null
-                }) { Text("Save") }
-            },
-            dismissButton = { TextButton(onClick = { renaming = null }) { Text("Cancel") } },
-        )
+    editingInput?.let { n ->
+        InputDialog(settings, n, canTeach = isSamsung, onDismiss = { editingInput = null },
+            onTeach = { editingInput = null; teaching = n })
     }
+    teaching?.let { n ->
+        TeachDialog(settings, n, onDismiss = { teaching = null })
+    }
+}
+
+/** Name an input, and (Samsung) see or change how it gets there. */
+@Composable
+private fun InputDialog(settings: Settings, n: Int, canTeach: Boolean, onDismiss: () -> Unit, onTeach: () -> Unit) {
+    var name by remember(n) { mutableStateOf(settings.inputNames[n].orEmpty()) }
+    val steps = settings.inputSteps[n].orEmpty()
+    AlertDialog(
+        onDismissRequest = onDismiss, containerColor = C.surface2,
+        title = { Text("HDMI $n") },
+        text = {
+            Column {
+                OutlinedTextField(value = name, onValueChange = { name = it.take(14) }, singleLine = true,
+                    label = { Text("Name") }, placeholder = { Text("PS5, PC, Xbox…") }, shape = RoundedCornerShape(12.dp))
+                if (canTeach) {
+                    Spacer(Modifier.height(14.dp))
+                    Text(
+                        if (steps.isEmpty()) "Switches with the TV's input key." +
+                            (if (settings.directInputs < 0) " Your TV ignores that, so teach it the steps." else "")
+                        else "Switches with the steps you taught it: " + steps.joinToString(" → ") { stepLabel(it) },
+                        color = C.muted, fontSize = 13.sp,
+                    )
+                    Row {
+                        TextButton(onClick = onTeach) { Text(if (steps.isEmpty()) "Teach it" else "Teach again", color = C.accent) }
+                        if (steps.isNotEmpty()) {
+                            TextButton(onClick = { Engine.saveSteps(n, emptyList()) }) { Text("Forget steps", color = C.red) }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = {
+                Engine.update { s ->
+                    val names = if (name.isBlank()) s.inputNames - n else s.inputNames + (n to name.trim())
+                    // Keep any shortcut for this input in sync with its new name.
+                    s.copy(inputNames = names, shortcuts = s.shortcuts.map { sc ->
+                        if (sc.kind == Shortcut.INPUT && sc.value == n.toString())
+                            sc.copy(label = name.trim().ifBlank { "HDMI $n" }) else sc
+                    })
+                }
+                onDismiss()
+            }) { Text("Save") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
+}
+
+/**
+ * Teach an input: you switch the TV to it with these buttons (the TV follows
+ * along), and the app repeats the same steps from then on.
+ */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun TeachDialog(settings: Settings, n: Int, onDismiss: () -> Unit) {
+    var steps by remember(n) { mutableStateOf(listOf<String>()) }
+    val label = inputLabel(settings, n)
+    fun add(step: String) {
+        Engine.pressStep(step)
+        steps = steps + step
+    }
+    @Composable
+    fun Small(text: String, step: String, wide: Boolean = false) {
+        PillButton(text, if (wide) Modifier.width(132.dp) else Modifier.width(60.dp)) { add(step) }
+    }
+    AlertDialog(
+        onDismissRequest = onDismiss, containerColor = C.surface2,
+        title = { Text("Teach $label") },
+        text = {
+            Column(Modifier.verticalScroll(rememberScrollState())) {
+                Text("Switch the TV to $label with these buttons, the way you would with the TV remote. " +
+                    "The TV follows along, and the app repeats the same steps next time.\n\n" +
+                    "Usually: Source, then Start of list, then ▶ until $label is highlighted, then OK.",
+                    color = C.muted, fontSize = 13.sp)
+                Spacer(Modifier.height(12.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Small("Source", "SOURCE", wide = true)
+                    Small("Start of list", "LEFT*8", wide = true)
+                }
+                Spacer(Modifier.height(8.dp))
+                Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
+                    Small("▲", "UP")
+                    Spacer(Modifier.height(6.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Small("◀", "LEFT"); Small("OK", "SELECT"); Small("▶", "RIGHT")
+                    }
+                    Spacer(Modifier.height(6.dp))
+                    Small("▼", "DOWN")
+                }
+                Spacer(Modifier.height(8.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Small("Back", "BACK", wide = true)
+                    Small("Home", "HOME", wide = true)
+                }
+                Spacer(Modifier.height(12.dp))
+                Text(if (steps.isEmpty()) "Steps: none yet" else "Steps: " + steps.joinToString(" → ") { stepLabel(it) },
+                    color = C.text, fontSize = 13.sp)
+                Row {
+                    if (steps.isNotEmpty()) {
+                        TextButton(onClick = { steps = steps.dropLast(1) }) { Text("Undo last", color = C.muted) }
+                        TextButton(onClick = { Engine.testSteps(n, steps) }) { Text("Try it", color = C.blue) }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(enabled = steps.isNotEmpty(), onClick = { Engine.saveSteps(n, steps); onDismiss() }) {
+                Text("Save", color = if (steps.isNotEmpty()) C.accent else C.muted)
+            }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
 }
 
 @Composable
@@ -393,10 +573,10 @@ private fun Rocker(label: String, up: Key, down: Key) {
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun AppTile(app: TvApp, hasIcons: Boolean, onClick: () -> Unit, onLongClick: () -> Unit) {
+private fun AppTile(app: TvApp, onClick: () -> Unit, onLongClick: () -> Unit) {
     val haptic = LocalHapticFeedback.current
-    val icon by produceState<android.graphics.Bitmap?>(null, app.id, hasIcons) {
-        if (hasIcons) value = Engine.appIcon(app.id)?.let { b -> runCatching { BitmapFactory.decodeByteArray(b, 0, b.size) }.getOrNull() }
+    val icon by produceState<android.graphics.Bitmap?>(null, app.id) {
+        value = Engine.appIcon(app.id)?.let { b -> runCatching { BitmapFactory.decodeByteArray(b, 0, b.size) }.getOrNull() }
     }
     Column(
         Modifier.width(76.dp).clip(RoundedCornerShape(14.dp))

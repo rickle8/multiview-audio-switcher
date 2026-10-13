@@ -60,16 +60,24 @@ class MicClassifier(private val context: Context) {
         record = rec
     }
 
-    /** Throw away buffered audio (right after switching games). */
-    fun drain() {
-        val rec = record ?: return
+    @Volatile private var drainWanted = false
+
+    /**
+     * Throw away buffered audio (right after switching games). Safe from any
+     * thread: the reading thread does the actual draining, since AudioRecord
+     * can't be read from two threads at once.
+     */
+    fun drain() { drainWanted = true }
+
+    private fun drainNow(rec: AudioRecord) {
         val scratch = FloatArray(SAMPLE_RATE)
         while (rec.read(scratch, 0, scratch.size, AudioRecord.READ_NON_BLOCKING) == scratch.size) Unit
     }
 
-    /** Blocks ~1 second; returns the raw audio and YAMNet's score for every sound type. */
+    /** Blocks ~1 second; returns the raw audio and YAMNet's score for every sound type. Null if the mic failed. */
     fun nextSecond(): MicSecond? {
         val rec = record ?: return null
+        if (drainWanted) { drainWanted = false; drainNow(rec) }
         var filled = 0
         while (filled < buffer.size) {
             val n = rec.read(buffer, filled, buffer.size - filled, AudioRecord.READ_BLOCKING)

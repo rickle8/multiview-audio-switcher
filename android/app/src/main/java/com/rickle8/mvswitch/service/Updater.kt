@@ -118,15 +118,19 @@ object Updater {
                         file.outputStream().use { out ->
                             val buf = ByteArray(64 * 1024)
                             var done = 0L
+                            var shown = -1
                             while (true) {
                                 val n = input.read(buf)
                                 if (n < 0) break
                                 out.write(buf, 0, n)
                                 done += n
-                                if (total > 0) {
-                                    _state.value = _state.value.copy(progress = (done * 100 / total).toInt())
+                                val pct = if (total > 0) (done * 100 / total).toInt() else -1
+                                if (pct != shown && pct >= 0) {
+                                    shown = pct
+                                    _state.value = _state.value.copy(progress = pct)
                                 }
                             }
+                            if (total > 0 && done < total) throw Exception("Download was cut off. Try again.")
                         }
                     }
                 }

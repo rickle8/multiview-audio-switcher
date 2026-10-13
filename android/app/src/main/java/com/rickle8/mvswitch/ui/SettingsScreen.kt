@@ -87,9 +87,9 @@ fun SettingsScreen(state: EngineState, settings: Settings, update: UpdateState, 
                 Spacer(Modifier.height(10.dp))
                 var host by remember(settings.tvHost) { mutableStateOf(settings.tvHost) }
                 val save = {
-                    Engine.update { it.copy(tvHost = host.trim(), samsungToken =
-                        if (host.trim() == it.tvHost) it.samsungToken else null) }
+                    Engine.update { it.copy(tvHost = host.trim()) }
                     focus.clearFocus()
+                    Engine.warmUp() // pairs right away: the TV may ask you to press Allow
                 }
                 OutlinedTextField(
                     value = host,
@@ -116,6 +116,48 @@ fun SettingsScreen(state: EngineState, settings: Settings, update: UpdateState, 
                         "Advanced system settings > Control by mobile apps.",
                     color = C.muted, fontSize = 12.sp, modifier = Modifier.padding(top = 6.dp),
                 )
+                if (settings.tvType == TvType.SAMSUNG && settings.tvHost.isNotBlank()) {
+                    Text(
+                        when {
+                            state.tvWaiting != null -> state.tvWaiting
+                            state.tvLinked == true -> "Connected to the TV."
+                            !settings.samsungToken.isNullOrBlank() -> "Paired with the TV."
+                            else -> "The first time the app connects, the TV asks you to press Allow."
+                        },
+                        color = if (state.tvLinked == true) C.accent else C.muted, fontSize = 12.sp,
+                        modifier = Modifier.padding(top = 6.dp),
+                    )
+                    Spacer(Modifier.height(10.dp))
+                    var mac by remember(settings.tvMac) { mutableStateOf(settings.tvMac) }
+                    val macOk = mac.isBlank() || com.rickle8.mvswitch.remote.TvNetwork.normalizeMac(mac) != null
+                    val saveMac = {
+                        val norm = com.rickle8.mvswitch.remote.TvNetwork.normalizeMac(mac)
+                        if (mac.isBlank() || norm != null) {
+                            Engine.update { it.copy(tvMac = norm.orEmpty()) }
+                            focus.clearFocus()
+                        }
+                    }
+                    OutlinedTextField(
+                        value = mac,
+                        onValueChange = { mac = it.trim() },
+                        label = { Text("TV's MAC address (to turn it on)") },
+                        placeholder = { Text("Learned automatically") },
+                        singleLine = true,
+                        isError = !macOk,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Ascii, imeAction = ImeAction.Done),
+                        keyboardActions = KeyboardActions(onDone = { saveMac() }),
+                        trailingIcon = {
+                            if (mac != settings.tvMac && macOk) {
+                                IconButton(onClick = { saveMac() }) { Icon(Icons.Filled.Check, "Save", tint = C.accent) }
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(12.dp),
+                    )
+                    Text("Filled in the first time the TV is on. If your TV is plugged into the router with a cable, " +
+                        "use the wired MAC from the TV's Settings > Support > About This TV.",
+                        color = C.muted, fontSize = 12.sp, modifier = Modifier.padding(top = 6.dp))
+                }
             } else {
                 Text("Test mode doesn't touch the TV. Use it to see what the app would do.",
                     color = C.muted, fontSize = 12.sp, modifier = Modifier.padding(top = 10.dp))
@@ -298,6 +340,27 @@ fun SettingsScreen(state: EngineState, settings: Settings, update: UpdateState, 
             )
         }
 
+        SectionLabel("Help")
+        Panel {
+            val ctx = LocalContext.current
+            val scope = rememberCoroutineScope()
+            var copied by remember { mutableStateOf(false) }
+            Text("Something not working? Copy a report of what the app sees (TV model, connection, recent " +
+                "activity; no passwords) and paste it in a message.", color = C.muted, fontSize = 13.sp)
+            Spacer(Modifier.height(10.dp))
+            androidx.compose.material3.OutlinedButton(
+                onClick = {
+                    scope.launch {
+                        val text = Engine.report()
+                        val cm = ctx.getSystemService(android.content.ClipboardManager::class.java)
+                        cm?.setPrimaryClip(android.content.ClipData.newPlainText("Multiview Audio report", text))
+                        copied = true
+                    }
+                },
+                modifier = Modifier.fillMaxWidth().height(48.dp), shape = RoundedCornerShape(14.dp),
+            ) { Text(if (copied) "Copied" else "Copy diagnostics report", color = C.text) }
+        }
+
         SectionLabel("Tips")
         Panel {
             Text(
@@ -341,6 +404,7 @@ private fun FindTv() {
                     .clickable {
                         Engine.update { it.copy(tvType = tv.type, tvHost = tv.host) }
                         found = null
+                        Engine.warmUp() // pairs right away: the TV may ask you to press Allow
                     }
                     .padding(12.dp),
                 verticalAlignment = Alignment.CenterVertically,

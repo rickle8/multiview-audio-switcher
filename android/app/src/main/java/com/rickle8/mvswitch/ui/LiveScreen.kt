@@ -176,6 +176,7 @@ private fun statusLine(s: EngineState): String = when {
     s.waitingForMultiview -> "Waiting for multiview"
     s.autoPaused -> "Paused · YouTube TV isn't on screen"
     s.paused -> "Paused"
+    s.held -> "Waiting while you use the remote"
     s.lockedBox != null -> "Locked on box ${s.lockedBox}"
     else -> "Auto switching · audio on box ${s.currentBox ?: "?"}"
 }
@@ -225,6 +226,18 @@ private fun ControlPanel(
         } else {
             HearingRow(state)
             Spacer(Modifier.height(14.dp))
+            if (state.autoPaused) {
+                Text("Paused because YouTube TV isn't on screen. It picks back up on its own once it is, " +
+                    "or tap below when multiview is up again.", color = C.muted, fontSize = 13.sp)
+                Spacer(Modifier.height(10.dp))
+                Button(onClick = { Engine.go() }, modifier = Modifier.fillMaxWidth().height(48.dp),
+                    shape = RoundedCornerShape(14.dp)) {
+                    Icon(Icons.Filled.PlayArrow, null)
+                    Spacer(Modifier.width(8.dp))
+                    Text("I'm back in multiview")
+                }
+                Spacer(Modifier.height(10.dp))
+            }
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 OutlinedButton(onClick = { Engine.setPaused(!state.paused) },
                     modifier = Modifier.weight(1f).height(48.dp), shape = RoundedCornerShape(14.dp),

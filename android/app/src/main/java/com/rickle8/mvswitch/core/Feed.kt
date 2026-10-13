@@ -202,6 +202,8 @@ class GameFeed(
     private val otherSummarySecs: Double = 20.0,
 ) {
     private val slots = slots.filterValues { it.team.isNotBlank() }
+    /** One poll at a time. Network calls happen under this lock only, never under the data lock (this). */
+    private val pollLock = Any()
     private var lastPoll = -1e9
     val status: MutableMap<Int, GameStatus> =
         java.util.concurrent.ConcurrentHashMap<Int, GameStatus>().apply { slots.keys.forEach { put(it, GameStatus.UNKNOWN) } }
@@ -215,7 +217,7 @@ class GameFeed(
 
     /** The game whose play-by-play is polled every few seconds (the one you're hearing). */
     @Volatile var focusBox: Int? = null
-    var lastError: String? = null
+    @Volatile var lastError: String? = null
         private set
     /** True once the scoreboard has been read successfully at least once. */
     @Volatile var loaded = false
@@ -229,6 +231,7 @@ class GameFeed(
         while (q.size > 40) q.removeFirst()
     }
 
+    @Synchronized
     private fun applyPlayStatus(box: Int, now: Double) {
         val raw = rawStatus[box] ?: return
         val latest = log[box]?.lastOrNull()
@@ -241,8 +244,11 @@ class GameFeed(
         info[box]?.status = s
     }
 
-    @Synchronized
-    fun poll(force: Boolean = false): Map<Int, GameStatus> {
+    /**
+     * Fetches whatever is due. Readers (the switching loop, the screen) are never
+     * blocked by a slow network: fetching happens outside the data lock.
+     */
+    fun poll(force: Boolean = false): Map<Int, GameStatus> = synchronized(pollLock) {
         val now = clock()
         if (force || now - lastPoll >= pollSecs) {
             lastPoll = now
@@ -251,18 +257,18 @@ class GameFeed(
         val focus = focusBox
         focus?.let { pollSummary(it, now, summarySecs) }
         for (box in slots.keys) if (box != focus) pollSummary(box, now, otherSummarySecs)
-        return status
+        status
     }
 
     private fun pollScoreboard(now: Double) {
         val boards = mutableMapOf<String, JSONObject>()
-        lastError = null
+        var error: String? = null
         for ((box, slot) in slots) {
             val event = try {
                 val board = boards.getOrPut(slot.league) { fetch(slot.league) }
                 findEvent(board, slot.team)
             } catch (e: Exception) {
-                lastError = e.message ?: e.javaClass.simpleName
+                error = e.message ?: e.javaClass.simpleName
                 continue // keep last known status
             }
             if (event == null) {
@@ -278,13 +284,14 @@ class GameFeed(
             // The scoreboard only has the latest play. Use it when play-by-play isn't flowing.
             val play = gi.lastPlay
             val pbpFresh = (summaryOk[box] ?: -1e9) > now - 30
-            if (play != null && !pbpFresh) {
+            if (play != null && !pbpFresh) synchronized(this) {
                 val prev = log[box]?.lastOrNull()
                 if (prev == null) recordPlay(box, play, now - breakPlaySecs) // already on the board: old news
                 else if (prev.text != play && !prev.text.endsWith(play)) recordPlay(box, play, now)
             }
             applyPlayStatus(box, now)
         }
+        lastError = error
     }
 
     private fun pollSummary(box: Int, now: Double, every: Double) {
@@ -303,17 +310,19 @@ class GameFeed(
         if (plays.isEmpty()) return
         summaryOk[box] = now
         val wall = wallNow()
-        val first = !lastSeq.containsKey(box)
-        if (first) log[box]?.clear()
-        val after = lastSeq[box] ?: Long.MIN_VALUE
-        val fresh = plays.filter { it.first > after }
-        for ((seq, text, wallMs) in (if (first) fresh.takeLast(40) else fresh)) {
-            val t = if (wallMs != null) now - maxOf(0.0, (wall - wallMs) / 1000.0)
-            else if (first) now - breakPlaySecs else now
-            // seq >= 0 marks plays with a real wall-clock time (safe for learning).
-            recordPlay(box, text, t, if (first) minOf(t, now - breakPlaySecs) else now, if (wallMs != null) seq else -1)
+        synchronized(this) {
+            val first = !lastSeq.containsKey(box)
+            if (first) log[box]?.clear()
+            val after = lastSeq[box] ?: Long.MIN_VALUE
+            val fresh = plays.filter { it.first > after }
+            for ((seq, text, wallMs) in (if (first) fresh.takeLast(40) else fresh)) {
+                val t = if (wallMs != null) now - maxOf(0.0, (wall - wallMs) / 1000.0)
+                else if (first) now - breakPlaySecs else now
+                // seq >= 0 marks plays with a real wall-clock time (safe for learning).
+                recordPlay(box, text, t, if (first) minOf(t, now - breakPlaySecs) else now, if (wallMs != null) seq else -1)
+            }
+            lastSeq[box] = plays.last().first
         }
-        lastSeq[box] = plays.last().first
         applyPlayStatus(box, now)
     }
 

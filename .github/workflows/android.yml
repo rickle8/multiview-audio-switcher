@@ -63,6 +63,7 @@ jobs:
           path: android/MultiviewAudio.apk
 
       - name: Publish as a release
+        if: github.ref == 'refs/heads/main'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v1.0.${{ github.run_number }}

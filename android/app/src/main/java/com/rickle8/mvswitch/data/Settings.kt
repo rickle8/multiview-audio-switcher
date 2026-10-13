@@ -53,6 +53,10 @@ data class Settings(
     val inputNames: Map<Int, String> = emptyMap(),
     /** Phone volume buttons change the TV volume while the Remote tab is open. */
     val volumeButtons: Boolean = true,
+    /** Buttons that reach each input from the TV's source menu, taught once (e.g. SOURCE, LEFT*8, RIGHT, SELECT). */
+    val inputSteps: Map<Int, List<String>> = emptyMap(),
+    /** Whether this TV obeys direct input keys: 1 yes, -1 no, 0 not known yet. */
+    val directInputs: Int = 0,
 ) {
     val adThreshold: Double get() = 0.75 - 0.25 * micSensitivity
     val gameThreshold: Double get() = adThreshold - 0.2
@@ -76,6 +80,10 @@ data class Settings(
         }))
         .put("inputNames", JSONObject().apply { inputNames.forEach { (k, v) -> put(k.toString(), v) } })
         .put("volumeButtons", volumeButtons)
+        .put("inputSteps", JSONObject().apply {
+            inputSteps.forEach { (k, v) -> put(k.toString(), org.json.JSONArray(v)) }
+        })
+        .put("directInputs", directInputs)
         .put("slots", JSONObject().apply {
             slots.forEach { (box, s) ->
                 put(box.toString(), JSONObject().put("league", s.league).put("team", s.team)
@@ -127,6 +135,14 @@ data class Settings(
                     o.keys().asSequence().mapNotNull { k -> k.toIntOrNull()?.let { it to o.optString(k) } }.toMap()
                 }.orEmpty(),
                 volumeButtons = j.optBoolean("volumeButtons", true),
+                inputSteps = j.optJSONObject("inputSteps")?.let { o ->
+                    o.keys().asSequence().mapNotNull { k ->
+                        val n = k.toIntOrNull() ?: return@mapNotNull null
+                        val a = o.optJSONArray(k) ?: return@mapNotNull null
+                        n to (0 until a.length()).map { a.optString(it) }.filter { it.isNotBlank() }
+                    }.filter { it.second.isNotEmpty() }.toMap()
+                }.orEmpty(),
+                directInputs = j.optInt("directInputs", 0),
             )
         }
     }
