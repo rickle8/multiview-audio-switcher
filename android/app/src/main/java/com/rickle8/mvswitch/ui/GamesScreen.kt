@@ -49,6 +49,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import kotlinx.coroutines.launch
 import com.rickle8.mvswitch.core.GameSlot
 import com.rickle8.mvswitch.core.GameStatus
 import com.rickle8.mvswitch.core.ScheduledGame
@@ -81,6 +83,26 @@ fun GamesScreen(settings: Settings, modifier: Modifier) {
 
         SectionLabel("Boxes")
         val count = settings.layout
+        val anyEmpty = (1..count).any { it !in settings.slots }
+        if (anyEmpty) {
+            val scope = androidx.compose.runtime.rememberCoroutineScope()
+            var filling by remember { mutableStateOf(false) }
+            var fillMsg by remember { mutableStateOf<String?>(null) }
+            androidx.compose.material3.OutlinedButton(
+                onClick = {
+                    filling = true
+                    scope.launch {
+                        val n = Engine.fillEmptyBoxes()
+                        fillMsg = if (n == 0) "No live games to add right now." else null
+                        filling = false
+                    }
+                },
+                enabled = !filling,
+                modifier = Modifier.fillMaxWidth().height(48.dp), shape = RoundedCornerShape(14.dp),
+            ) { Text(if (filling) "Finding live games…" else "Fill empty boxes with the best live games", color = C.text) }
+            fillMsg?.let { Text(it, color = C.muted, fontSize = 12.sp, modifier = Modifier.padding(top = 4.dp)) }
+            Spacer(Modifier.height(10.dp))
+        }
         for (box in 1..count) {
             SlotCard(box, POSITIONS[count]?.getOrNull(box - 1).orEmpty(), settings.slots[box],
                 onPick = { picking = box })
@@ -106,14 +128,9 @@ fun GamesScreen(settings: Settings, modifier: Modifier) {
                 }
                 picking = null
             },
+            recentOthers = settings.recentOthers,
             onOther = { name ->
-                Engine.update { s ->
-                    val keep = s.slots[box]
-                    s.copy(slots = s.slots + (box to GameSlot(
-                        league = "", team = "", name = name, importance = keep?.importance ?: 1.0,
-                        kind = GameSlot.OTHER,
-                    )))
-                }
+                Engine.setOther(box, name)
                 picking = null
             })
     }
@@ -229,25 +246,32 @@ private fun SlotCard(box: Int, position: String, slot: GameSlot?, onPick: () -> 
     }
 }
 
+private const val LIVE_NOW = "__live"
+private val OTHER_PRESETS = listOf("NFL RedZone", "NFL Network", "NBA TV", "Golf Channel", "Studio show", "News")
+
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun GamePicker(
-    startLeague: String, onDismiss: () -> Unit, onPick: (ScheduledGame) -> Unit, onOther: (String) -> Unit,
+    startLeague: String, recentOthers: List<String>, onDismiss: () -> Unit,
+    onPick: (ScheduledGame) -> Unit, onOther: (String) -> Unit,
 ) {
-    var league by remember { mutableStateOf(startLeague) }
+    var league by remember { mutableStateOf(LIVE_NOW) }
     var query by remember { mutableStateOf("") }
     var games by remember { mutableStateOf<List<ScheduledGame>?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
     var other by remember { mutableStateOf<String?>(null) }
     val searching = query.trim().length >= 2
     val leagueName = LEAGUES.toMap()
+    val acrossSports = searching || league == LIVE_NOW
     LaunchedEffect(league, query) {
         games = null
         error = null
         try {
-            games = if (searching) {
-                kotlinx.coroutines.delay(400) // wait for typing to pause
-                Engine.searchGames(query)
-            } else Engine.schedule(league)
+            games = when {
+                searching -> { kotlinx.coroutines.delay(400); Engine.searchGames(query) }
+                league == LIVE_NOW -> Engine.searchGames("")
+                else -> Engine.schedule(league)
+            }
         } catch (e: Exception) {
             error = "Couldn't load games (${e.message}). Check your internet."
         }
@@ -267,7 +291,7 @@ private fun GamePicker(
                 if (!searching) {
                     Row(Modifier.horizontalScroll(rememberScrollState()),
                         horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        for ((key, label) in LEAGUES) {
+                        for ((key, label) in listOf(LIVE_NOW to "Live now") + LEAGUES) {
                             FilterChip(
                                 selected = league == key,
                                 onClick = { league = key },
@@ -280,13 +304,19 @@ private fun GamePicker(
                     }
                     Spacer(Modifier.height(8.dp))
                 }
-                Box(Modifier.fillMaxWidth().heightIn(min = 100.dp, max = 320.dp)) {
+                Box(Modifier.fillMaxWidth().heightIn(min = 100.dp, max = 300.dp)) {
                     val list = games
                     when {
                         error != null -> Text(error!!, color = C.red)
-                        list == null -> CircularProgressIndicator(Modifier.align(Alignment.Center))
-                        list.isEmpty() -> Text(if (searching) "Nothing today matches that." else "No games today in this league.",
-                            color = C.muted)
+                        list == null -> Column(Modifier.align(Alignment.Center), horizontalAlignment = Alignment.CenterHorizontally) {
+                            CircularProgressIndicator()
+                            if (acrossSports) Text("Checking every sport…", color = C.muted, fontSize = 12.sp)
+                        }
+                        list.isEmpty() -> Text(when {
+                            searching -> "Nothing today matches that."
+                            league == LIVE_NOW -> "Nothing live or coming up today."
+                            else -> "No games today in this league."
+                        }, color = C.muted)
                         else -> LazyColumn(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                             items(list) { g ->
                                 Row(
@@ -298,7 +328,11 @@ private fun GamePicker(
                                 ) {
                                     Column(Modifier.weight(1f)) {
                                         Text(g.shortName, color = C.text, fontWeight = FontWeight.SemiBold)
-                                        if (searching) Text(leagueName[g.league] ?: g.league, color = C.muted, fontSize = 11.sp)
+                                        val sub = listOfNotNull(
+                                            if (acrossSports) leagueName[g.league] ?: g.league else null,
+                                            g.network.ifBlank { null },
+                                        ).joinToString(" · ")
+                                        if (sub.isNotBlank()) Text(sub, color = C.muted, fontSize = 11.sp)
                                     }
                                     val live = g.status == GameStatus.LIVE || g.status == GameStatus.BREAK
                                     Text(g.detail, color = if (live) C.accent else C.muted, fontSize = 12.sp)
@@ -307,22 +341,30 @@ private fun GamePicker(
                         }
                     }
                 }
-                Spacer(Modifier.height(8.dp))
-                val name = other
-                if (name == null) {
-                    TextButton(onClick = { other = "" }) {
-                        Text("Something else (RedZone, a show, a game not listed)", color = C.blue)
+                Spacer(Modifier.height(10.dp))
+                Text("Not a listed game?", color = C.muted, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                Spacer(Modifier.height(4.dp))
+                androidx.compose.foundation.layout.FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    (recentOthers + OTHER_PRESETS).distinctBy { it.lowercase() }.take(8).forEach { name ->
+                        FilterChip(selected = false, onClick = { onOther(name) }, label = { Text(name) })
                     }
-                } else {
+                    FilterChip(selected = other != null, onClick = { other = other ?: "" }, label = { Text("Other…") })
+                }
+                other?.let { name ->
                     OutlinedTextField(
                         value = name, onValueChange = { other = it.take(30) }, singleLine = true,
-                        label = { Text("What's in this box") }, placeholder = { Text("RedZone, golf, news…") },
-                        modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(12.dp),
+                        label = { Text("What's in this box") },
+                        modifier = Modifier.fillMaxWidth().padding(top = 6.dp), shape = RoundedCornerShape(12.dp),
                     )
                     TextButton(enabled = name.isNotBlank(), onClick = { onOther(name.trim()) }) {
-                        Text("Use it (no live scores; the mic decides)", color = if (name.isNotBlank()) C.accent else C.muted)
+                        Text("Use it", color = if (name.isNotBlank()) C.accent else C.muted)
                     }
                 }
+                Text("These have no live scores: the mic decides, and they start as filler.",
+                    color = C.muted, fontSize = 11.sp)
             }
         },
         confirmButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },

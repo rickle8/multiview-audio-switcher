@@ -49,6 +49,12 @@ data class ScheduledGame(
     val home: String,
     val detail: String,
     val status: GameStatus,
+    /** TV networks carrying it ("CBS", "ESPN/ESPN+"), to match what's in multiview. */
+    val network: String = "",
+    /** How worth watching it is right now (same scale as switching uses). */
+    val excite: Double = 0.0,
+    /** Start time (epoch ms), for sorting upcoming games. */
+    val startMs: Long = 0,
 )
 
 val BREAK_STATUSES = setOf(
@@ -145,6 +151,19 @@ fun listGames(board: JSONObject, league: String): List<ScheduledGame> {
             if (c.optString("homeAway") == "home") home = abbr else away = abbr
         }
         val info = parseEvent(e, league)
+        val comp = e.firstCompetition()
+        val nets = LinkedHashSet<String>()
+        comp.optJSONArray("broadcasts")?.let { b ->
+            for (k in 0 until b.length()) b.optJSONObject(k)?.optJSONArray("names")?.let { n ->
+                for (m in 0 until n.length()) n.optString(m).takeIf { it.isNotBlank() }?.let { nets += it }
+            }
+        }
+        if (nets.isEmpty()) comp.optJSONArray("geoBroadcasts")?.let { b ->
+            for (k in 0 until b.length()) b.optJSONObject(k)?.optJSONObject("media")?.optString("shortName")
+                ?.takeIf { it.isNotBlank() }?.let { nets += it }
+        }
+        val start = runCatching { java.time.Instant.parse(e.optString("date").let { if (it.length == 17) it.dropLast(1) + ":00Z" else it }).toEpochMilli() }
+            .getOrDefault(0L)
         out += ScheduledGame(
             league = league,
             id = e.optString("id"),
@@ -152,18 +171,29 @@ fun listGames(board: JSONObject, league: String): List<ScheduledGame> {
             shortName = e.optString("shortName").ifBlank { e.optString("name") }
                 .ifBlank { if (home.isNotBlank() || away.isNotBlank()) "$away @ $home" else "Event" },
             away = away, home = home, detail = info.detail, status = info.status,
+            network = nets.take(3).joinToString("/"), excite = excitement(info, null), startMs = start,
         )
     }
-    // Live games first, then upcoming, then finals.
-    return out.sortedBy {
+    return sortForPicking(out)
+}
+
+/** Live games first (most exciting on top), then upcoming by start time, then finals. */
+fun sortForPicking(games: List<ScheduledGame>): List<ScheduledGame> = games.sortedWith(
+    compareBy<ScheduledGame>({
         when (it.status) {
             GameStatus.LIVE, GameStatus.BREAK -> 0
             GameStatus.PREGAME -> 1
             GameStatus.UNKNOWN -> 2
             GameStatus.FINAL -> 3
         }
-    }
-}
+    }, { if (it.status == GameStatus.LIVE || it.status == GameStatus.BREAK) -it.excite else it.startMs.toDouble() }),
+)
+
+/** Best live games to fill empty boxes: most exciting first, skipping ones already picked. */
+fun suggestFill(all: List<ScheduledGame>, taken: Set<String>, count: Int): List<ScheduledGame> =
+    all.filter { (it.status == GameStatus.LIVE || it.status == GameStatus.BREAK) && it.id !in taken }
+        .distinctBy { it.league + it.id }.sortedByDescending { it.excite }.take(count)
+
 
 /**
  * Today's scoreboard. Without extra settings ESPN only lists featured/top-25

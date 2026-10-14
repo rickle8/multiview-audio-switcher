@@ -57,6 +57,8 @@ data class Settings(
     val inputSteps: Map<Int, List<String>> = emptyMap(),
     /** Whether this TV obeys direct input keys: 1 yes, -1 no, 0 not known yet. */
     val directInputs: Int = 0,
+    /** "Something else" boxes used before (RedZone...), newest first. */
+    val recentOthers: List<String> = emptyList(),
 ) {
     val adThreshold: Double get() = 0.75 - 0.25 * micSensitivity
     val gameThreshold: Double get() = adThreshold - 0.2
@@ -84,6 +86,7 @@ data class Settings(
             inputSteps.forEach { (k, v) -> put(k.toString(), org.json.JSONArray(v)) }
         })
         .put("directInputs", directInputs)
+        .put("recentOthers", org.json.JSONArray(recentOthers))
         .put("slots", JSONObject().apply {
             slots.forEach { (box, s) ->
                 put(box.toString(), JSONObject().put("league", s.league).put("team", s.team)
@@ -145,6 +148,9 @@ data class Settings(
                     }.filter { it.second.isNotEmpty() }.toMap()
                 }.orEmpty(),
                 directInputs = j.optInt("directInputs", 0),
+                recentOthers = j.optJSONArray("recentOthers")?.let { a ->
+                    (0 until a.length()).map { a.optString(it) }.filter { it.isNotBlank() }
+                }.orEmpty(),
             )
         }
     }

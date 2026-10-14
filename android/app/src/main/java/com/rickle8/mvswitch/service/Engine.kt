@@ -24,6 +24,8 @@ import com.rickle8.mvswitch.core.gameTerms
 import com.rickle8.mvswitch.core.listGames
 import com.rickle8.mvswitch.core.scoreboardUrl
 import com.rickle8.mvswitch.core.simulate
+import com.rickle8.mvswitch.core.sortForPicking
+import com.rickle8.mvswitch.core.suggestFill
 import com.rickle8.mvswitch.core.summaryUrl
 import com.rickle8.mvswitch.data.Settings
 import com.rickle8.mvswitch.data.SettingsStore
@@ -291,21 +293,45 @@ object Engine {
     /** Today's games in every sport whose name or teams match [query] (live first). */
     suspend fun searchGames(query: String): List<ScheduledGame> = withContext(Dispatchers.IO) {
         val q = query.trim().lowercase()
-        val all: List<ScheduledGame> = coroutineScope {
-            com.rickle8.mvswitch.data.LEAGUES.map { (league, _) ->
-                async { runCatching { schedule(league) }.getOrDefault(emptyList()) }
-            }.awaitAll().flatten()
-        }
-        all.filter { g ->
-            listOf(g.shortName, g.away, g.home, g.name).any { it.lowercase().contains(q) }
-        }.sortedBy {
-            when (it.status) {
-                GameStatus.LIVE, GameStatus.BREAK -> 0
-                GameStatus.PREGAME -> 1
-                GameStatus.UNKNOWN -> 2
-                GameStatus.FINAL -> 3
+        if (q.isEmpty()) return@withContext sortForPicking(allGames().filter { it.status != GameStatus.FINAL })
+        sortForPicking(allGames().filter { g ->
+            listOf(g.shortName, g.away, g.home, g.name, g.network).any { it.lowercase().contains(q) }
+        })
+    }
+
+    /** Today's games in every sport (cached a minute per league). */
+    private suspend fun allGames(): List<ScheduledGame> = coroutineScope {
+        com.rickle8.mvswitch.data.LEAGUES.map { (league, _) ->
+            async { runCatching { schedule(league) }.getOrDefault(emptyList()) }
+        }.awaitAll().flatten()
+    }
+
+    /** Puts the most exciting live games (any sport) into the empty boxes. Returns how many it filled. */
+    suspend fun fillEmptyBoxes(): Int = withContext(Dispatchers.IO) {
+        val s = _settings.value
+        val empty = (1..boxCount(s)).filter { it !in s.slots }
+        if (empty.isEmpty()) return@withContext 0
+        val picks = suggestFill(allGames(), s.slots.values.map { it.eventId }.toSet(), empty.size)
+        if (picks.isEmpty()) return@withContext 0
+        update { cur ->
+            val slots = cur.slots.toMutableMap()
+            empty.zip(picks).forEach { (box, g) ->
+                if (box !in slots) slots[box] = GameSlot(league = g.league, team = g.home.ifBlank { g.away },
+                    name = g.shortName, eventId = g.id)
             }
+            cur.copy(slots = slots)
         }
+        minOf(empty.size, picks.size)
+    }
+
+    /** A "Something else" box, remembered for next time. */
+    fun setOther(box: Int, name: String) = update { s ->
+        val keep = s.slots[box]
+        s.copy(
+            slots = s.slots + (box to GameSlot(league = "", name = name, importance = if (keep?.isOther == true) keep.importance else 0.5,
+                kind = GameSlot.OTHER)),
+            recentOthers = (listOf(name) + s.recentOthers.filter { !it.equals(name, true) }).take(8),
+        )
     }
 
     private fun boxCount(s: Settings) = LAYOUTS[s.layout]?.size ?: 4
