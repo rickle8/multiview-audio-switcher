@@ -317,7 +317,7 @@ class GameFeed(
         val latest = log[box]?.lastOrNull()
         // Plays with a real wall-clock time are aged from when they happened; others from when seen.
         val age = latest?.let { if (it.seq >= 0) now - it.t else now - it.seen } ?: Double.MAX_VALUE
-        val s = if (raw == GameStatus.LIVE && latest != null && BREAK_PLAY.containsMatchIn(latest.text) &&
+        val s = if (raw == GameStatus.LIVE && latest != null && isBreakPlay(latest.text) &&
             age < breakPlaySecs
         ) GameStatus.BREAK else raw
         status[box] = s
@@ -391,7 +391,9 @@ class GameFeed(
         }
         val plays = parseSummaryPlays(json)
         json.optJSONObject("header")?.optJSONArray("competitions")?.optJSONObject(0)?.optJSONObject("status")?.let { st ->
-            if (st.has("clock")) noteClock(box, "pbp", st.optInt("period", 0), st.optDouble("clock"), now)
+            // The summary gives "5:21" (displayClock), the scoreboard a number of seconds.
+            val secs = if (st.has("clock")) st.optDouble("clock") else clockSeconds(st.optString("displayClock"))
+            if (secs != null) noteClock(box, "pbp", st.optInt("period", 0), secs, now)
         }
         if (now - (namesAt[box] ?: -1e9) > 600) {
             namesAt[box] = now
@@ -459,7 +461,7 @@ class GameFeed(
     @Synchronized
     fun playChangedSince(box: Int, t: Double): Boolean {
         val p = log[box]?.lastOrNull() ?: return false
-        return p.seen > t && !BREAK_PLAY.containsMatchIn(p.text)
+        return p.seen > t && !isBreakPlay(p.text)
     }
 }
 
@@ -497,3 +499,15 @@ fun teamNames(event: JSONObject): Set<String> {
     }
     return out
 }
+
+/** "5:21" -> 321.0, "0:45.3" -> 45.3; null for anything else ("2'", ""). */
+fun clockSeconds(display: String): Double? {
+    val m = Regex("^(\\d{1,2}):(\\d{2}(?:\\.\\d+)?)$").find(display.trim()) ?: return null
+    return m.groupValues[1].toDouble() * 60 + m.groupValues[2].toDouble()
+}
+
+/** A play wiped out by a penalty ("TOUCHDOWN NULLIFIED by Penalty", "No Play"): it didn't count. */
+val NULLIFIED = Regex("nullified|no play", RegexOption.IGNORE_CASE)
+
+/** A play that means a TV break is coming or on, unless a penalty wiped it out. */
+fun isBreakPlay(text: String): Boolean = BREAK_PLAY.containsMatchIn(text) && !NULLIFIED.containsMatchIn(text)

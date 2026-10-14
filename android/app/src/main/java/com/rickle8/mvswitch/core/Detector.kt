@@ -398,7 +398,7 @@ class Detector(private val dir: File? = null) {
     fun observePlays(box: Int, plays: List<Play>, now: Double) {
         // Line up big plays with the crowd's reaction to learn how far behind the TV runs.
         for (p in plays) {
-            if (p.seq >= 0 && BIG_PLAY.containsMatchIn(p.text)) {
+            if (p.seq >= 0 && (BIG_PLAY.containsMatchIn(p.text) && !NULLIFIED.containsMatchIn(p.text))) {
                 if (timing.delay.observe("$box:${p.seq}", p.t, now) { reaction(box, it) }) dirty = true
             }
         }

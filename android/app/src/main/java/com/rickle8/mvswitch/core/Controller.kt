@@ -7,10 +7,13 @@ package com.rickle8.mvswitch.core
  *  2. Game audio -> upgrade to a clearly more exciting game (after a dwell time).
  */
 
+// Real ESPN wording: "Official Timeout at 05:32.", "End Period: END QUARTER 1", "End of Half: END QUARTER 2",
+// "Field Goal Good: ... is GOOD" (a missed field goal usually isn't followed by a break).
 const val DEFAULT_PROACTIVE =
-    "touchdown|field goal|two.minute warning|official timeout|" +
-        "end of (the )?(1st|first|3rd|third) quarter|end of (the )?quarter|" +
-        "end of (the )?half|injur"
+    "touchdown|field goal (is )?good|two.minute warning|official timeout|tv timeout|media timeout|" +
+        "end of (the )?(1st|first|3rd|third) quarter|end of (the )?quarter|end (of )?period|end quarter|" +
+        "end of (the )?half|halftime|injur"
+private val HALF = Regex("end of (the )?(1st |first )?half|halftime|end quarter 2\\b|end of (the )?(2nd|second) quarter", RegexOption.IGNORE_CASE)
 val PROACTIVE_STATUSES = setOf("STATUS_HALFTIME", "STATUS_END_PERIOD")
 
 class Controller(
@@ -45,6 +48,8 @@ class Controller(
     private val awayForBreak = mutableSetOf<Int>()
     private val lastHeard = mutableMapOf<Int, Heard>()
     private val breakAfterScore: MutableMap<Int, Boolean> = java.util.concurrent.ConcurrentHashMap()
+    /** Halftime: much longer than a commercial break. */
+    private val breakIsHalf: MutableMap<Int, Boolean> = java.util.concurrent.ConcurrentHashMap()
     /** A break-causing play waiting until the TV actually shows it: box -> (play, when). */
     private val pending = mutableMapOf<Int, Pair<String, Double>>()
     private var clockLogged = -1e9
@@ -72,7 +77,7 @@ class Controller(
     }
 
     private fun recentScore(box: Int, now: Double): Boolean =
-        feed?.plays(box)?.takeLast(4)?.any { now - it.seen < 300 && SCORE_PLAY.containsMatchIn(it.text) } == true
+        feed?.plays(box)?.takeLast(4)?.any { now - it.seen < 300 && (SCORE_PLAY.containsMatchIn(it.text) && !NULLIFIED.containsMatchIn(it.text)) } == true
 
     /** Typical break for this game, learned from your games when possible. */
     private fun breakLength(box: Int, afterScore: Boolean): Double {
@@ -81,15 +86,20 @@ class Controller(
             ?: if (afterScore && league.startsWith("football")) assumedBreakSecs * 1.8 else assumedBreakSecs
     }
 
+    /** Longest to wait for a play saying the game is back. */
+    private fun breakCap(box: Int): Double =
+        if (breakIsHalf[box] == true) 1200.0
+        else (breakLength(box, breakAfterScore[box] == true) * 1.6).coerceIn(150.0, 480.0)
+
     /** The first play since the break started that the TV has shown and that means the game is back. */
     private fun resumedPlay(box: Int, started: Double, now: Double): Play? =
         feed?.plays(box)?.lastOrNull {
-            it.seen > started && !BREAK_PLAY.containsMatchIn(it.text) && !NOT_RESUMED.containsMatchIn(it.text)
+            it.seen > started && !isBreakPlay(it.text) && !NOT_RESUMED.containsMatchIn(it.text)
         }?.takeIf { tvTime(it) - 3 <= now }
 
     private fun endBreak(box: Int, started: Double, back: Play) {
         val tv = tvTime(back)
-        timing?.breaks?.add(feed?.league(box).orEmpty(), breakAfterScore[box] == true, tv - started)
+        if (breakIsHalf[box] != true) timing?.breaks?.add(feed?.league(box).orEmpty(), breakAfterScore[box] == true, tv - started)
         lastBreakEnd[box] = tv
         breakUntil.remove(box)
         breakStarted.remove(box)
@@ -110,8 +120,7 @@ class Controller(
         if (feed != null && started != null) {
             if (resumedPlay(box, started, now) != null) return false
             if (feed.pbpFresh(box, now)) {
-                val cap = (breakLength(box, breakAfterScore[box] == true) * 1.6).coerceIn(150.0, 480.0)
-                return now < started + cap
+                return now < started + breakCap(box)
             }
         }
         return until > now
@@ -126,8 +135,7 @@ class Controller(
             if (feed.pbpFresh(box, now)) {
                 // Plays are flowing: wait for one that shows the game is back (this sits out
                 // the second break after a kickoff), up to a generous limit.
-                val cap = (breakLength(box, breakAfterScore[box] == true) * 1.6).coerceIn(150.0, 480.0)
-                if (now < started + cap) return true
+                if (now < started + breakCap(box)) return true
                 breakUntil.remove(box)
                 return false
             }
@@ -166,7 +174,7 @@ class Controller(
         val p = feed.plays(box).lastOrNull()
         if (p != null && handledPlay[box] != p.text) {
             handledPlay[box] = p.text
-            if (now - p.seen <= proactiveMaxAge && now - p.t <= 240 && proactiveRe.containsMatchIn(p.text)) {
+            if (now - p.seen <= proactiveMaxAge && now - p.t <= 240 && proactiveRe.containsMatchIn(p.text) && !NULLIFIED.containsMatchIn(p.text)) {
                 // Wait until the TV has actually shown it (the stream runs behind), plus a moment
                 // for the touchdown celebration, instead of cutting away before you see the play.
                 val d = delay()
@@ -195,7 +203,7 @@ class Controller(
         val end = lastBreakEnd[box] ?: -1e9
         if (clockRunning(box, now)) return Bias.CLOCK
         val likely = feed.plays(box).lastOrNull {
-            LIKELY_BREAK.containsMatchIn(it.text) && it.seen > end && now - it.seen < 180 && now - it.t < 300
+            LIKELY_BREAK.containsMatchIn(it.text) && !NULLIFIED.containsMatchIn(it.text) && it.seen > end && now - it.seen < 180 && now - it.t < 300
         }
         if (likely != null) return Bias.LIKELY
         if (now - end < 240) return Bias.UNLIKELY
@@ -208,8 +216,9 @@ class Controller(
         if ((breakUntil[cur] ?: 0.0) <= now) {
             breakStarted[cur] = now
             breakAfterScore[cur] = recentScore(cur, now)
+            breakIsHalf[cur] = HALF.containsMatchIn(why) || info(cur)?.statusName == "STATUS_HALFTIME"
         }
-        breakUntil[cur] = now + breakLength(cur, breakAfterScore[cur] == true)
+        breakUntil[cur] = now + if (breakIsHalf[cur] == true) 900.0 else breakLength(cur, breakAfterScore[cur] == true)
         val targets = ranked(now, status, exclude = cur)
         if (targets.isNotEmpty()) return switchTo(targets.first(), now, why)
         log("$why, but no other game is live. Staying.")
@@ -219,7 +228,7 @@ class Controller(
     /** A normal (non-break) play showed up for this box recently: the game is on. */
     fun recentPlay(box: Int, now: Double, within: Double = liveGuardSecs): String? {
         val p = feed?.plays(box)?.lastOrNull() ?: return null
-        if (BREAK_PLAY.containsMatchIn(p.text)) return null
+        if (isBreakPlay(p.text)) return null
         // A play the TV shows soon, or showed a moment ago, means the game is on.
         if (now - tvTime(p) > within) return null
         return p.text

@@ -300,4 +300,17 @@ class BroadcastTest {
         assertEquals("The Masters", games.first { it.id == "2" }.shortName)
         assertTrue(scoreboardUrl("football/college-football").contains("groups=80"))
     }
+
+    @Test fun realEspnWording() {
+        assertEquals(321.0, clockSeconds("5:21")!!, 0.01)
+        assertEquals(7.5, clockSeconds("0:07.5")!!, 0.01)
+        assertNull(clockSeconds("Halftime"))
+        assertFalse(isBreakPlay("J.Allen pass for TOUCHDOWN NULLIFIED by Penalty"))
+        assertTrue(isBreakPlay("Official Timeout at 05:32."))
+        val p = Regex(DEFAULT_PROACTIVE, RegexOption.IGNORE_CASE)
+        assertTrue(p.containsMatchIn("End Period: END QUARTER 1"))
+        assertTrue(p.containsMatchIn("End of Half: END QUARTER 2"))
+        assertTrue(p.containsMatchIn("Field Goal Good: B.Aubrey 45 yard field goal is GOOD"))
+        assertFalse(p.containsMatchIn("Field Goal Missed: 52 yard field goal is No Good, Wide Left"))
+    }
 }
