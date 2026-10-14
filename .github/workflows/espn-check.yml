@@ -1,0 +1,45 @@
+name: ESPN check
+on:
+  push:
+    branches: [espn-check]
+    paths: [".github/workflows/espn-check.yml"]
+permissions:
+  contents: write
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch scoreboards and summaries for every league
+        run: |
+          set -u
+          mkdir -p data
+          B=https://site.api.espn.com/apis/site/v2/sports
+          leagues="football/nfl football/college-football basketball/nba basketball/mens-college-basketball basketball/womens-college-basketball basketball/wnba hockey/nhl hockey/mens-college-hockey baseball/mlb baseball/college-baseball soccer/usa.1 soccer/eng.1 soccer/uefa.champions soccer/esp.1 soccer/mex.1 soccer/usa.nwsl football/ufl golf/pga racing/f1 racing/nascar-premier mma/ufc tennis/atp tennis/wta"
+          for L in $leagues; do
+            f=data/sb_$(echo $L | tr / _).json
+            case $L in
+              football/college-football) q="?groups=80&limit=300";;
+              basketball/mens-college-basketball|basketball/womens-college-basketball) q="?groups=50&limit=400";;
+              *) q="?limit=300";;
+            esac
+            curl -fsS "$B/$L/scoreboard$q" -o "$f" || echo "FAIL $L" >> data/errors.txt
+            # Plain URL too, to compare counts
+            curl -fsS "$B/$L/scoreboard" -o "data/plain_$(echo $L | tr / _).json" || true
+            # Two summaries per league (live first)
+            ids=$(python3 -c "import json,sys; d=json.load(open('$f')); ev=d.get('events',[]); ev.sort(key=lambda e: 0 if e.get('status',{}).get('type',{}).get('state')=='in' else 1); print(' '.join(e['id'] for e in ev[:2]))" 2>/dev/null || true)
+            for id in $ids; do curl -fsS "$B/$L/summary?event=$id" -o "data/sum_$(echo $L | tr / _)_$id.json" || true; done
+          done
+          # Last weekend's finished games, for full play-by-play
+          curl -fsS "$B/football/nfl/scoreboard?dates=20261011" -o data/nfl_sun.json || true
+          curl -fsS "$B/football/college-football/scoreboard?dates=20261010&groups=80&limit=300" -o data/cfb_sat.json || true
+          for id in $(python3 -c "import json; print(' '.join(e['id'] for e in json.load(open('data/nfl_sun.json'))['events'][:3]))"); do
+            curl -fsS "$B/football/nfl/summary?event=$id" -o data/nflsum_$id.json || true; done
+          for id in $(python3 -c "import json; print(' '.join(e['id'] for e in json.load(open('data/cfb_sat.json'))['events'][:2]))"); do
+            curl -fsS "$B/football/college-football/summary?event=$id" -o data/cfbsum_$id.json || true; done
+          date -u > data/fetched.txt
+          ls -la data | head -100
+      - name: Save to branch
+        run: |
+          git config user.name "espn-check"; git config user.email "actions@github.com"
+          git add data && git commit -qm "ESPN data $(date -u +%FT%TZ) [skip ci]" && git push -q origin HEAD:espn-check
