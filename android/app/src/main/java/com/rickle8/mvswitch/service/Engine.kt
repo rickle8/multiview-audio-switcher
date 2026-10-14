@@ -33,6 +33,11 @@ import com.rickle8.mvswitch.data.Shortcut
 import com.rickle8.mvswitch.data.TvType
 import com.rickle8.mvswitch.remote.FoundTv
 import com.rickle8.mvswitch.remote.OkTvHttp
+import com.rickle8.mvswitch.remote.OkWebHttp
+import com.rickle8.mvswitch.remote.RemoteException
+import com.rickle8.mvswitch.remote.SmartThings
+import com.rickle8.mvswitch.remote.StTokens
+import com.rickle8.mvswitch.remote.StTv
 import com.rickle8.mvswitch.remote.OkWsOpener
 import com.rickle8.mvswitch.remote.RokuRemote
 import com.rickle8.mvswitch.remote.SamsungRemote
@@ -106,6 +111,8 @@ data class EngineState(
     val autoPaused: Boolean = false,
     val cuesOn: Boolean = false,
     val remoteMsg: String? = null,
+    /** SmartThings sign-in progress/result for Settings. */
+    val stStatus: String? = null,
     val feedError: String? = null,
     /** Holding off on switching for a bit because you're using the remote. */
     val held: Boolean = false,
@@ -452,6 +459,7 @@ object Engine {
             autoPaused = running && autoPaused,
             cuesOn = running && spotter != null,
             remoteMsg = remoteMsg,
+            stStatus = stStatus,
             feedError = f?.lastError,
             held = running && n < holdUntil,
             tvLinked = (tv as? SamsungRemote)?.linked,
@@ -964,18 +972,86 @@ object Engine {
         playSteps(r, listOf(step), live = true)
     }
 
-    fun inputName(n: Int) = _settings.value.inputNames[n]?.takeIf { it.isNotBlank() } ?: "HDMI $n"
+    fun inputName(n: Int) = _settings.value.inputNames[n]?.takeIf { it.isNotBlank() }
+        ?: _settings.value.stInputNames["HDMI$n"]?.takeIf { it.isNotBlank() } ?: "HDMI $n"
 
     /** A Samsung that ignores input keys, and this input hasn't been taught yet. */
     fun needsTeaching(n: Int): Boolean {
         val s = _settings.value
-        return s.tvType == TvType.SAMSUNG && s.directInputs < 0 && s.inputSteps[n].isNullOrEmpty()
+        return s.tvType == TvType.SAMSUNG && s.directInputs < 0 && s.inputSteps[n].isNullOrEmpty() && !s.smartThingsOn
+    }
+
+    // ---------------------------------------------------------------- SmartThings
+    @Volatile private var stClient: Pair<String, SmartThings>? = null
+
+    private fun smartThings(): SmartThings? {
+        val s = _settings.value
+        if (!s.smartThingsOn) return null
+        val key = s.stClientId + s.stClientSecret + s.stRefresh.take(6)
+        stClient?.let { (k, c) -> if (k == key || c.tokens.refresh == s.stRefresh) return c }
+        val c = SmartThings(s.stClientId, s.stClientSecret, StTokens(s.stAccess, s.stRefresh, s.stExpires),
+            saveTokens = { t -> update { it.copy(stAccess = t.access, stRefresh = t.refresh, stExpires = t.expiresAtMs) } },
+            http = OkWebHttp)
+        stClient = key to c
+        return c
+    }
+
+    private fun stTv(s: Settings) = StTv(s.stTvId, s.stTvName, s.stCap.ifBlank { SmartThings.CAPS.first() })
+
+    @Volatile var stStatus: String? = null
+        private set
+
+    fun stAuthorizeUrl(): String = SmartThings.authorizeUrl(_settings.value.stClientId)
+
+    /** Finish SmartThings sign-in with the code (or the whole address the sign-in page went to). */
+    fun stSignIn(codeOrUrl: String) {
+        scope.launch(Dispatchers.IO) {
+            val s = _settings.value
+            stStatus = "Signing in…"; publish()
+            try {
+                val code = SmartThings.codeFrom(codeOrUrl) ?: throw RemoteException("That doesn't have a sign-in code in it")
+                val t = SmartThings.exchange(s.stClientId, s.stClientSecret, code, OkWebHttp)
+                val c = SmartThings(s.stClientId, s.stClientSecret, t, saveTokens = {}, http = OkWebHttp)
+                val tvs = c.tvs()
+                if (tvs.isEmpty()) throw RemoteException("Signed in, but no Samsung TV with inputs is on that SmartThings account")
+                // The TV this app controls, if SmartThings' name for it matches; otherwise the first.
+                val tvName = runCatching { TvNetwork.samsungInfo(s.tvHost)?.optString("name") }.getOrNull().orEmpty()
+                val tv = tvs.firstOrNull { tvName.isNotBlank() && (it.name.contains(tvName, true) || tvName.contains(it.name, true)) } ?: tvs.first()
+                val names = runCatching { c.inputs(tv).first }.getOrDefault(emptyList())
+                update {
+                    it.copy(stAccess = t.access, stRefresh = t.refresh, stExpires = t.expiresAtMs,
+                        stTvId = tv.id, stTvName = tv.name, stCap = tv.capability,
+                        stInputNames = names.filter { i -> i.name != i.id }.associate { i -> i.id to i.name })
+                }
+                stClient = null
+                stStatus = "Connected to ${tv.name}." + if (tvs.size > 1) " (${tvs.size} TVs on the account; using this one.)" else ""
+            } catch (e: Exception) {
+                stStatus = e.message ?: "SmartThings sign-in failed"
+            }
+            publish()
+        }
+    }
+
+    fun stDisconnect() {
+        stClient = null
+        stStatus = null
+        update { it.copy(stAccess = "", stRefresh = "", stExpires = 0, stTvId = "", stTvName = "", stCap = "", stInputNames = emptyMap()) }
+        publish()
     }
 
     fun switchInput(n: Int) = onTv("switch inputs") { r ->
         val s = _settings.value
         val steps = s.inputSteps[n]
         leftYouTubeTv(inputName(n))
+        // SmartThings: the one way that works on every recent Samsung.
+        val st = smartThings()
+        if (st != null) {
+            val ok = runCatching { st.setInput(stTv(s), "HDMI$n") }
+                .onFailure { tvLog("SmartThings couldn't switch: ${it.message}") }.isSuccess
+            if (ok) { pickedInput(inputName(n)); return@onTv }
+            if (steps.isNullOrEmpty() && s.directInputs < 0)
+                throw IllegalStateException("SmartThings couldn't switch inputs. Is the TV on?")
+        }
         when {
             !steps.isNullOrEmpty() -> playSteps(r, steps)
             r is TvExtras -> {

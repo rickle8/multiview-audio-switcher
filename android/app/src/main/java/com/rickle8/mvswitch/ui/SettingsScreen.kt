@@ -195,6 +195,11 @@ fun SettingsScreen(state: EngineState, settings: Settings, update: UpdateState, 
                 settings.homing) { v -> Engine.update { it.copy(homing = v) } }
         }
 
+        if (settings.tvType == TvType.SAMSUNG) {
+            Spacer(Modifier.height(12.dp))
+            SmartThingsPanel(state, settings)
+        }
+
         // ------------------------------------------------------------ Detection
         SectionLabel("Detecting commercials")
         Panel {

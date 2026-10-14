@@ -57,6 +57,22 @@ class OkWsOpener(private val host: String) : WsOpener {
     }
 }
 
+/** HTTPS to cloud APIs (SmartThings). */
+object OkWebHttp : WebHttp {
+    private val client = OkHttpClient.Builder().connectTimeout(8, TimeUnit.SECONDS)
+        .readTimeout(12, TimeUnit.SECONDS).build()
+
+    override fun request(method: String, url: String, headers: Map<String, String>, body: String?, contentType: String?): HttpReply? = try {
+        val b = Request.Builder().url(url)
+        headers.forEach { (k, v) -> b.header(k, v) }
+        if (body != null) b.method(method, body.toRequestBody((contentType ?: "text/plain").toMediaType()))
+        else if (method != "GET") b.method(method, ByteArray(0).toRequestBody(null))
+        client.newCall(b.build()).execute().use { HttpReply(it.code, it.body?.string().orEmpty()) }
+    } catch (e: Exception) {
+        null
+    }
+}
+
 /** HTTP to the TV's REST endpoints. */
 object OkTvHttp : TvHttp {
     private val client = OkHttpClient.Builder().connectTimeout(3, TimeUnit.SECONDS)

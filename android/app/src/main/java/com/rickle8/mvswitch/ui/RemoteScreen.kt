@@ -101,7 +101,8 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlin.math.abs
 
-private fun inputLabel(settings: Settings, n: Int) = settings.inputNames[n]?.takeIf { it.isNotBlank() } ?: "HDMI $n"
+private fun inputLabel(settings: Settings, n: Int) = settings.inputNames[n]?.takeIf { it.isNotBlank() }
+    ?: settings.stInputNames["HDMI$n"]?.takeIf { it.isNotBlank() } ?: "HDMI $n"
 
 /** A stable color per app name, for tiles without an icon. */
 private fun tileColor(name: String): Color {
@@ -283,8 +284,9 @@ fun RemoteScreen(state: EngineState, settings: Settings, modifier: Modifier) {
         state.askInput?.let { n ->
             Panel(Modifier.padding(top = 10.dp)) {
                 Text("Did the TV switch to ${inputLabel(settings, n)}?", color = C.text, fontWeight = FontWeight.Medium)
-                Text("Some Samsung TVs ignore the app's input buttons. If yours did, you can teach it the way " +
-                    "you'd do it with the TV remote, once.", color = C.muted, fontSize = 12.sp)
+                Text("Many Samsung TVs ignore input keys sent over Wi-Fi. If yours did, the sure fix is connecting " +
+                    "SmartThings in Settings (HDMI buttons). Or teach it the steps with the source menu.",
+                    color = C.muted, fontSize = 12.sp)
                 Row {
                     TextButton(onClick = { Engine.answerInput(worked = true) }) { Text("Yes", color = C.accent) }
                     TextButton(onClick = { Engine.answerInput(worked = false); teaching = n }) {
