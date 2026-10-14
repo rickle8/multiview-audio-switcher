@@ -97,6 +97,8 @@ class Detector(private val dir: File? = null) {
     val bumpers = AdPrints(30)
     /** The network's coming-back music, learned from what repeats when games return. */
     val comebacks = AdPrints(20)
+    /** What each game's broadcast sounds like, learned while it's definitely on. */
+    val profiles = GameProfiles()
     private val stft = Stft()
     private val fp = Fingerprinter()
     private val transitions = TransitionDetector()
@@ -106,6 +108,8 @@ class Detector(private val dir: File? = null) {
         val speech: Double, val frameTo: Long, val pAd: Double?, var labeled: Boolean = false,
         /** Crowd cheering/yelling this second (for timing the stream delay). */
         val crowd: Double = 0.0,
+        /** Already used to learn what this game sounds like. */
+        var profiled: Boolean = false,
     )
 
     private val history = ArrayDeque<Rec>()
@@ -262,6 +266,15 @@ class Detector(private val dir: File? = null) {
             game = total * (1 - p); ad = total * p
         }
 
+        // 3d. Does it sound like this game's broadcast?
+        val pv = profiles.vector(audio)
+        val likeness = box?.let { profiles.evidence(it, pv, now) }
+        if (likeness != null && game + ad > 0.02) {
+            val p = sigmoid(logit(ad / (game + ad)) + likeness)
+            val total = game + ad
+            game = total * (1 - p); ad = total * p
+        }
+
         // Fingerprint verdict: trusted prints win outright; auto-saved ones need the classifier to agree.
         val pNow = if (game + ad > 0.05) ad / (game + ad) else 0.5
         var strong = false
@@ -303,6 +316,8 @@ class Detector(private val dir: File? = null) {
 
         // ------------------------------------------------------- learning
         if (learning) {
+            // Game clock running and nothing ad-like: this is what the game sounds like.
+            if (bias == Bias.CLOCK && heard != Heard.AD && (pAd ?: 1.0) < 0.4 && !strong) learnProfile(rec)
             // What plays right as a break starts (or ends) and repeats break after break is the network's music.
             if (before == Heard.GAME && heard == Heard.AD && !bumperHit) learnBoundary(bumpers, latest, wall)
             if (before == Heard.AD && heard == Heard.GAME && !comebackHit) learnBoundary(comebacks, latest, wall)
@@ -332,6 +347,7 @@ class Detector(private val dir: File? = null) {
             lastWord != null && now - lastWord.first <= 4 ->
                 (if (lastWord.second > 0) "Announcer said" else "Heard") + " \u201c${lastWord.third}\u201d"
             recentTransition && heard == Heard.AD -> "Sound changed suddenly"
+            likeness != null && likeness >= 0.8 && heard == Heard.AD -> "Doesn't sound like this game"
             voice != null && voice >= 1.0 -> "Announcers talking"
             voice != null && voice <= -1.5 -> "Different voice than the announcers"
             else -> effBias.why?.replaceFirstChar { it.uppercase() }
@@ -346,8 +362,16 @@ class Detector(private val dir: File? = null) {
         if (r.labeled) return
         r.labeled = true
         model.add(r.x, isAd)
+        if (!isAd) learnProfile(r)
         voices.learn(r.audio, r.speech, isGame = !isAd)
         dirty = true
+    }
+
+    private fun learnProfile(r: Rec) {
+        val box = r.box ?: return
+        if (r.profiled) return
+        r.profiled = true
+        profiles.learn(box, profiles.vector(r.audio), r.t)
     }
 
     private fun finishPendingPrint() {
@@ -418,7 +442,7 @@ class Detector(private val dir: File? = null) {
 
     fun forgetAll() {
         model.clear(); prints.clear(); voices.clear()
-        bumpers.clear(); comebacks.clear(); timing.clear()
+        bumpers.clear(); comebacks.clear(); timing.clear(); profiles.clear()
         history.forEach { it.labeled = false }
         save()
     }

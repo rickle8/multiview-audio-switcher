@@ -444,7 +444,10 @@ object Engine {
             labeling = detector.labelingNow(n),
             adsRemembered = detector.prints.size,
             voiceLearned = detector.voices.ready,
-            why = if (running && micLive) r?.why else null,
+            why = if (running && micLive) {
+                nav?.current?.let { ctrl?.waitingFor(it) }?.let { "ESPN says a break is coming. Waiting for the commercial to start" }
+                    ?: r?.why
+            } else null,
             waitingForMultiview = running && waitingForMultiview,
             autoPaused = running && autoPaused,
             cuesOn = running && spotter != null,
@@ -716,6 +719,7 @@ object Engine {
                 val n = now()
                 val cur = nav?.current
                 val c = ctrl ?: break
+                c.micOn = m != null
                 val held = n < holdUntil
                 val result = if (sec != null) synchronized(detector) {
                     cur?.let { box -> feed?.let { detector.observePlays(box, it.plays(box), n) } }

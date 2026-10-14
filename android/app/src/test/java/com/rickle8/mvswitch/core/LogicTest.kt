@@ -180,7 +180,10 @@ class LogicTest {
     @Test fun touchdownSwitchesRightAwayOnce() {
         val info = (1..4).associateWith { nfl(14, 10, 3, 400.0) }
         val (ctrl, nav, c) = setup(info, plays = mutableMapOf(1 to ("TOUCHDOWN, J.Love pass" to 95.0)))
+        ctrl.micOn = false // live data only: goes once the TV should have shown it
         c.t = 100.0
+        assertFalse(ctrl.step(Heard.GAME))
+        c.t = 116.0
         assertTrue(ctrl.step(Heard.GAME))
         assertNotEquals(1, nav.current)
         nav.current = 1
@@ -201,6 +204,8 @@ class LogicTest {
         val status = mapOf(1 to GameStatus.BREAK, 2 to GameStatus.LIVE, 3 to GameStatus.LIVE, 4 to GameStatus.LIVE)
         val (ctrl, nav, c) = setup(info, status)
         c.t = 100.0
+        assertFalse("the TV is still behind", ctrl.step(Heard.GAME))
+        c.t = 141.0
         assertTrue(ctrl.step(Heard.GAME))
         assertNotEquals(1, nav.current)
     }

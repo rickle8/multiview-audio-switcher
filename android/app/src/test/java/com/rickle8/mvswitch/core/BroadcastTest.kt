@@ -117,6 +117,7 @@ class BroadcastTest {
         val f = GameFeed(emptyMap(), { JSONObject() }, { now }, pollSecs = 1e9)
         f.recordPlay(1, "Pass short left to J.Cook for 12 yards, TOUCHDOWN.", 100.0, 105.0, seq = 7)
         val c = Controller(nav, listOf(1, 2), f, clock = { now }, timing = timing)
+        c.micOn = false                      // live data only: leave once the TV has shown it
         assertFalse(c.step(Heard.GAME))      // ESPN has it, the TV doesn't yet
         now = 140.0; assertFalse(c.step(Heard.GAME))
         now = 146.0; assertTrue(c.step(Heard.GAME)) // shown at 130, plus the celebration
@@ -150,7 +151,7 @@ class BroadcastTest {
         now = 100.0
         plays += "J.Allen pass to S.Diggs for 20 yards, TOUCHDOWN" to 100.0
         f.poll()
-        assertTrue(c.step(Heard.GAME)) // break coming after the score
+        assertTrue(c.step(Heard.AD)) // the break after the score
         assertEquals(2, nav.current)
         now = 250.0
         plays += "T.Bass kicks 65 yards from BUF 35 to end zone, Touchback." to 245.0
@@ -159,6 +160,8 @@ class BroadcastTest {
         now = 400.0
         plays += "T.Tagovailoa pass short right to T.Hill for 8 yards" to 398.0
         f.poll()
+        assertTrue("ESPN has it, the TV doesn't yet", c.inBreak(1, now, f.status))
+        now = 440.0
         assertFalse(c.inBreak(1, now, f.status))
         assertEquals(1, timing.breaks.count())
     }
@@ -312,5 +315,60 @@ class BroadcastTest {
         assertTrue(p.containsMatchIn("End of Half: END QUARTER 2"))
         assertTrue(p.containsMatchIn("Field Goal Good: B.Aubrey 45 yard field goal is GOOD"))
         assertFalse(p.containsMatchIn("Field Goal Missed: 52 yard field goal is No Good, Wide Left"))
+    }
+
+    // ------------------------------------------------------------ waits for the commercial itself
+    @Test fun espnCueWaitsForTheCommercialToStart() {
+        var now = 106.0
+        val logs = mutableListOf<String>()
+        val nav = Navigator(quiet, LAYOUTS.getValue(2), home = false, sleep = {})
+        val f = GameFeed(emptyMap(), { JSONObject() }, { now }, pollSecs = 1e9)
+        f.recordPlay(1, "Pass short left to J.Cook for 12 yards, TOUCHDOWN.", 100.0, 105.0, seq = 7)
+        val c = Controller(nav, listOf(1, 2), f, clock = { now }, log = { logs += it })
+        // The TV is still showing the game (replays, the extra point): stay, even long after ESPN had it.
+        for (t in 0..120 step 5) { now = 106.0 + t; assertFalse(c.step(Heard.GAME)) }
+        assertEquals(1, nav.current)
+        assertEquals(Bias.LIKELY, c.bias(1, now))
+        assertNotNull(c.waitingFor(1))
+        now = 240.0
+        assertTrue(c.step(Heard.AD))
+        assertEquals(2, nav.current)
+        assertTrue(logs.last().contains("Commercial started"))
+    }
+
+    @Test fun espnCueWithNoCommercialExpires() {
+        var now = 10.0
+        val logs = mutableListOf<String>()
+        val nav = Navigator(quiet, LAYOUTS.getValue(2), home = false, sleep = {})
+        val f = GameFeed(emptyMap(), { JSONObject() }, { now }, pollSecs = 1e9)
+        f.recordPlay(1, "Timeout #1 by BUF at 03:12.", 5.0, 8.0, seq = 3)
+        f.recordPlay(1, "Official Timeout at 03:12.", 5.0, 9.0, seq = 4)
+        val c = Controller(nav, listOf(1, 2), f, clock = { now }, log = { logs += it })
+        assertFalse(c.step(Heard.GAME))
+        now = 400.0
+        assertFalse(c.step(Heard.GAME))
+        assertNull(c.waitingFor(1))
+        assertTrue(logs.any { it.contains("No commercial came") })
+    }
+
+    @Test fun learnsWhatThisGameSoundsLike() {
+        val d = Detector()
+        val game = room(tones(11, 200), 12)
+        // Something that doesn't sound like this broadcast: a steady low chord.
+        val other = FloatArray(Dsp.SR * 20) { i ->
+            val t = i.toDouble() / Dsp.SR
+            (0.2 * (sin(2 * PI * 196 * t) + sin(2 * PI * 247 * t) + sin(2 * PI * 294 * t))).toFloat()
+        }.let { room(it, 13) }
+        var t = 0.0
+        for (s in 0 until 180) d.process(sec(game, s, 0.8f, 0f), t++, 1, Bias.CLOCK, true)
+        assertTrue(d.profiles.ready(1))
+        // Same ambiguous sound scores: this game's audio reads as game, the other as commercial.
+        d.onSwitch()
+        var gamePct = 0
+        for (s in 180 until 195) gamePct = d.process(sec(game, s, 0.3f, 0.3f), t++, 1, Bias.NORMAL, false).adPct ?: gamePct
+        d.onSwitch()
+        var otherPct = 0
+        for (s in 0 until 15) otherPct = d.process(sec(other, s, 0.3f, 0.3f), t++, 1, Bias.NORMAL, false).adPct ?: otherPct
+        assertTrue("game $gamePct vs other $otherPct", otherPct >= gamePct + 20)
     }
 }

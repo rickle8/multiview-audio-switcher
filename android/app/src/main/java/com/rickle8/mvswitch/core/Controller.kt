@@ -50,8 +50,18 @@ class Controller(
     private val breakAfterScore: MutableMap<Int, Boolean> = java.util.concurrent.ConcurrentHashMap()
     /** Halftime: much longer than a commercial break. */
     private val breakIsHalf: MutableMap<Int, Boolean> = java.util.concurrent.ConcurrentHashMap()
-    /** A break-causing play waiting until the TV actually shows it: box -> (play, when). */
-    private val pending = mutableMapOf<Int, Pair<String, Double>>()
+    /**
+     * ESPN says a break is coming: wait for the commercial itself before leaving
+     * (YouTube TV runs behind ESPN). Without a mic, leave once the TV should have caught up.
+     */
+    private class Arm(val text: String, val at: Double, val due: Double, val until: Double,
+                      /** Halftime: the studio show isn't the game either, so go once the TV gets there. */
+                      val anyway: Boolean = false)
+    private val armed: MutableMap<Int, Arm> = java.util.concurrent.ConcurrentHashMap()
+    /** False when running on live data alone (no mic to hear the commercial start). */
+    @Volatile var micOn = true
+    /** Seconds the TV is assumed to run behind live until the real delay is learned. */
+    var assumedDelaySecs = 40.0
     private var clockLogged = -1e9
 
     /** Seconds the TV runs behind the real game, once learned. */
@@ -60,8 +70,13 @@ class Controller(
     /** When the TV shows (or showed) this play. */
     fun tvTime(p: Play): Double {
         val d = delay()
-        return if (p.seq >= 0 && d != null) p.t + d else p.seen
+        if (p.seq < 0) return p.seen
+        // Not learned yet: assume the TV is a little behind ESPN, never ahead of it.
+        return if (d != null) p.t + d else maxOf(p.seen + 10, p.t + assumedDelaySecs)
     }
+
+    /** For the screen: the break ESPN says is coming that the app is waiting out. */
+    fun waitingFor(box: Int): String? = armed[box]?.text
 
     /** How much later the TV shows something than this app hears about it from ESPN. */
     private fun dataLead(): Double {
@@ -155,42 +170,54 @@ class Controller(
 
     private fun switchTo(box: Int, now: Double, why: String): Boolean {
         log("$why → box $box")
-        pending.remove(box)
         nav.goTo(box)
         lastSwitch = now
         return true
     }
 
-    private fun breakComing(box: Int, now: Double): String? {
+    /** Notes breaks ESPN says are coming; returns one that's due to act on. */
+    private fun breakComing(box: Int, now: Double): Arm? {
         if (!proactive || feed == null) return null
         val gi = info(box)
         if (gi != null && gi.statusName in PROACTIVE_STATUSES) {
             val key = "status:${gi.statusName}:${gi.period}"
             if (handledPlay[box] != key) {
                 handledPlay[box] = key
-                return gi.statusName.removePrefix("STATUS_").replace('_', ' ').lowercase()
+                val text = gi.statusName.removePrefix("STATUS_").replace('_', ' ').lowercase()
+                arm(box, text, now, now + (delay() ?: assumedDelaySecs), 300.0,
+                    anyway = gi.statusName == "STATUS_HALFTIME")
             }
         }
         val p = feed.plays(box).lastOrNull()
         if (p != null && handledPlay[box] != p.text) {
             handledPlay[box] = p.text
             if (now - p.seen <= proactiveMaxAge && now - p.t <= 240 && proactiveRe.containsMatchIn(p.text) && !NULLIFIED.containsMatchIn(p.text)) {
-                // Wait until the TV has actually shown it (the stream runs behind), plus a moment
-                // for the touchdown celebration, instead of cutting away before you see the play.
-                val d = delay()
+                // When the TV shows it (the stream runs behind), plus a moment for the celebration.
                 val lead = when {
                     p.text.contains("touchdown", ignoreCase = true) -> 15.0
                     p.text.contains("field goal", ignoreCase = true) -> 8.0
                     else -> 2.0
                 }
-                val due = if (p.seq >= 0 && d != null) maxOf(p.seen, p.t + d + lead) else p.seen
-                pending[box] = p.text to due
+                // A touchdown's break waits for the extra point (and often the kickoff).
+                val window = if (SCORE_PLAY.containsMatchIn(p.text)) 240.0 else 150.0
+                arm(box, p.text, now, maxOf(p.seen, tvTime(p)) + lead, window)
+            } else if (!isBreakPlay(p.text) && !NOT_RESUMED.containsMatchIn(p.text) && armed[box]?.let { p.seen > it.at } == true) {
+                log("Box $box played on without a break.")
+                armed.remove(box)
             }
         }
-        val (text, due) = pending[box] ?: return null
-        if (now < due) return null
-        pending.remove(box)
-        return if (now - due <= proactiveMaxAge) text else null
+        val a = armed[box] ?: return null
+        if (now > a.until) {
+            log("No commercial came on box $box after \u201c${a.text.take(40)}\u201d. Staying.")
+            armed.remove(box)
+            return null
+        }
+        return a.takeIf { now >= a.due }
+    }
+
+    private fun arm(box: Int, text: String, now: Double, due: Double, window: Double, anyway: Boolean = false) {
+        if (armed[box] == null) log("ESPN: break coming on box $box (${text.take(50)}). Waiting for the commercial.")
+        armed[box] = Arm(text, now, due, due + window, anyway)
     }
 
     /**
@@ -201,6 +228,7 @@ class Controller(
     fun bias(box: Int?, now: Double): Bias {
         if (box == null || feed == null) return Bias.NORMAL
         val end = lastBreakEnd[box] ?: -1e9
+        if (armed[box] != null) return Bias.LIKELY
         if (clockRunning(box, now)) return Bias.CLOCK
         val likely = feed.plays(box).lastOrNull {
             LIKELY_BREAK.containsMatchIn(it.text) && !NULLIFIED.containsMatchIn(it.text) && it.seen > end && now - it.seen < 180 && now - it.t < 300
@@ -212,6 +240,7 @@ class Controller(
     }
 
     private fun goToBreak(cur: Int, now: Double, status: Map<Int, GameStatus>, why: String): Boolean {
+        armed.remove(cur)
         awayForBreak += cur
         if ((breakUntil[cur] ?: 0.0) <= now) {
             breakStarted[cur] = now
@@ -253,11 +282,15 @@ class Controller(
         if (now - lastSwitch < settleSecs) return false
         val status = feedStatus()
 
-        breakComing(cur, now)?.let {
-            return goToBreak(cur, now, status, "Break coming on box $cur (${it.take(50)})")
+        val arm = breakComing(cur, now)
+        if (arm != null && (!micOn || arm.anyway)) {
+            return goToBreak(cur, now, status, "Break coming on box $cur (${arm.text.take(50)})")
         }
         when (heard) {
             Heard.AD -> {
+                // ESPN said a break was coming and now it sounds like one: go.
+                if (arm != null) return goToBreak(cur, now, status,
+                    "Commercial started on box $cur after \u201c${arm.text.take(40)}\u201d")
                 if (strongAd) return goToBreak(cur, now, status,
                     (strongWhy ?: "Recognized a commercial") + " on box $cur")
                 val play = recentPlay(cur, now)
