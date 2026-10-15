@@ -196,6 +196,7 @@ class PhoneSpeech private constructor(
         override fun onRmsChanged(rmsdB: Float) {}
         override fun onBufferReceived(buffer: ByteArray?) {}
         override fun onEndOfSpeech() {}
+        override fun onEvent(eventType: Int, params: Bundle?) {}
         override fun onPartialResults(partialResults: Bundle?) = handle(texts(partialResults), final = false)
         override fun onSegmentResults(segmentResults: Bundle) {
             errorsInRow = 0
