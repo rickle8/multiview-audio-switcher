@@ -27,7 +27,7 @@ class MicClassifier(private val context: Context) {
         AudioClassifier.AudioClassifierOptions.builder()
             .setBaseOptions(BaseOptions.builder().setModelAssetPath("yamnet.tflite").build())
             .setRunningMode(RunningMode.AUDIO_CLIPS)
-            .setMaxResults(-1) // every sound type, not just the top few
+            // No max results: unset means every sound type. (Setting -1 made MediaPipe refuse to start.)
             .build(),
     )
     private var record: AudioRecord? = null

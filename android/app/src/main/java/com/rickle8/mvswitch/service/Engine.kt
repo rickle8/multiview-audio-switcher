@@ -7,6 +7,7 @@ import com.rickle8.mvswitch.audio.KeywordSpotter
 import com.rickle8.mvswitch.audio.MicClassifier
 import com.rickle8.mvswitch.audio.SpeechModel
 import com.rickle8.mvswitch.core.Controller
+import com.rickle8.mvswitch.core.GameIdentifier
 import com.rickle8.mvswitch.core.DetectResult
 import com.rickle8.mvswitch.core.Detector
 import com.rickle8.mvswitch.core.GameFeed
@@ -33,11 +34,6 @@ import com.rickle8.mvswitch.data.Shortcut
 import com.rickle8.mvswitch.data.TvType
 import com.rickle8.mvswitch.remote.FoundTv
 import com.rickle8.mvswitch.remote.OkTvHttp
-import com.rickle8.mvswitch.remote.OkWebHttp
-import com.rickle8.mvswitch.remote.RemoteException
-import com.rickle8.mvswitch.remote.SmartThings
-import com.rickle8.mvswitch.remote.StTokens
-import com.rickle8.mvswitch.remote.StTv
 import com.rickle8.mvswitch.remote.OkWsOpener
 import com.rickle8.mvswitch.remote.RokuRemote
 import com.rickle8.mvswitch.remote.SamsungRemote
@@ -111,8 +107,8 @@ data class EngineState(
     val autoPaused: Boolean = false,
     val cuesOn: Boolean = false,
     val remoteMsg: String? = null,
-    /** SmartThings sign-in progress/result for Settings. */
-    val stStatus: String? = null,
+    /** "Hearing box 3 (“dodgers”, “ohtani”)": the game recognized by its names. */
+    val hearing: String? = null,
     val feedError: String? = null,
     /** Holding off on switching for a bit because you're using the remote. */
     val held: Boolean = false,
@@ -472,6 +468,7 @@ object Engine {
             labeling = detector.labelingNow(n),
             adsRemembered = detector.prints.size,
             voiceLearned = detector.voices.ready,
+            hearing = hearing?.takeIf { running && micLive && n - it.second < 120 }?.first,
             why = if (running && micLive) {
                 nav?.current?.let { ctrl?.waitingFor(it) }?.let { "ESPN says a break is coming. Waiting for the commercial to start" }
                     ?: r?.why
@@ -480,7 +477,6 @@ object Engine {
             autoPaused = running && autoPaused,
             cuesOn = running && spotter != null,
             remoteMsg = remoteMsg,
-            stStatus = stStatus,
             feedError = f?.lastError,
             held = running && n < holdUntil,
             tvLinked = (tv as? SamsungRemote)?.linked,
@@ -510,6 +506,10 @@ object Engine {
     @Volatile private var stopping = false
 
     @Volatile private var startedAt = -1e9
+    /** Tells which game is being heard from the names the announcers say. */
+    private val identifier = GameIdentifier()
+    /** Last game recognized by its names, and when. */
+    @Volatile private var hearing: Pair<String, Double>? = null
 
     fun start() {
         val old = job
@@ -752,8 +752,9 @@ object Engine {
                 if (now() - vocabAt > 60) {
                     vocabAt = now()
                     spotter?.let { sp ->
-                        val words = s.slots.values.map { it.league }.distinct().flatMap { gameTerms(it) } +
-                            (feed?.names().orEmpty())
+                        // Team and player names first: they're how the app tells which game it's hearing.
+                        val words = (feed?.namesForListening(420).orEmpty()) +
+                            s.slots.values.map { it.league }.distinct().flatMap { gameTerms(it) }
                         runCatching { sp.setGameWords(words) }
                     }
                 }
@@ -771,6 +772,23 @@ object Engine {
                         cue = cue, gameWords = said?.gameWords.orEmpty(), adWords = said?.adWords.orEmpty())
                 } else null
                 if (result != null) lastResult = result
+                // Which game is this, really? Names the announcers say settle it.
+                val heardWords = said?.gameWords.orEmpty()
+                if (heardWords.isNotEmpty()) feed?.let { identifier.heard(heardWords, n, it.namesByBox()) }
+                identifier.identified(n)?.let { (box, words) ->
+                    val navNow = nav
+                    hearing = "Hearing box $box (${words.take(3).joinToString { "\u201c$it\u201d" }})" to n
+                    if (navNow != null && navNow.current != box && !paused && !autoPaused && !waitingForMultiview &&
+                        !held && lockedBox == null && n - c.lastSwitch > 10) {
+                        synchronized(lock) {
+                            log("Heard ${words.take(3).joinToString { "\u201c$it\u201d" }}: the audio is on box $box, not box ${navNow.current}. Fixed.")
+                            navNow.current = box
+                            c.lastSwitch = n
+                        }
+                        synchronized(detector) { detector.onSwitch() }
+                        identifier.clear()
+                    }
+                }
                 if (paused || autoPaused || waitingForMultiview || held) {
                     publish()
                     continue
@@ -792,6 +810,7 @@ object Engine {
                             if (c.step(heard, strongAd = result?.strongAd == true,
                                     strongWhy = if (result?.strongAd == true) result.why else null)) {
                                 m?.drain()
+                                identifier.clear()
                                 synchronized(detector) { detector.onSwitch() }
                                 lastResult = null
                             }
@@ -913,6 +932,7 @@ object Engine {
         paused = false
         holdUntil = 0.0
         needResync = true
+        identifier.clear()
         log("Running. Audio on box 1.")
     }
 
@@ -960,6 +980,7 @@ object Engine {
                 r.press(key)
                 // In multiview the arrows move the audio: keep track of where it went.
                 n.current = simulate(n.neighbors, n.current ?: 1, listOf(key))
+                identifier.clear()
                 ctrl?.lastSwitch = now()
                 synchronized(detector) { detector.onSwitch() }
             }
@@ -1017,85 +1038,18 @@ object Engine {
     }
 
     fun inputName(n: Int) = _settings.value.inputNames[n]?.takeIf { it.isNotBlank() }
-        ?: _settings.value.stInputNames["HDMI$n"]?.takeIf { it.isNotBlank() } ?: "HDMI $n"
+        ?: "HDMI $n"
 
     /** A Samsung that ignores input keys, and this input hasn't been taught yet. */
     fun needsTeaching(n: Int): Boolean {
         val s = _settings.value
-        return s.tvType == TvType.SAMSUNG && s.directInputs < 0 && s.inputSteps[n].isNullOrEmpty() && !s.smartThingsOn
-    }
-
-    // ---------------------------------------------------------------- SmartThings
-    @Volatile private var stClient: Pair<String, SmartThings>? = null
-
-    private fun smartThings(): SmartThings? {
-        val s = _settings.value
-        if (!s.smartThingsOn) return null
-        val key = s.stClientId + s.stClientSecret + s.stRefresh.take(6)
-        stClient?.let { (k, c) -> if (k == key || c.tokens.refresh == s.stRefresh) return c }
-        val c = SmartThings(s.stClientId, s.stClientSecret, StTokens(s.stAccess, s.stRefresh, s.stExpires),
-            saveTokens = { t -> update { it.copy(stAccess = t.access, stRefresh = t.refresh, stExpires = t.expiresAtMs) } },
-            http = OkWebHttp)
-        stClient = key to c
-        return c
-    }
-
-    private fun stTv(s: Settings) = StTv(s.stTvId, s.stTvName, s.stCap.ifBlank { SmartThings.CAPS.first() })
-
-    @Volatile var stStatus: String? = null
-        private set
-
-    fun stAuthorizeUrl(): String = SmartThings.authorizeUrl(_settings.value.stClientId)
-
-    /** Finish SmartThings sign-in with the code (or the whole address the sign-in page went to). */
-    fun stSignIn(codeOrUrl: String) {
-        scope.launch(Dispatchers.IO) {
-            val s = _settings.value
-            stStatus = "Signing in…"; publish()
-            try {
-                val code = SmartThings.codeFrom(codeOrUrl) ?: throw RemoteException("That doesn't have a sign-in code in it")
-                val t = SmartThings.exchange(s.stClientId, s.stClientSecret, code, OkWebHttp)
-                val c = SmartThings(s.stClientId, s.stClientSecret, t, saveTokens = {}, http = OkWebHttp)
-                val tvs = c.tvs()
-                if (tvs.isEmpty()) throw RemoteException("Signed in, but no Samsung TV with inputs is on that SmartThings account")
-                // The TV this app controls, if SmartThings' name for it matches; otherwise the first.
-                val tvName = runCatching { TvNetwork.samsungInfo(s.tvHost)?.optString("name") }.getOrNull().orEmpty()
-                val tv = tvs.firstOrNull { tvName.isNotBlank() && (it.name.contains(tvName, true) || tvName.contains(it.name, true)) } ?: tvs.first()
-                val names = runCatching { c.inputs(tv).first }.getOrDefault(emptyList())
-                update {
-                    it.copy(stAccess = t.access, stRefresh = t.refresh, stExpires = t.expiresAtMs,
-                        stTvId = tv.id, stTvName = tv.name, stCap = tv.capability,
-                        stInputNames = names.filter { i -> i.name != i.id }.associate { i -> i.id to i.name })
-                }
-                stClient = null
-                stStatus = "Connected to ${tv.name}." + if (tvs.size > 1) " (${tvs.size} TVs on the account; using this one.)" else ""
-            } catch (e: Exception) {
-                stStatus = e.message ?: "SmartThings sign-in failed"
-            }
-            publish()
-        }
-    }
-
-    fun stDisconnect() {
-        stClient = null
-        stStatus = null
-        update { it.copy(stAccess = "", stRefresh = "", stExpires = 0, stTvId = "", stTvName = "", stCap = "", stInputNames = emptyMap()) }
-        publish()
+        return s.tvType == TvType.SAMSUNG && s.directInputs < 0 && s.inputSteps[n].isNullOrEmpty()
     }
 
     fun switchInput(n: Int) = onTv("switch inputs") { r ->
         val s = _settings.value
         val steps = s.inputSteps[n]
         leftYouTubeTv(inputName(n))
-        // SmartThings: the one way that works on every recent Samsung.
-        val st = smartThings()
-        if (st != null) {
-            val ok = runCatching { st.setInput(stTv(s), "HDMI$n") }
-                .onFailure { tvLog("SmartThings couldn't switch: ${it.message}") }.isSuccess
-            if (ok) { pickedInput(inputName(n)); return@onTv }
-            if (steps.isNullOrEmpty() && s.directInputs < 0)
-                throw IllegalStateException("SmartThings couldn't switch inputs. Is the TV on?")
-        }
         when {
             !steps.isNullOrEmpty() -> playSteps(r, steps)
             r is TvExtras -> {

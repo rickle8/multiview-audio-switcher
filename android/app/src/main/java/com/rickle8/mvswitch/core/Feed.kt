@@ -293,6 +293,7 @@ class GameFeed(
     /** How long after a play happened this app first saw it (ESPN's own delay), seconds. */
     private val lagSamples = ArrayDeque<Double>()
     private val names = java.util.concurrent.ConcurrentHashMap<Int, Set<String>>()
+    private val teams = java.util.concurrent.ConcurrentHashMap<Int, Set<String>>()
     private val namesAt = HashMap<Int, Double>()
 
     /** The game whose play-by-play is polled every few seconds (the one you're hearing). */
@@ -362,7 +363,10 @@ class GameFeed(
             rawStatus[box] = gi.status
             info[box] = gi
             if (gi.status == GameStatus.LIVE || gi.status == GameStatus.BREAK) noteClock(box, "board", gi.period, gi.clock, now)
-            if (!names.containsKey(box)) teamNames(event).takeIf { it.isNotEmpty() }?.let { names[box] = it }
+            teamNames(event).takeIf { it.isNotEmpty() }?.let { t ->
+                val cur = names[box].orEmpty()
+                if (!cur.containsAll(t)) { teams[box] = t; names[box] = t + cur }
+            }
             // The scoreboard only has the latest play. Use it when play-by-play isn't flowing.
             val play = gi.lastPlay
             val pbpFresh = (summaryOk[box] ?: -1e9) > now - 30
@@ -399,7 +403,7 @@ class GameFeed(
             namesAt[box] = now
             val found = HashSet<String>()
             athleteNames(json, found, 0)
-            if (found.isNotEmpty()) names[box] = (names[box].orEmpty() + found).take(150).toSet()
+            if (found.isNotEmpty()) names[box] = (teams[box].orEmpty() + names[box].orEmpty() + found).take(150).toSet()
         }
         if (plays.isEmpty()) return
         summaryOk[box] = now
@@ -452,6 +456,25 @@ class GameFeed(
     /** Player and team names for every game, lowercase (for the announcers' words). */
     fun names(): Set<String> = names.values.flatten().toSet()
 
+    /** Each game's player and team names, for telling which game is being heard. */
+    fun namesByBox(): Map<Int, Set<String>> = HashMap(names)
+
+    /**
+     * Names for the speech recognizer, most useful first: every game's team names,
+     * then players taken in turn from each game so no game is left out.
+     */
+    fun namesForListening(limit: Int): List<String> {
+        val out = LinkedHashSet<String>()
+        teams.values.forEach { out += it }
+        val lists = names.values.map { it.toList() }
+        var i = 0
+        while (out.size < limit && lists.any { i < it.size }) {
+            for (l in lists) if (i < l.size && out.size < limit) out += l[i]
+            i++
+        }
+        return out.toList()
+    }
+
     @Synchronized
     fun latestPlay(box: Int): Pair<String, Double>? = log[box]?.lastOrNull()?.let { it.text to it.seen }
 
@@ -495,7 +518,11 @@ fun teamNames(event: JSONObject): Set<String> {
     val comps = event.optJSONArray("competitions")?.optJSONObject(0)?.optJSONArray("competitors") ?: return out
     for (i in 0 until comps.length()) {
         val t = comps.optJSONObject(i)?.optJSONObject("team") ?: continue
-        t.optString("name").lowercase().replace(Regex("[^a-z' ]"), " ").trim().takeIf { it.length >= 3 }?.let { out += it }
+        // Nickname and place: announcers say "the Dodgers", "Milwaukee", "Kennesaw State".
+        for (k in listOf("name", "location", "shortDisplayName")) {
+            t.optString(k).lowercase().replace(Regex("[^a-z' ]"), " ").replace(Regex("\\s+"), " ").trim()
+                .takeIf { it.length >= 3 }?.let { out += it }
+        }
     }
     return out
 }

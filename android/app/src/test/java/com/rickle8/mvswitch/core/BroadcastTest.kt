@@ -371,4 +371,31 @@ class BroadcastTest {
         for (s in 0 until 15) otherPct = d.process(sec(other, s, 0.3f, 0.3f), t++, 1, Bias.NORMAL, false).adPct ?: otherPct
         assertTrue("game $gamePct vs other $otherPct", otherPct >= gamePct + 20)
     }
+
+    // ------------------------------------------------------------ which game is this?
+    @Test fun knowsTheGameFromTheNamesSaid() {
+        val names = mapOf(
+            1 to setOf("hilltoppers", "western kentucky", "smith"),
+            3 to setOf("dodgers", "brewers", "ohtani", "yelich", "smith"),
+        )
+        val id = GameIdentifier()
+        id.heard(listOf("smith"), 0.0, names)            // in two games: no help
+        id.heard(listOf("dodgers"), 5.0, names)
+        assertNull("one name isn't enough", id.identified(6.0))
+        id.heard(listOf("ohtani"), 20.0, names)
+        assertEquals(3, id.identified(21.0)!!.first)
+        id.heard(listOf("hilltoppers"), 25.0, names)
+        assertNull("not clear any more", id.identified(26.0))
+        id.clear()
+        assertNull(id.identified(27.0))
+        assertNull("old names expire", GameIdentifier(60.0).apply {
+            heard(listOf("dodgers", "ohtani"), 0.0, names) }.identified(100.0))
+    }
+
+    @Test fun teamNamesIncludeThePlace() {
+        val ev = JSONObject().put("competitions", JSONArray().put(JSONObject().put("competitors", JSONArray()
+            .put(JSONObject().put("team", JSONObject().put("name", "Owls").put("location", "Kennesaw State")))
+            .put(JSONObject().put("team", JSONObject().put("name", "Dodgers").put("location", "Los Angeles"))))))
+        assertEquals(setOf("owls", "kennesaw state", "dodgers", "los angeles"), teamNames(ev))
+    }
 }

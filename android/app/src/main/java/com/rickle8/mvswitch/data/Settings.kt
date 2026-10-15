@@ -26,7 +26,8 @@ data class Settings(
     val tvHost: String = "",
     val samsungToken: String? = null,
     val layout: Int = 4,
-    val homing: Boolean = true,
+    /** Pressing up/left before each switch to find box 1. Off: it opens menus on some TVs. */
+    val homing: Boolean = false,
     val homePresses: Int = 2,
     val slots: Map<Int, GameSlot> = emptyMap(),
     val useMic: Boolean = true,
@@ -59,27 +60,14 @@ data class Settings(
     val directInputs: Int = 0,
     /** "Something else" boxes used before (RedZone...), newest first. */
     val recentOthers: List<String> = emptyList(),
-    /** SmartThings (switches HDMI inputs on TVs that ignore input keys): your developer client... */
-    val stClientId: String = "",
-    val stClientSecret: String = "",
-    /** ...and the sign-in it got. */
-    val stAccess: String = "",
-    val stRefresh: String = "",
-    val stExpires: Long = 0,
-    val stTvId: String = "",
-    val stTvName: String = "",
-    val stCap: String = "",
-    /** SmartThings' names for the inputs, e.g. "HDMI2" -> "PlayStation 5". */
-    val stInputNames: Map<String, String> = emptyMap(),
 ) {
-    val smartThingsOn: Boolean get() = stTvId.isNotBlank() && stRefresh.isNotBlank() && stClientId.isNotBlank()
 
     val adThreshold: Double get() = 0.75 - 0.25 * micSensitivity
     val gameThreshold: Double get() = adThreshold - 0.2
 
     fun toJson(): JSONObject = JSONObject()
         .put("tvType", tvType.name).put("tvHost", tvHost).put("samsungToken", samsungToken ?: "")
-        .put("layout", layout).put("homing", homing).put("homePresses", homePresses)
+        .put("layout", layout).put("homing2", homing).put("homePresses", homePresses)
         .put("useMic", useMic).put("micSensitivity", micSensitivity.toDouble())
         .put("proactive", proactive).put("hopping", hopping.name).put("breakSecs", breakSecs)
         .put("league", league)
@@ -101,10 +89,6 @@ data class Settings(
         })
         .put("directInputs", directInputs)
         .put("recentOthers", org.json.JSONArray(recentOthers))
-        .put("stClientId", stClientId).put("stClientSecret", stClientSecret)
-        .put("stAccess", stAccess).put("stRefresh", stRefresh).put("stExpires", stExpires)
-        .put("stTvId", stTvId).put("stTvName", stTvName).put("stCap", stCap)
-        .put("stInputNames", JSONObject().apply { stInputNames.forEach { (k, v) -> put(k, v) } })
         .put("slots", JSONObject().apply {
             slots.forEach { (box, s) ->
                 put(box.toString(), JSONObject().put("league", s.league).put("team", s.team)
@@ -130,7 +114,7 @@ data class Settings(
                 tvHost = j.optString("tvHost", d.tvHost),
                 samsungToken = j.optString("samsungToken").ifBlank { null },
                 layout = j.optInt("layout", d.layout),
-                homing = j.optBoolean("homing", d.homing),
+                homing = j.optBoolean("homing2", d.homing),
                 homePresses = j.optInt("homePresses", d.homePresses),
                 slots = slots,
                 useMic = j.optBoolean("useMic", d.useMic),
@@ -168,17 +152,6 @@ data class Settings(
                 directInputs = j.optInt("directInputs", 0),
                 recentOthers = j.optJSONArray("recentOthers")?.let { a ->
                     (0 until a.length()).map { a.optString(it) }.filter { it.isNotBlank() }
-                }.orEmpty(),
-                stClientId = j.optString("stClientId", ""),
-                stClientSecret = j.optString("stClientSecret", ""),
-                stAccess = j.optString("stAccess", ""),
-                stRefresh = j.optString("stRefresh", ""),
-                stExpires = j.optLong("stExpires", 0),
-                stTvId = j.optString("stTvId", ""),
-                stTvName = j.optString("stTvName", ""),
-                stCap = j.optString("stCap", ""),
-                stInputNames = j.optJSONObject("stInputNames")?.let { o ->
-                    o.keys().asSequence().associateWith { o.optString(it) }
                 }.orEmpty(),
             )
         }

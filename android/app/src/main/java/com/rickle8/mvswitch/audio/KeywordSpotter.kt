@@ -84,8 +84,9 @@ class KeywordSpotter(modelDir: File, phrases: List<String>) : AutoCloseable {
 
     /** Game words to listen for (terms for the sports on, plus player and team names). */
     fun setGameWords(words: Collection<String>) {
-        val next = words.map { normalize(it) }.filter { it.length >= 3 && it !in phrases }.distinct().sorted().take(500)
-        if (next == gameTerms) return
+        // In the order given (most useful first), so a long list never drops a whole game.
+        val next = words.map { normalize(it) }.filter { it.length >= 3 && it !in phrases }.distinct().take(500)
+        if (next.toSet() == gameTerms.toSet()) return
         gameTerms = next
         val old = recognizer
         recognizer = build()
