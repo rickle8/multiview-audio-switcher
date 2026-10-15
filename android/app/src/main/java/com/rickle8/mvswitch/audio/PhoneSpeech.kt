@@ -94,6 +94,7 @@ class PhoneSpeech private constructor(
     private var cue: String? = null
     private val game = LinkedHashSet<String>()
     private val ad = LinkedHashSet<String>()
+    private val pendingText = StringBuilder()
     /** Terms already reported in the current utterance (partials repeat them). */
     private val reportedNow = HashSet<String>()
     private var cueReportedNow = false
@@ -183,7 +184,11 @@ class PhoneSpeech private constructor(
             if (c != null && !cueReportedNow) { cue = c; cueReportedNow = true }
             g.filter { reportedNow.add(it) }.forEach { game += it }
             a.filter { reportedNow.add("ad:$it") }.forEach { ad += it }
-            if (final) { reportedNow.clear(); cueReportedNow = false }
+            if (final) {
+                reportedNow.clear(); cueReportedNow = false
+                pendingText.append(' ').append(text)
+                if (pendingText.length > 2000) pendingText.delete(0, pendingText.length - 2000)
+            }
         }
     }
 
@@ -237,9 +242,10 @@ class PhoneSpeech private constructor(
             }
         }
         synchronized(lock) {
-            if (cue == null && game.isEmpty() && ad.isEmpty()) return null
-            val heard = SpeechHeard(cue, game.toList(), ad.toList())
-            cue = null; game.clear(); ad.clear()
+            val text = pendingText.toString().trim().ifBlank { null }
+            if (cue == null && game.isEmpty() && ad.isEmpty() && text == null) return null
+            val heard = SpeechHeard(cue, game.toList(), ad.toList(), text)
+            cue = null; game.clear(); ad.clear(); pendingText.setLength(0)
             return heard
         }
     }

@@ -9,7 +9,7 @@ import com.rickle8.mvswitch.audio.SpeechSource
 import com.rickle8.mvswitch.audio.MicClassifier
 import com.rickle8.mvswitch.audio.SpeechModel
 import com.rickle8.mvswitch.core.Controller
-import com.rickle8.mvswitch.core.GameIdentifier
+import com.rickle8.mvswitch.core.Locator
 import com.rickle8.mvswitch.core.DetectResult
 import com.rickle8.mvswitch.core.Detector
 import com.rickle8.mvswitch.core.GameFeed
@@ -521,7 +521,7 @@ object Engine {
         }
     }
     /** Tells which game is being heard from the names the announcers say. */
-    private val identifier = GameIdentifier()
+    private val locator = Locator()
     @Volatile private var lastGameTalk: Pair<Double, String>? = null
     private var adVetoLogged = -1e9
     /** Last game recognized by its names, and when. */
@@ -790,21 +790,28 @@ object Engine {
                         cue = cue, gameWords = said?.gameWords.orEmpty(), adWords = said?.adWords.orEmpty())
                 } else null
                 if (result != null) lastResult = result
-                // Which game is this, really? Names the announcers say settle it.
+                // Which game is this, really? What the announcers say settles it: names, the score,
+                // down and distance, the inning, words only one sport uses.
                 val heardWords = said?.gameWords.orEmpty()
-                if (heardWords.isNotEmpty()) feed?.let { identifier.heard(heardWords, n, it.namesByBox()) }
-                identifier.identified(n)?.let { (box, words) ->
+                val facts = feed?.facts().orEmpty()
+                if (facts.isNotEmpty()) {
+                    val text = listOfNotNull(said?.text, heardWords.takeIf { said?.text == null }?.joinToString(" "))
+                        .joinToString(" ").trim()
+                    // Right after a switch the mic still has the old game's last words: skip those.
+                    if (text.isNotEmpty() && n - c.lastSwitch > 3) locator.hear(text, n, facts)
+                }
+                locator.where(n)?.let { (box, why) ->
                     val navNow = nav
-                    hearing = "Hearing box $box (${words.take(3).joinToString { "\u201c$it\u201d" }})" to n
+                    hearing = "Hearing box $box (${why.joinToString { "\u201c$it\u201d" }})" to n
                     if (navNow != null && navNow.current != box && !paused && !autoPaused && !waitingForMultiview &&
                         !held && lockedBox == null && n - c.lastSwitch > 10) {
                         synchronized(lock) {
-                            log("Heard ${words.take(3).joinToString { "\u201c$it\u201d" }}: the audio is on box $box, not box ${navNow.current}. Fixed.")
+                            log("Heard ${why.joinToString { "\u201c$it\u201d" }}: the audio is on box $box, not box ${navNow.current}. Fixed.")
                             navNow.current = box
                             c.lastSwitch = n
                         }
                         synchronized(detector) { detector.onSwitch() }
-                        identifier.clear()
+                        locator.reset(box, n)
                     }
                 }
                 if (heardWords.isNotEmpty()) lastGameTalk = n to heardWords.first()
@@ -825,7 +832,7 @@ object Engine {
                 }
                 // Announcers just said a player, team or "third down": that's the game, not a commercial.
                 if (heard == Heard.AD && result?.strongAd != true) {
-                    val name = cur?.let { identifier.heardRecently(it, n, 15.0) }
+                    val name = cur?.let { locator.heardRecently(it, n, 15.0) }
                     val talk = lastGameTalk?.takeIf { n - it.first <= 12 }?.second
                     (name ?: talk)?.let { w ->
                         if (n - adVetoLogged > 45) { adVetoLogged = n; log("Sounded like an ad, but the announcers just said \u201c$w\u201d. Staying.") }
@@ -838,7 +845,7 @@ object Engine {
                             if (c.step(heard, strongAd = result?.strongAd == true,
                                     strongWhy = if (result?.strongAd == true) result.why else null)) {
                                 m?.drain()
-                                identifier.clear()
+                                locator.reset(nav?.current, now())
                                 lastGameTalk = null
                                 synchronized(detector) { detector.onSwitch() }
                                 lastResult = null
@@ -961,7 +968,7 @@ object Engine {
         paused = false
         holdUntil = 0.0
         needResync = true
-        identifier.clear()
+        locator.reset(1, now())
         log("Running. Audio on box 1.")
     }
 
@@ -1009,7 +1016,7 @@ object Engine {
                 r.press(key)
                 // In multiview the arrows move the audio: keep track of where it went.
                 n.current = simulate(n.neighbors, n.current ?: 1, listOf(key))
-                identifier.clear()
+                locator.reset(n.current, now())
                 ctrl?.lastSwitch = now()
                 synchronized(detector) { detector.onSwitch() }
             }

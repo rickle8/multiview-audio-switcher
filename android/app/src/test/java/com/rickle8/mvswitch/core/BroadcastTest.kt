@@ -375,27 +375,49 @@ class BroadcastTest {
     }
 
     // ------------------------------------------------------------ which game is this?
-    @Test fun knowsTheGameFromTheNamesSaid() {
-        val names = mapOf(
-            1 to setOf("hilltoppers", "western kentucky", "smith"),
-            3 to setOf("dodgers", "brewers", "ohtani", "yelich", "milwaukee", "smith"),
-        )
-        val id = GameIdentifier()
-        id.heard(listOf("smith"), 0.0, names)            // in two games: no help
-        id.heard(listOf("dodgers"), 5.0, names)
-        assertNull("one name isn't enough", id.identified(6.0))
-        id.heard(listOf("ohtani"), 20.0, names)
-        assertNull("two isn't enough either", id.identified(21.0))
-        id.heard(listOf("yelich"), 22.0, names)
-        assertEquals(3, id.identified(23.0)!!.first)
-        assertEquals("yelich", id.heardRecently(3, 30.0, 15.0))
-        assertNull(id.heardRecently(1, 30.0, 15.0))
-        id.heard(listOf("hilltoppers"), 25.0, names)
-        assertNull("not clear any more", id.identified(26.0))
-        id.clear()
-        assertNull(id.identified(27.0))
-        assertNull("old names expire", GameIdentifier(60.0).apply {
-            heard(listOf("dodgers", "ohtani", "yelich"), 0.0, names) }.identified(100.0))
+    private val tonight = mapOf(
+        1 to BoxFacts("football/college-football", names = setOf("smith", "jackson"), teams = setOf("hilltoppers", "western kentucky"),
+            scores = listOf(listOf(0, 7)), period = 2, down = 3, distance = 4),
+        2 to BoxFacts("football/college-football", names = setOf("smith", "brown"), teams = setOf("owls", "kennesaw state"),
+            scores = listOf(listOf(6, 0)), period = 2, down = 1, distance = 10),
+        3 to BoxFacts("baseball/mlb", names = setOf("ohtani", "yelich"), teams = setOf("dodgers", "brewers", "milwaukee"),
+            scores = listOf(listOf(0, 0), listOf(0, 1)), period = 3, half = "top", outs = 2),
+        4 to BoxFacts("basketball/nba", names = setOf("doncic", "irving"), teams = setOf("mavericks", "pelicans", "new orleans"),
+            scores = listOf(listOf(25, 30), listOf(25, 32)), period = 2),
+    )
+
+    @Test fun numbersReadTheSameEitherWay() {
+        assertEquals("trailing 32 to 25", numbersToDigits("trailing thirty-two to twenty-five"))
+        assertEquals("third and 4", numbersToDigits("third and four"))
+    }
+
+    @Test fun locatesTheGameFromWhatsSaid() {
+        val loc = Locator()
+        // The score, said either way, and even the one before the latest.
+        assertEquals(setOf(4), loc.clues("New Orleans up thirty two to twenty five", tonight).map { it.box }.toSet())
+        assertEquals(listOf(4), loc.clues("it was 30-25 a minute ago", tonight).map { it.box })
+        // Down and distance picks one of two football games.
+        assertEquals(listOf(1), loc.clues("third and four from the 30", tonight).filter { it.why.contains("and") }.map { it.box })
+        // Inning and sport words: only the baseball game.
+        assertTrue(loc.clues("top of the third, the pitch, strike two", tonight).all { it.box == 3 })
+        // A name two games share isn't enough on its own.
+        assertTrue(loc.clues("smith on the tackle", tonight).none { it.box == 3 || it.box == 4 })
+
+        loc.reset(1, 0.0)
+        assertNull(loc.where(0.0))
+        loc.hear("rebound Doncic", 5.0, tonight)
+        assertNull("not sure yet", loc.where(6.0))
+        loc.hear("Pelicans lead thirty two to twenty five", 12.0, tonight)
+        assertEquals(4, loc.where(13.0)!!.first)
+        assertNotNull(loc.heardRecently(4, 20.0, 15.0))
+        assertNull("fades out", loc.where(400.0))
+    }
+
+    @Test fun mixedSignalsDecideNothing() {
+        val loc = Locator()
+        loc.hear("the Dodgers and the Mavericks", 0.0, tonight)
+        loc.hear("Ohtani, Doncic", 1.0, tonight)
+        assertNull(loc.where(2.0))
     }
 
     @Test fun teamNamesIncludeThePlace() {

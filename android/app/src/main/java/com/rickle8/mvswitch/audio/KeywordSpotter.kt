@@ -54,7 +54,11 @@ object SpeechModel {
 }
 
 /** What was said this second: a break phrase, game talk, ad talk. */
-data class SpeechHeard(val cue: String?, val gameWords: List<String>, val adWords: List<String>)
+data class SpeechHeard(
+    val cue: String?, val gameWords: List<String>, val adWords: List<String>,
+    /** Everything said (finished sentences), word for word, for working out which game this is. */
+    val text: String? = null,
+)
 
 /**
  * Offline speech recognition (Vosk) restricted to a short list: phrases
@@ -127,7 +131,8 @@ class KeywordSpotter(modelDir: File, phrases: List<String>) : SpeechSource {
             val game = (confident(json, gameTerms.filter { ' ' in it }, 0.75) +
                 confident(json, gameTerms.filter { ' ' !in it }, 0.85)).filter { it !in done }
             val ad = confident(json, adTerms, 0.75).filter { it !in done }
-            return if (cue == null && game.isEmpty() && ad.isEmpty()) null else SpeechHeard(cue, game, ad)
+            val said = json.optString("text").takeIf { it.isNotBlank() && it != "[unk]" }
+            return if (cue == null && game.isEmpty() && ad.isEmpty() && said == null) null else SpeechHeard(cue, game, ad, said)
         }
         val partial = runCatching { JSONObject(recognizer.partialResult).optString("partial") }.getOrNull()
         val text = " " + normalize(partial.orEmpty()) + " "

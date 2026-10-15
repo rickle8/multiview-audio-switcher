@@ -37,6 +37,10 @@ data class GameInfo(
     val redZone: Boolean = false,
     val lastPlay: String? = null,
     val detail: String = "",
+    /** Football: down (1-4) and yards to go; baseball: outs. Null when not known. */
+    val down: Int? = null,
+    val distance: Int? = null,
+    val outs: Int? = null,
 )
 
 data class ScheduledGame(
@@ -104,6 +108,9 @@ fun parseEvent(event: JSONObject, league: String = ""): GameInfo {
         redZone = sit.optBoolean("isRedZone", false),
         lastPlay = sit.optJSONObject("lastPlay")?.optString("text")?.takeIf { it.isNotBlank() },
         detail = st.optString("shortDetail"),
+        down = sit.optInt("down", 0).takeIf { it in 1..4 },
+        distance = sit.optInt("distance", -1).takeIf { it >= 0 },
+        outs = if (sit.has("outs")) sit.optInt("outs", -1).takeIf { it in 0..3 } else null,
     )
 }
 
@@ -294,6 +301,17 @@ class GameFeed(
     private val lagSamples = ArrayDeque<Double>()
     private val names = java.util.concurrent.ConcurrentHashMap<Int, Set<String>>()
     private val teams = java.util.concurrent.ConcurrentHashMap<Int, Set<String>>()
+    private val scoreHistory = java.util.concurrent.ConcurrentHashMap<Int, List<List<Int>>>()
+
+    /** What each game's announcers could be saying right now, for working out which one is heard. */
+    fun facts(): Map<Int, BoxFacts> = info.toMap().mapValues { (box, gi) ->
+        BoxFacts(
+            league = gi.league, names = names[box].orEmpty(), teams = teams[box].orEmpty(),
+            scores = scoreHistory[box].orEmpty(), period = gi.period,
+            half = gi.detail.lowercase().let { d -> when { d.startsWith("top") -> "top"; d.startsWith("bot") -> "bottom"; else -> null } },
+            down = gi.down, distance = gi.distance, outs = gi.outs,
+        )
+    }
     private val namesAt = HashMap<Int, Double>()
 
     /** The game whose play-by-play is polled every few seconds (the one you're hearing). */
@@ -362,6 +380,11 @@ class GameFeed(
             val gi = parseEvent(event, slot.league)
             rawStatus[box] = gi.status
             info[box] = gi
+            // Recent scores: the TV runs behind, so the announcers may still be saying an older one.
+            gi.scores.values.toList().takeIf { it.size == 2 }?.let { sc ->
+                val q = scoreHistory[box].orEmpty()
+                if (q.lastOrNull() != sc) scoreHistory[box] = (q + listOf(sc)).takeLast(4)
+            }
             if (gi.status == GameStatus.LIVE || gi.status == GameStatus.BREAK) noteClock(box, "board", gi.period, gi.clock, now)
             teamNames(event).takeIf { it.isNotEmpty() }?.let { t ->
                 val cur = names[box].orEmpty()
