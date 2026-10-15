@@ -268,12 +268,7 @@ class Detector(private val dir: File? = null) {
 
         // 3d. Does it sound like this game's broadcast?
         val pv = profiles.vector(audio)
-        val likeness = box?.let { profiles.evidence(it, pv, now) }
-        if (likeness != null && game + ad > 0.02) {
-            val p = sigmoid(logit(ad / (game + ad)) + likeness)
-            val total = game + ad
-            game = total * (1 - p); ad = total * p
-        }
+        // (Learned, but not used to decide yet: unproven on real broadcasts.)
 
         // Fingerprint verdict: trusted prints win outright; auto-saved ones need the classifier to agree.
         val pNow = if (game + ad > 0.05) ad / (game + ad) else 0.5
@@ -347,7 +342,6 @@ class Detector(private val dir: File? = null) {
             lastWord != null && now - lastWord.first <= 4 ->
                 (if (lastWord.second > 0) "Announcer said" else "Heard") + " \u201c${lastWord.third}\u201d"
             recentTransition && heard == Heard.AD -> "Sound changed suddenly"
-            likeness != null && likeness >= 0.8 && heard == Heard.AD -> "Doesn't sound like this game"
             voice != null && voice >= 1.0 -> "Announcers talking"
             voice != null && voice <= -1.5 -> "Different voice than the announcers"
             else -> effBias.why?.replaceFirstChar { it.uppercase() }

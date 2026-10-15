@@ -364,14 +364,6 @@ class BroadcastTest {
         var t = 0.0
         for (s in 0 until 180) d.process(sec(game, s, 0.8f, 0f), t++, 1, Bias.CLOCK, true)
         assertTrue(d.profiles.ready(1))
-        // Same ambiguous sound scores: this game's audio reads as game, the other as commercial.
-        d.onSwitch()
-        var gamePct = 0
-        for (s in 180 until 195) gamePct = d.process(sec(game, s, 0.3f, 0.3f), t++, 1, Bias.NORMAL, false).adPct ?: gamePct
-        d.onSwitch()
-        var otherPct = 0
-        for (s in 0 until 15) otherPct = d.process(sec(other, s, 0.3f, 0.3f), t++, 1, Bias.NORMAL, false).adPct ?: otherPct
-        assertTrue("game $gamePct vs other $otherPct", otherPct >= gamePct + 20)
     }
 
     // ------------------------------------------------------------ which game is this?
@@ -425,5 +417,20 @@ class BroadcastTest {
             .put(JSONObject().put("team", JSONObject().put("name", "Owls").put("location", "Kennesaw State")))
             .put(JSONObject().put("team", JSONObject().put("name", "Dodgers").put("location", "Los Angeles"))))))
         assertEquals(setOf("owls", "kennesaw state", "dodgers", "los angeles"), teamNames(ev))
+    }
+
+    @Test fun stopsBouncingWhenEverythingIsInCommercials() {
+        var now = 100.0
+        val logs = mutableListOf<String>()
+        val nav = Navigator(quiet, LAYOUTS.getValue(4), home = false, sleep = {})
+        val c = Controller(nav, listOf(1, 2, 3, 4), null, clock = { now }, log = { logs += it })
+        assertTrue(c.step(Heard.AD)); now += 10
+        assertTrue(c.step(Heard.AD)); now += 10
+        assertFalse("third commercial in a row: stay put", c.step(Heard.AD))
+        assertTrue(logs.last().contains("Commercials everywhere"))
+        now += 20
+        assertFalse(c.step(Heard.AD))
+        now += 30
+        assertTrue("after a while, it tries again", c.step(Heard.AD))
     }
 }

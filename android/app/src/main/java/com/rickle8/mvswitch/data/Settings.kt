@@ -16,6 +16,8 @@ data class Shortcut(val kind: String, val label: String, val value: String) {
 enum class TvType(val label: String) { SAMSUNG("Samsung TV"), ROKU("Roku"), TEST("Test mode") }
 
 enum class Hopping(val label: String, val margin: Double, val dwellSecs: Double) {
+    /** Only commercials move the audio. */
+    OFF("Never", 1e9, 1e9),
     CALM("Calm", 0.6, 90.0),
     NORMAL("Normal", 0.35, 45.0),
     EAGER("Eager", 0.2, 25.0),
@@ -34,7 +36,7 @@ data class Settings(
     /** 0 = only obvious ads, 1 = jumpy. Maps to the ad threshold. */
     val micSensitivity: Float = 0.5f,
     val proactive: Boolean = true,
-    val hopping: Hopping = Hopping.NORMAL,
+    val hopping: Hopping = Hopping.OFF,
     val breakSecs: Int = 150,
     val league: String = "football/nfl",
     val githubToken: String = "",
@@ -69,7 +71,7 @@ data class Settings(
         .put("tvType", tvType.name).put("tvHost", tvHost).put("samsungToken", samsungToken ?: "")
         .put("layout", layout).put("homing2", homing).put("homePresses", homePresses)
         .put("useMic", useMic).put("micSensitivity", micSensitivity.toDouble())
-        .put("proactive", proactive).put("hopping", hopping.name).put("breakSecs", breakSecs)
+        .put("proactive", proactive).put("hopping2", hopping.name).put("breakSecs", breakSecs)
         .put("league", league)
         .put("githubToken", githubToken)
         .put("useCues", useCues)
@@ -120,7 +122,7 @@ data class Settings(
                 useMic = j.optBoolean("useMic", d.useMic),
                 micSensitivity = j.optDouble("micSensitivity", d.micSensitivity.toDouble()).toFloat(),
                 proactive = j.optBoolean("proactive", d.proactive),
-                hopping = runCatching { Hopping.valueOf(j.optString("hopping")) }.getOrDefault(d.hopping),
+                hopping = runCatching { Hopping.valueOf(j.optString("hopping2")) }.getOrDefault(d.hopping),
                 breakSecs = j.optInt("breakSecs", d.breakSecs),
                 league = j.optString("league", d.league),
                 githubToken = j.optString("githubToken", ""),

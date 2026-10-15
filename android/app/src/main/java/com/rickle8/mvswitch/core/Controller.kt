@@ -239,6 +239,11 @@ class Controller(
         return Bias.NORMAL
     }
 
+    /** When it left a game for a commercial, recently. */
+    private val adSwitches = ArrayDeque<Double>()
+    /** Every game seems to be in commercials: stop bouncing between them until this time. */
+    private var settleUntil = -1e9
+
     private fun goToBreak(cur: Int, now: Double, status: Map<Int, GameStatus>, why: String): Boolean {
         armed.remove(cur)
         awayForBreak += cur
@@ -249,7 +254,7 @@ class Controller(
         }
         breakUntil[cur] = now + if (breakIsHalf[cur] == true) 900.0 else breakLength(cur, breakAfterScore[cur] == true)
         val targets = ranked(now, status, exclude = cur)
-        if (targets.isNotEmpty()) return switchTo(targets.first(), now, why)
+        if (targets.isNotEmpty()) { adSwitches.addLast(now); return switchTo(targets.first(), now, why) }
         log("$why, but no other game is live. Staying.")
         return false
     }
@@ -288,6 +293,15 @@ class Controller(
         }
         when (heard) {
             Heard.AD -> {
+                // Bouncing through games that are all in commercials helps no one: sit on this one a bit.
+                if (!strongAd && now < settleUntil) return false
+                while (adSwitches.isNotEmpty() && now - adSwitches.first() > 75) adSwitches.removeFirst()
+                if (!strongAd && adSwitches.size >= 2) {
+                    adSwitches.clear()
+                    settleUntil = now + 45
+                    log("Commercials everywhere. Staying on box $cur for a bit.")
+                    return false
+                }
                 // ESPN said a break is coming but the TV hasn't got there yet (replays, celebration): wait.
                 val waiting = armed[cur]
                 if (!strongAd && waiting != null && now < waiting.due) return false

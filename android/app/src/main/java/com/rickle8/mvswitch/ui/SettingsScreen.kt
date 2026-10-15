@@ -261,7 +261,7 @@ fun SettingsScreen(state: EngineState, settings: Settings, update: UpdateState, 
         SectionLabel("Switching")
         Panel {
             Text("Jump to a better game mid-play", color = C.text, fontWeight = FontWeight.Medium)
-            Text("How readily it leaves a blowout for a close game, even without a commercial.",
+            Text("Off by default: only commercials move the audio. Turn on to also leave a blowout for a close game.",
                 color = C.muted, fontSize = 12.sp, modifier = Modifier.padding(bottom = 8.dp))
             SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
                 Hopping.entries.forEachIndexed { i, h ->

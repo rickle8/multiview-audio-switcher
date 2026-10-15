@@ -42,7 +42,7 @@ data class Bias(
     val why: String? = null,
 ) {
     companion object {
-        val NORMAL = Bias(10.0, 10.0)
+        val NORMAL = Bias(10.0, 8.0)
         /** Sound dipped and then changed character: a break may have just started. */
         val TRANSITION = Bias(5.0, 5.0, 0.0, "sound changed suddenly")
         /** A play that usually leads to a break just happened. */

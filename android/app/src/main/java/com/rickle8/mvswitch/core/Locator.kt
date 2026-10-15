@@ -198,7 +198,7 @@ class Locator(private val halfLifeSecs: Double = 60.0) {
         val ranked = points.entries.sortedByDescending { it.value }
         val top = ranked.firstOrNull() ?: return null
         val second = ranked.getOrNull(1)?.value ?: 0.0
-        if (top.value < 5.0 || top.value - second < 4.0) return null
+        if (top.value < 7.0 || top.value - second < 5.0) return null
         val why = reasons[top.key].orEmpty().filter { now - it.first < 120 }.map { it.second }.distinct().takeLast(3)
         return top.key to why
     }
