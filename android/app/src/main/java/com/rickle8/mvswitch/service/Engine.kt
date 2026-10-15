@@ -138,7 +138,22 @@ data class EngineState(
 object Engine {
     private lateinit var app: Context
     private lateinit var store: SettingsStore
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    /** Anything that slips through is logged and saved for the diagnostics report, never a crash. */
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default +
+        kotlinx.coroutines.CoroutineExceptionHandler { _, e ->
+            saveCrash(e, "background task")
+            runCatching { log("Something went wrong (${e.javaClass.simpleName}: ${e.message}).") }
+        })
+
+    /** The last error that would have stopped the app, for the diagnostics report. */
+    fun saveCrash(e: Throwable, where: String) {
+        if (!this::app.isInitialized) return
+        runCatching {
+            java.io.File(app.filesDir, "last_error.txt").writeText(
+                "${java.text.SimpleDateFormat("MMM d h:mm:ss a", java.util.Locale.US).format(java.util.Date())} in $where\n" +
+                    e.stackTraceToString().take(6000))
+        }
+    }
     private val http = OkHttpClient.Builder().connectTimeout(8, TimeUnit.SECONDS)
         .readTimeout(8, TimeUnit.SECONDS).build()
 
@@ -214,6 +229,12 @@ object Engine {
     fun init(context: Context) {
         if (this::app.isInitialized) return
         app = context.applicationContext
+        // A crash anywhere: keep what happened for the diagnostics report.
+        val previous = Thread.getDefaultUncaughtExceptionHandler()
+        Thread.setDefaultUncaughtExceptionHandler { t, e ->
+            saveCrash(e, "app (thread ${t.name})")
+            previous?.uncaughtException(t, e)
+        }
         store = SettingsStore(app)
         _settings.value = store.load()
         detector = Detector(app.filesDir)
@@ -488,9 +509,17 @@ object Engine {
     // ---------------------------------------------------------------- run loop
     @Volatile private var stopping = false
 
+    @Volatile private var startedAt = -1e9
+
     fun start() {
         val old = job
-        if (old?.isActive == true && !stopping) return
+        if (old?.isActive == true && !stopping) {
+            // Already running, unless it has been stuck getting started: then start over.
+            if (nav != null || now() - startedAt < 45) return
+            log("Start was stuck. Starting over.")
+            old.cancel()
+        }
+        startedAt = now()
         error = null
         paused = false
         lockedBox = null
@@ -499,7 +528,11 @@ object Engine {
         needResync = false
         holdUntil = 0.0
         job = scope.launch(Dispatchers.IO) {
-            old?.join() // a restart waits for the previous run to fully let go of the mic
+            // A restart waits for the previous run to let go of the mic (but never forever).
+            if (old != null && kotlinx.coroutines.withTimeoutOrNull(8000) { old.join() } == null) {
+                log("The last run was stuck. Starting fresh.")
+                synchronized(lock) { runCatching { mic?.close() }; mic = null }
+            }
             stopping = false
             try {
                 runLoop()
@@ -697,9 +730,11 @@ object Engine {
             }
         }
         var micFails = 0
+        var loopErrors = 0
         var vocabAt = -1e9
         try {
             while (currentCoroutineContext().isActive) {
+              try {
                 val m = mic
                 val sec = if (m != null) m.nextSecond() else { delay(1000); null }
                 if (m != null) {
@@ -769,6 +804,15 @@ object Engine {
                     }
                 }
                 publish()
+              } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+              } catch (e: Throwable) {
+                // One bad second must never stop the listening.
+                loopErrors++
+                saveCrash(e, "listening loop")
+                if (loopErrors <= 3 || loopErrors % 100 == 0) log("Hiccup while listening (${e.javaClass.simpleName}: ${e.message}). Still going.")
+                delay(500)
+              }
             }
         } finally {
             feedJob.cancel()
@@ -1365,6 +1409,11 @@ object Engine {
         sb.appendLine("Switching: ${if (st.running) "running" else "stopped"}, layout ${s.layout}, mic ${s.useMic}, " +
             "cues ${s.useCues}, paused ${st.paused}, auto-paused ${st.autoPaused}, held ${st.held}")
         sb.appendLine("Games: " + s.slots.entries.sortedBy { it.key }.joinToString { "${it.key}=" + if (it.value.isOther) "other:${it.value.name}" else "${it.value.league}/${it.value.team}#${it.value.eventId}" })
+        java.io.File(app.filesDir, "last_error.txt").takeIf { it.exists() }?.let { f ->
+            sb.appendLine()
+            sb.appendLine("Last error:")
+            sb.appendLine(runCatching { f.readText() }.getOrDefault("?"))
+        }
         sb.appendLine()
         sb.appendLine("TV connection log (newest first):")
         synchronized(tvLines) { tvLines.forEach { sb.appendLine("${it.time}  ${it.text}") } }
