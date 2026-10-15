@@ -288,6 +288,9 @@ class Controller(
         }
         when (heard) {
             Heard.AD -> {
+                // ESPN said a break is coming but the TV hasn't got there yet (replays, celebration): wait.
+                val waiting = armed[cur]
+                if (!strongAd && waiting != null && now < waiting.due) return false
                 // ESPN said a break was coming and now it sounds like one: go.
                 if (arm != null) return goToBreak(cur, now, status,
                     "Commercial started on box $cur after \u201c${arm.text.take(40)}\u201d")

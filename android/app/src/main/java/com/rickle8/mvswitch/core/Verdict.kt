@@ -42,13 +42,13 @@ data class Bias(
     val why: String? = null,
 ) {
     companion object {
-        val NORMAL = Bias(10.0, 8.0)
+        val NORMAL = Bias(10.0, 10.0)
         /** Sound dipped and then changed character: a break may have just started. */
-        val TRANSITION = Bias(4.0, 3.0, 0.0, "sound changed suddenly")
+        val TRANSITION = Bias(5.0, 5.0, 0.0, "sound changed suddenly")
         /** A play that usually leads to a break just happened. */
-        val LIKELY = Bias(6.0, 4.0, -0.05, "break likely after that play")
+        val LIKELY = Bias(8.0, 7.0, 0.0, "break likely after that play")
         /** The game just came back from a break with nothing since that causes another. */
-        val UNLIKELY = Bias(10.0, 14.0, 0.08, "just back from a break")
+        val UNLIKELY = Bias(10.0, 16.0, 0.08, "just back from a break")
         val TRANSITION_BUT_UNLIKELY = Bias(5.0, 5.0, 0.0, "sound changed suddenly")
         /** The game clock is running: commercials only air when it's stopped. */
         val CLOCK = Bias(10.0, 16.0, 0.12, "game clock is running")

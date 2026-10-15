@@ -19,13 +19,18 @@ class GameIdentifier(private val windowSecs: Double = 75.0) {
         while (hits.isNotEmpty() && now - hits.first().t > windowSecs) hits.removeFirst()
     }
 
+    /** A name from this game was said in the last [secs] seconds: the game is on, not an ad. */
+    @Synchronized
+    fun heardRecently(box: Int, now: Double, secs: Double): String? =
+        hits.lastOrNull { it.box == box && now - it.t <= secs }?.word
+
     /** The audio changed games: what was heard before doesn't count. */
     @Synchronized
     fun clear() = hits.clear()
 
     /**
-     * The game being heard, once it's clear: at least two different names from
-     * one game, and clearly more than from any other.
+     * The game being heard, once it's clear: several different names from one
+     * game and next to none from any other.
      */
     @Synchronized
     fun identified(now: Double): Pair<Int, List<String>>? {
@@ -35,7 +40,9 @@ class GameIdentifier(private val windowSecs: Double = 75.0) {
         val ranked = byBox.entries.sortedByDescending { it.value.size }
         val top = ranked.first()
         val second = ranked.getOrNull(1)?.value?.size ?: 0
-        if (top.value.size < 2 || top.value.size < second + 2) return null
+        // Sure only with three names from one game and none (or far fewer) from the others.
+        val n = top.value.size
+        if (!((n >= 3 && second == 0) || (n >= 4 && second <= 1))) return null
         return top.key to top.value
     }
 }

@@ -4,6 +4,8 @@ import android.content.Context
 import android.os.Build
 import android.os.SystemClock
 import com.rickle8.mvswitch.audio.KeywordSpotter
+import com.rickle8.mvswitch.audio.PhoneSpeech
+import com.rickle8.mvswitch.audio.SpeechSource
 import com.rickle8.mvswitch.audio.MicClassifier
 import com.rickle8.mvswitch.audio.SpeechModel
 import com.rickle8.mvswitch.core.Controller
@@ -109,6 +111,8 @@ data class EngineState(
     val remoteMsg: String? = null,
     /** "Hearing box 3 (“dodgers”, “ohtani”)": the game recognized by its names. */
     val hearing: String? = null,
+    /** The announcers' latest words, as the speech recognizer heard them. */
+    val heardText: String? = null,
     val feedError: String? = null,
     /** Holding off on switching for a bit because you're using the remote. */
     val held: Boolean = false,
@@ -175,7 +179,7 @@ object Engine {
     private lateinit var detector: Detector
     @Volatile private var lastResult: DetectResult? = null
 
-    @Volatile private var spotter: KeywordSpotter? = null
+    @Volatile private var spotter: SpeechSource? = null
     @Volatile private var speechDir: java.io.File? = null
     @Volatile private var waitingForMultiview = false
     @Volatile private var autoPaused = false
@@ -469,6 +473,7 @@ object Engine {
             adsRemembered = detector.prints.size,
             voiceLearned = detector.voices.ready,
             hearing = hearing?.takeIf { running && micLive && n - it.second < 120 }?.first,
+            heardText = if (running && micLive) spotter?.lastText else null,
             why = if (running && micLive) {
                 nav?.current?.let { ctrl?.waitingFor(it) }?.let { "ESPN says a break is coming. Waiting for the commercial to start" }
                     ?: r?.why
@@ -506,8 +511,19 @@ object Engine {
     @Volatile private var stopping = false
 
     @Volatile private var startedAt = -1e9
+
+    private fun builtInSpeech(s: Settings): SpeechSource? {
+        val dir = speechDir ?: runCatching { SpeechModel.install(app) }.getOrNull()
+        return when {
+            dir == null -> { log("Speech model not available; skipping announcer phrases."); null }
+            else -> runCatching { KeywordSpotter(dir, s.cuePhrases) }
+                .onFailure { log("Couldn't start speech recognition (${it.message}).") }.getOrNull()
+        }
+    }
     /** Tells which game is being heard from the names the announcers say. */
     private val identifier = GameIdentifier()
+    @Volatile private var lastGameTalk: Pair<Double, String>? = null
+    private var adVetoLogged = -1e9
     /** Last game recognized by its names, and when. */
     @Volatile private var hearing: Pair<String, Double>? = null
 
@@ -672,12 +688,9 @@ object Engine {
             log("Microphone off. Using live game data only.")
         }
         if (mic != null && s.useCues) {
-            val dir = speechDir ?: runCatching { SpeechModel.install(app) }.getOrNull()
-            spotter = when {
-                dir == null -> { log("Speech model not available; skipping announcer phrases."); null }
-                else -> runCatching { KeywordSpotter(dir, s.cuePhrases) }
-                    .onFailure { log("Couldn't start speech recognition (${it.message}).") }.getOrNull()
-            }
+            // The phone's own recognizer hears announcers far better; the small built-in one is the backup.
+            spotter = (if (Build.VERSION.SDK_INT >= 33) PhoneSpeech.create(app, s.cuePhrases, ::log) else null)
+                ?: builtInSpeech(s)
         }
 
         learnMac(s)
@@ -758,6 +771,11 @@ object Engine {
                         runCatching { sp.setGameWords(words) }
                     }
                 }
+                if (spotter?.failed == true) {
+                    spotter?.close()
+                    spotter = builtInSpeech(s)
+                    vocabAt = -1e9
+                }
                 val said = sec?.let { x -> spotter?.let { sp -> runCatching { sp.accept(x.boosted) }.getOrNull() } }
                 val cue = said?.cue
                 val n = now()
@@ -789,6 +807,7 @@ object Engine {
                         identifier.clear()
                     }
                 }
+                if (heardWords.isNotEmpty()) lastGameTalk = n to heardWords.first()
                 if (paused || autoPaused || waitingForMultiview || held) {
                     publish()
                     continue
@@ -799,10 +818,19 @@ object Engine {
                         .onFailure { log(it.message ?: "TV error") }
                     synchronized(detector) { detector.onSwitch() }
                 }
-                val heard = when {
+                var heard = when {
                     m == null -> Heard.GAME
                     result != null -> result.heard
                     else -> lastResult?.heard ?: Heard.UNSURE
+                }
+                // Announcers just said a player, team or "third down": that's the game, not a commercial.
+                if (heard == Heard.AD && result?.strongAd != true) {
+                    val name = cur?.let { identifier.heardRecently(it, n, 15.0) }
+                    val talk = lastGameTalk?.takeIf { n - it.first <= 12 }?.second
+                    (name ?: talk)?.let { w ->
+                        if (n - adVetoLogged > 45) { adVetoLogged = n; log("Sounded like an ad, but the announcers just said \u201c$w\u201d. Staying.") }
+                        heard = Heard.UNSURE
+                    }
                 }
                 synchronized(lock) {
                     if (lockedBox == null) {
@@ -811,6 +839,7 @@ object Engine {
                                     strongWhy = if (result?.strongAd == true) result.why else null)) {
                                 m?.drain()
                                 identifier.clear()
+                                lastGameTalk = null
                                 synchronized(detector) { detector.onSwitch() }
                                 lastResult = null
                             }

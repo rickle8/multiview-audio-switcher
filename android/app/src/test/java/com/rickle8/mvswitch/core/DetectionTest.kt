@@ -146,7 +146,7 @@ class DetectionTest {
         val eager = secondsUntilAd(Bias.TRANSITION)
         val strict = secondsUntilAd(Bias.UNLIKELY)
         assertTrue("eager $eager normal $normal strict $strict", eager < normal && normal < strict)
-        assertTrue(eager <= 6)
+        assertTrue("eager $eager", eager <= 9)
     }
 
     // ------------------------------------------------------------ live data

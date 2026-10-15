@@ -151,6 +151,8 @@ class BroadcastTest {
         now = 100.0
         plays += "J.Allen pass to S.Diggs for 20 yards, TOUCHDOWN" to 100.0
         f.poll()
+        assertFalse("the TV hasn't shown the score yet", c.step(Heard.AD))
+        now = 160.0
         assertTrue(c.step(Heard.AD)) // the break after the score
         assertEquals(2, nav.current)
         now = 250.0
@@ -376,20 +378,24 @@ class BroadcastTest {
     @Test fun knowsTheGameFromTheNamesSaid() {
         val names = mapOf(
             1 to setOf("hilltoppers", "western kentucky", "smith"),
-            3 to setOf("dodgers", "brewers", "ohtani", "yelich", "smith"),
+            3 to setOf("dodgers", "brewers", "ohtani", "yelich", "milwaukee", "smith"),
         )
         val id = GameIdentifier()
         id.heard(listOf("smith"), 0.0, names)            // in two games: no help
         id.heard(listOf("dodgers"), 5.0, names)
         assertNull("one name isn't enough", id.identified(6.0))
         id.heard(listOf("ohtani"), 20.0, names)
-        assertEquals(3, id.identified(21.0)!!.first)
+        assertNull("two isn't enough either", id.identified(21.0))
+        id.heard(listOf("yelich"), 22.0, names)
+        assertEquals(3, id.identified(23.0)!!.first)
+        assertEquals("yelich", id.heardRecently(3, 30.0, 15.0))
+        assertNull(id.heardRecently(1, 30.0, 15.0))
         id.heard(listOf("hilltoppers"), 25.0, names)
         assertNull("not clear any more", id.identified(26.0))
         id.clear()
         assertNull(id.identified(27.0))
         assertNull("old names expire", GameIdentifier(60.0).apply {
-            heard(listOf("dodgers", "ohtani"), 0.0, names) }.identified(100.0))
+            heard(listOf("dodgers", "ohtani", "yelich"), 0.0, names) }.identified(100.0))
     }
 
     @Test fun teamNamesIncludeThePlace() {

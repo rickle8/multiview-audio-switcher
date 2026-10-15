@@ -295,6 +295,9 @@ private fun HearingRow(state: EngineState) {
                 Text(state.why, color = C.text, fontSize = 13.sp,
                     maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
+            state.heardText?.let {
+                Text("\u201c$it\u201d", color = C.muted, fontSize = 12.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            }
             state.hearing?.let {
                 Text(it, color = C.accent, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }

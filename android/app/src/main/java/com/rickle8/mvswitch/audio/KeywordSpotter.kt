@@ -62,7 +62,7 @@ data class SpeechHeard(val cue: String?, val gameWords: List<String>, val adWord
  * "first down"), and things only commercials say ("terms apply"). Everything
  * else is ignored.
  */
-class KeywordSpotter(modelDir: File, phrases: List<String>) : AutoCloseable {
+class KeywordSpotter(modelDir: File, phrases: List<String>) : SpeechSource {
     private val phrases = phrases.map { normalize(it) }.filter { it.isNotBlank() }.distinct()
         .sortedByDescending { it.length }
     private val adTerms = AD_TERMS.map { normalize(it) }.distinct()
@@ -70,6 +70,8 @@ class KeywordSpotter(modelDir: File, phrases: List<String>) : AutoCloseable {
     private val model: Model
     private var recognizer: Recognizer
     private val shorts = ShortArray(16000)
+    @Volatile override var lastText: String? = null
+        private set
 
     init {
         LibVosk.setLogLevel(LogLevel.WARNINGS)
@@ -83,7 +85,7 @@ class KeywordSpotter(modelDir: File, phrases: List<String>) : AutoCloseable {
     }
 
     /** Game words to listen for (terms for the sports on, plus player and team names). */
-    fun setGameWords(words: Collection<String>) {
+    override fun setGameWords(words: Collection<String>) {
         // In the order given (most useful first), so a long list never drops a whole game.
         val next = words.map { normalize(it) }.filter { it.length >= 3 && it !in phrases }.distinct().take(500)
         if (next.toSet() == gameTerms.toSet()) return
@@ -109,7 +111,7 @@ class KeywordSpotter(modelDir: File, phrases: List<String>) : AutoCloseable {
      * before the recognizer finishes them: in-progress text counts once it holds
      * for 2 seconds.
      */
-    fun accept(samples: FloatArray): SpeechHeard? {
+    override fun accept(samples: FloatArray): SpeechHeard? {
         val n = minOf(samples.size, shorts.size)
         for (i in 0 until n) shorts[i] = (samples[i].coerceIn(-1f, 1f) * 32767).toInt().toShort()
         if (recognizer.acceptWaveForm(shorts, n)) {
@@ -120,6 +122,7 @@ class KeywordSpotter(modelDir: File, phrases: List<String>) : AutoCloseable {
             partialTerms = emptySet()
             reportedTerms.clear()
             val json = runCatching { JSONObject(recognizer.result) }.getOrNull() ?: return null
+            json.optString("text").takeIf { it.isNotBlank() && it != "[unk]" }?.let { lastText = it }
             val cue = if (already) null else confident(json, phrases, 0.7).firstOrNull()
             val game = (confident(json, gameTerms.filter { ' ' in it }, 0.75) +
                 confident(json, gameTerms.filter { ' ' !in it }, 0.85)).filter { it !in done }
