@@ -652,6 +652,25 @@ object Engine {
 
     private suspend fun runLoop() {
         val s = _settings.value
+        // The mic starts first: it doesn't need the TV, so a slow TV never leaves it off.
+        if (s.useMic && !micAllowed()) {
+            log("Microphone permission is off. Using live game data only.")
+        } else if (s.useMic) {
+            try {
+                mic = MicClassifier(app).also { it.start() }
+            } catch (e: Exception) {
+                log("Microphone unavailable (${e.message}). Using live game data only.")
+            }
+        } else {
+            log("Microphone off. Using live game data only.")
+        }
+        if (mic != null && s.useCues) {
+            // The phone's own recognizer hears announcers far better; the small built-in one is the backup.
+            spotter = (if (Build.VERSION.SDK_INT >= 33) PhoneSpeech.create(app, s.cuePhrases, ::log) else null)
+                ?: builtInSpeech(s)
+        }
+
+        publish(starting = true)
         wakeTv(s)
         try {
             val r = tvRemote()
@@ -676,23 +695,6 @@ object Engine {
             log("Couldn't start: ${e.message}")
             return
         }
-        if (s.useMic && !micAllowed()) {
-            log("Microphone permission is off. Using live game data only.")
-        } else if (s.useMic) {
-            try {
-                mic = MicClassifier(app).also { it.start() }
-            } catch (e: Exception) {
-                log("Microphone unavailable (${e.message}). Using live game data only.")
-            }
-        } else {
-            log("Microphone off. Using live game data only.")
-        }
-        if (mic != null && s.useCues) {
-            // The phone's own recognizer hears announcers far better; the small built-in one is the backup.
-            spotter = (if (Build.VERSION.SDK_INT >= 33) PhoneSpeech.create(app, s.cuePhrases, ::log) else null)
-                ?: builtInSpeech(s)
-        }
-
         learnMac(s)
 
         // YouTube TV: find it, open it if needed, and watch whether it's on screen.

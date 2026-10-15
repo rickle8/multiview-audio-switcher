@@ -277,6 +277,7 @@ private fun ControlPanel(
 private fun HearingRow(state: EngineState) {
     val (label, color) = when {
         state.autoPaused -> "Paused while YouTube TV is off screen" to C.muted
+        state.starting && !state.micOn -> "Starting…" to C.muted
         !state.micOn -> "Mic off · using live scores only" to C.muted
         state.paused -> "Paused" to C.muted
         state.heard == Heard.AD -> "Hearing a commercial" to C.amber
@@ -345,6 +346,7 @@ private fun LearnRow(state: EngineState) {
         (if (state.voiceLearned) ", knows the announcers." else ".")
     val status = when {
         !state.running -> "$learned These work once you tap Start switching."
+        state.starting && !state.micOn -> "Getting started…"
         !state.micOn -> "Mic is off, so it can't learn sounds. \"It's an ad\" still skips to another game. " +
             "Check the mic permission and Settings > Listen with the microphone."
         state.labeling != null -> "Recording this as ${state.labeling}…"
