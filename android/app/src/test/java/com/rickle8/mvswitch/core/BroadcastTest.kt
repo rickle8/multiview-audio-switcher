@@ -382,4 +382,23 @@ class BroadcastTest {
         assertEquals(1, nav.current)
         assertTrue(logs.last().contains("back from commercial"))
     }
+
+    @Test fun runningClockMeansLiveEvenWhenPlaysAreLate() {
+        var now = 0.0
+        var clock = 600.0
+        val nav = Navigator(quiet, LAYOUTS.getValue(4), home = false, sleep = {})
+        val slots = mapOf(4 to GameSlot(league = "football/college-football", team = "BUF"))
+        val f = GameFeed(slots, { board(clock) }, { now }, pollSecs = 0.0)
+        // Box 4's play-by-play is stale: its last play was a timeout minutes ago (as college feeds can be)...
+        f.recordPlay(4, "Timeout #1 by BUF at 10:12.", -200.0, -150.0, seq = 3)
+        f.recordPlay(2, "Official Timeout at 05:32.", -20.0, -5.0, seq = 5)
+        f.recordPlay(3, "End Period: END QUARTER 1", -30.0, -15.0, seq = 9)
+        f.poll()
+        val c = Controller(nav, listOf(1, 2, 3, 4), f, clock = { now })
+        // ...but its clock is ticking down: the game is on.
+        now = 10.0; clock = 590.0; f.poll()
+        assertEquals(Controller.Outlook.LIVE, c.outlook(4, now).first)
+        assertTrue(c.step(Heard.AD))
+        assertEquals(4, nav.current)
+    }
 }

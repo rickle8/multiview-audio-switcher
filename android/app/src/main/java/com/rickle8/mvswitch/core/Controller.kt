@@ -16,6 +16,9 @@ const val DEFAULT_PROACTIVE =
 private val HALF = Regex("end of (the )?(1st |first )?half|halftime|end quarter 2\\b|end of (the )?(2nd|second) quarter", RegexOption.IGNORE_CASE)
 val PROACTIVE_STATUSES = setOf("STATUS_HALFTIME", "STATUS_END_PERIOD")
 
+private val KICK = Regex("kick|extra point|touchback|two.point", RegexOption.IGNORE_CASE)
+private val STOPPAGE = Regex("end of|end period|halftime|official timeout|tv timeout|media timeout", RegexOption.IGNORE_CASE)
+
 class Controller(
     private val nav: Navigator,
     private val boxes: List<Int>,
@@ -173,27 +176,32 @@ class Controller(
         val f = feed ?: return Outlook.UNKNOWN to ""
         val plays = f.plays(box)
         val p = plays.lastOrNull()
-        if (p != null) {
-            val ago = now - tvTime(p)
-            val afterScoreNow = plays.takeLast(4).dropLast(1).any { SCORE_PLAY.containsMatchIn(it.text) && tvTime(p) - tvTime(it) < 240 }
+        val ago = p?.let { now - tvTime(it) }
+        val breaky = p != null && !NULLIFIED.containsMatchIn(p.text) && run {
+            val afterScore = plays.takeLast(4).dropLast(1).any { SCORE_PLAY.containsMatchIn(it.text) && tvTime(p) - tvTime(it) < 240 }
             // Kickoffs and extra points only lead to commercial right after a score.
-            val kick = Regex("kick|extra point|touchback|two.point", RegexOption.IGNORE_CASE).containsMatchIn(p.text)
-            val breaky = (proactiveRe.containsMatchIn(p.text) || (isBreakPlay(p.text) && !kick) || (kick && afterScoreNow) ||
-                Regex("end of|end period|halftime|official timeout|tv timeout|media timeout", RegexOption.IGNORE_CASE).containsMatchIn(p.text))
-            if (breaky && !NULLIFIED.containsMatchIn(p.text)) {
-                // ESPN has it, the TV doesn't yet: a commercial is on its way.
-                if (ago < 0 && ago > -90) return Outlook.SOON to p.text
+            val kick = KICK.containsMatchIn(p.text)
+            proactiveRe.containsMatchIn(p.text) || (isBreakPlay(p.text) && !kick) || (kick && afterScore) ||
+                STOPPAGE.containsMatchIn(p.text)
+        }
+        // A break play ESPN has that the TV hasn't reached yet: a commercial is on its way.
+        if (breaky && ago != null && ago < 0 && ago > -90) return Outlook.SOON to p!!.text
+        // The game clock running on the TV is the surest sign the game is on (TV breaks only come with it stopped).
+        val moved = f.clockMovedAt(box)
+        if (moved != null && now - (moved + dataLead()) < 40) return Outlook.LIVE to "clock running"
+        if (p != null && ago != null) {
+            if (breaky) {
                 val afterScore = plays.takeLast(4).any { SCORE_PLAY.containsMatchIn(it.text) && now - tvTime(it) < 400 }
-                val window = breakLength(box, afterScore) + 40
-                if (ago in 0.0..window) return Outlook.BREAK to p.text
+                if (ago in 0.0..(breakLength(box, afterScore) + 40)) return Outlook.BREAK to p.text
             } else if (ago in -90.0..30.0) {
                 return Outlook.LIVE to p.text
             }
         }
-        if (clockRunning(box, now)) return Outlook.LIVE to "clock running"
-        // Play-by-play is flowing but nothing has happened on the TV for a long while: a break (or a long review).
-        // (Football plays come every ~40 s; a minute and a half of nothing is almost always a commercial or halftime.)
-        if (p != null && f.pbpFresh(box, now) && now - tvTime(p) in 85.0..1500.0) return Outlook.BREAK to "no plays lately"
+        // Nothing happening for a while. College play-by-play can arrive in bursts minutes late, so only
+        // call it a break when the clock agrees (stopped a good while) or, with no clock, after a long quiet.
+        val clockStoppedLong = moved != null && now - (moved + dataLead()) > 75
+        val quiet = p != null && ago != null && ago in 85.0..1500.0 && now - p.seen > 60
+        if (quiet && (clockStoppedLong || (moved == null && f.pbpFresh(box, now)))) return Outlook.BREAK to "no plays lately"
         return Outlook.UNKNOWN to ""
     }
 
@@ -406,8 +414,13 @@ class Controller(
         }
         when (heard) {
             Heard.AD -> {
-                // Bouncing through games that are all in commercials helps no one: sit on this one a bit.
-                if (!strongAd && now < settleUntil) return false
+                // Bouncing through games that are all in commercials helps no one: sit on this one a bit,
+                // but jump the moment ESPN shows one of them is back on (its clock running, a fresh play).
+                if (!strongAd && now < settleUntil) {
+                    val back = boxes.firstOrNull { it != cur && !inBreak(it, now, status) && outlook(it, now, status).first == Outlook.LIVE }
+                    if (back != null && now - lastSwitch > 10) return switchTo(back, now, "Box $back is back on")
+                    return false
+                }
                 while (adSwitches.isNotEmpty() && now - adSwitches.first() > 75) adSwitches.removeFirst()
                 if (!strongAd && adSwitches.size >= 2) {
                     adSwitches.clear()
