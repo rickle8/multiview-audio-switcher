@@ -130,6 +130,7 @@ class Controller(
     /** For the screen: same answer as [inBreak] without changing anything. */
     fun looksOnBreak(box: Int, now: Double, status: Map<Int, GameStatus>): Boolean {
         if (status[box] == GameStatus.BREAK) return true
+        if (box != nav.current && feed != null && outlook(box, now, status).first == Outlook.BREAK) return true
         val until = breakUntil[box] ?: return false
         val started = breakStarted[box]
         if (feed != null && started != null) {
@@ -159,14 +160,66 @@ class Controller(
         return true
     }
 
+    enum class Outlook { LIVE, BREAK, SOON, UNKNOWN }
+
+    /**
+     * What a game you're not hearing is showing on the TV right now, from ESPN alone:
+     * the game clock running or a fresh ordinary play means it's on; a score, timeout,
+     * end of quarter (and nothing since) means it's probably in commercial; a break
+     * play ESPN has but the TV hasn't reached yet means a commercial is coming.
+     */
+    fun outlook(box: Int, now: Double, status: Map<Int, GameStatus> = feedStatus()): Pair<Outlook, String> {
+        if (status[box] == GameStatus.BREAK) return Outlook.BREAK to (info(box)?.detail?.ifBlank { null } ?: "break")
+        val f = feed ?: return Outlook.UNKNOWN to ""
+        val plays = f.plays(box)
+        val p = plays.lastOrNull()
+        if (p != null) {
+            val ago = now - tvTime(p)
+            val afterScoreNow = plays.takeLast(4).dropLast(1).any { SCORE_PLAY.containsMatchIn(it.text) && tvTime(p) - tvTime(it) < 240 }
+            // Kickoffs and extra points only lead to commercial right after a score.
+            val kick = Regex("kick|extra point|touchback|two.point", RegexOption.IGNORE_CASE).containsMatchIn(p.text)
+            val breaky = (proactiveRe.containsMatchIn(p.text) || (isBreakPlay(p.text) && !kick) || (kick && afterScoreNow) ||
+                Regex("end of|end period|halftime|official timeout|tv timeout|media timeout", RegexOption.IGNORE_CASE).containsMatchIn(p.text))
+            if (breaky && !NULLIFIED.containsMatchIn(p.text)) {
+                // ESPN has it, the TV doesn't yet: a commercial is on its way.
+                if (ago < 0 && ago > -90) return Outlook.SOON to p.text
+                val afterScore = plays.takeLast(4).any { SCORE_PLAY.containsMatchIn(it.text) && now - tvTime(it) < 400 }
+                val window = breakLength(box, afterScore) + 40
+                if (ago in 0.0..window) return Outlook.BREAK to p.text
+            } else if (ago in -90.0..30.0) {
+                return Outlook.LIVE to p.text
+            }
+        }
+        if (clockRunning(box, now)) return Outlook.LIVE to "clock running"
+        // Play-by-play is flowing but nothing has happened on the TV for a long while: a break (or a long review).
+        // (Football plays come every ~40 s; a minute and a half of nothing is almost always a commercial or halftime.)
+        if (p != null && f.pbpFresh(box, now) && now - tvTime(p) in 85.0..1500.0) return Outlook.BREAK to "no plays lately"
+        return Outlook.UNKNOWN to ""
+    }
+
+    /** Where to go: games that are on first, then ones ESPN can't vouch for; never one in (or about to go to) commercial. */
     private fun ranked(now: Double, status: Map<Int, GameStatus>, exclude: Int?): List<Int> {
-        val out = boxes.filter { box ->
+        val open = boxes.filter { box ->
             box != exclude &&
                 status[box] != GameStatus.FINAL && status[box] != GameStatus.PREGAME &&
                 !inBreak(box, now, status)
         }
-        return if (hasData()) out.sortedByDescending { score(it) } else out
+        if (feed == null) return open
+        val look = open.associateWith { outlook(it, now, status).first }
+        val usable = open.filter { look[it] == Outlook.LIVE || look[it] == Outlook.UNKNOWN }
+        return usable.sortedWith(compareByDescending<Int> { look[it] == Outlook.LIVE }.thenByDescending { score(it) })
     }
+
+    /** Every other game is in commercial too: the one whose break started first should be back first. */
+    private fun backSoonest(now: Double, status: Map<Int, GameStatus>, exclude: Int): Int? =
+        boxes.filter { it != exclude && status[it] != GameStatus.FINAL && status[it] != GameStatus.PREGAME }
+            .mapNotNull { b ->
+                val started = breakStarted[b]?.takeIf { inBreak(b, now, status) }
+                    ?: feed?.plays(b)?.lastOrNull()?.let { tvTime(it) }?.takeIf { outlook(b, now, status).first == Outlook.BREAK }
+                started?.let { b to it }
+            }
+            .filter { now - it.second > 60 } // only if its break has had a real head start
+            .minByOrNull { it.second }?.first
 
     private fun switchTo(box: Int, now: Double, why: String): Boolean {
         log("$why → box $box")
@@ -255,7 +308,11 @@ class Controller(
         breakUntil[cur] = now + if (breakIsHalf[cur] == true) 900.0 else breakLength(cur, breakAfterScore[cur] == true)
         val targets = ranked(now, status, exclude = cur)
         if (targets.isNotEmpty()) { adSwitches.addLast(now); return switchTo(targets.first(), now, why) }
-        log("$why, but no other game is live. Staying.")
+        backSoonest(now, status, cur)?.let { b ->
+            adSwitches.addLast(now)
+            return switchTo(b, now, "$why; every game is in commercial, box $b should be back first")
+        }
+        log("$why, but every other game is in commercial too. Staying.")
         return false
     }
 

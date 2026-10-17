@@ -347,7 +347,9 @@ object Engine {
     private fun boxCount(s: Settings) = LAYOUTS[s.layout]?.size ?: 4
 
     private fun makeFeed(s: Settings, preview: Boolean = false) =
-        GameFeed(s.slots, ::fetchBoard, ::now, pollSecs = 15.0, fetchSummary = if (preview) null else ::fetchSummary)
+        // Every game's play-by-play every few seconds: it's how the app knows which games are in commercial without hearing them.
+        GameFeed(s.slots, ::fetchBoard, ::now, pollSecs = 10.0, fetchSummary = if (preview) null else ::fetchSummary,
+            summarySecs = 5.0, otherSummarySecs = 8.0)
 
     private fun makeRemote(s: Settings): Remote = when (s.tvType) {
         TvType.SAMSUNG -> {

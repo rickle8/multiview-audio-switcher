@@ -310,4 +310,35 @@ class BroadcastTest {
         now += 30
         assertTrue("after a while, it tries again", c.step(Heard.AD))
     }
+
+    // ------------------------------------------------------------ games you're not hearing
+    @Test fun knowsOtherGamesAreInCommercialFromEspn() {
+        var now = 300.0
+        val timing = BroadcastTiming().apply { load("""{"delay":{"s":30,"w":5,"hist":[]}}""") }
+        val nav = Navigator(quiet, LAYOUTS.getValue(4), home = false, sleep = {})
+        val f = GameFeed(emptyMap(), { JSONObject() }, { now }, pollSecs = 1e9)
+        f.recordPlay(2, "Official Timeout at 05:32.", 230.0, 240.0, seq = 5)              // on TV at 260: in commercial
+        f.recordPlay(3, "J.Smith rush up the middle for 4 yards", 250.0, 262.0, seq = 9) // on TV at 280: game on
+        f.recordPlay(4, "Field Goal Good: 45 yard field goal is GOOD", 280.0, 290.0, seq = 3) // TV gets there at 310
+        val c = Controller(nav, listOf(1, 2, 3, 4), f, clock = { now }, timing = timing)
+        assertEquals(Controller.Outlook.BREAK, c.outlook(2, now).first)
+        assertEquals(Controller.Outlook.LIVE, c.outlook(3, now).first)
+        assertEquals(Controller.Outlook.SOON, c.outlook(4, now).first)
+        // Box 1 goes to commercial: skip the game in commercial and the one about to go, land on the live one.
+        assertTrue(c.step(Heard.AD))
+        assertEquals(3, nav.current)
+    }
+
+    @Test fun everythingInCommercialGoesToTheOneBackSoonest() {
+        var now = 500.0
+        val timing = BroadcastTiming().apply { load("""{"delay":{"s":30,"w":5,"hist":[]}}""") }
+        val nav = Navigator(quiet, LAYOUTS.getValue(4), home = false, sleep = {})
+        val f = GameFeed(emptyMap(), { JSONObject() }, { now }, pollSecs = 1e9)
+        f.recordPlay(2, "Official Timeout at 05:32.", 400.0, 405.0, seq = 5)   // break since 430
+        f.recordPlay(3, "End Period: END QUARTER 1", 340.0, 345.0, seq = 9)     // break since 370: back sooner
+        f.recordPlay(4, "Official Timeout at 02:00.", 450.0, 455.0, seq = 3)   // break since 480: too new
+        val c = Controller(nav, listOf(1, 2, 3, 4), f, clock = { now }, timing = timing)
+        assertTrue(c.step(Heard.AD))
+        assertEquals(3, nav.current)
+    }
 }
