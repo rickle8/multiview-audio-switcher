@@ -38,6 +38,24 @@ class StreamDelay(private val minD: Int = 4, private val maxD: Int = 100) {
     @Volatile var seconds: Double? = null
         private set
 
+    /**
+     * Direct measurements from commercial breaks: when the TV went to (or came back
+     * from) a commercial, against ESPN's real time for the timeout or play around it.
+     * These line up the audio with ESPN far better than crowd noise, so once there
+     * are two, they decide.
+     */
+    private val sync = ArrayDeque<Double>()
+    val syncSamples: Int get() = synchronized(sync) { sync.size }
+
+    fun addSync(d: Double) {
+        if (d < minD || d > maxD + 20) return
+        synchronized(sync) {
+            sync.addLast(d)
+            while (sync.size > 9) sync.removeFirst()
+            if (sync.size >= 2) seconds = sync.sorted()[sync.size / 2]
+        }
+    }
+
     /** Plays timed so far (for the screen). */
     val samples: Int get() = weight.toInt()
 
@@ -69,6 +87,7 @@ class StreamDelay(private val minD: Int = 4, private val maxD: Int = 100) {
     }
 
     private fun estimate() {
+        if (syncSamples >= 2) return // break timing already pins it down
         if (weight < 2.5) return
         val smooth = DoubleArray(hist.size) { d ->
             var s = 0.0; var n = 0
@@ -81,15 +100,19 @@ class StreamDelay(private val minD: Int = 4, private val maxD: Int = 100) {
     }
 
     fun toJson(): JSONObject = JSONObject().put("w", weight).put("hist", JSONArray(hist.toList()))
-        .put("s", seconds ?: -1.0)
+        .put("s", seconds ?: -1.0).put("sync", JSONArray(synchronized(sync) { sync.toList() }))
 
     fun load(j: JSONObject) {
         j.optJSONArray("hist")?.let { a -> for (i in 0 until minOf(a.length(), hist.size)) hist[i] = a.optDouble(i, 0.0) }
         weight = j.optDouble("w", 0.0)
         seconds = j.optDouble("s", -1.0).takeIf { it > 0 }
+        synchronized(sync) {
+            sync.clear()
+            j.optJSONArray("sync")?.let { a -> for (i in 0 until a.length()) sync.addLast(a.optDouble(i)) }
+        }
     }
 
-    fun clear() { hist.fill(0.0); weight = 0.0; seconds = null; used.clear() }
+    fun clear() { hist.fill(0.0); weight = 0.0; seconds = null; used.clear(); synchronized(sync) { sync.clear() } }
 }
 
 /** Real break lengths from your games, per league, split into ordinary breaks and breaks after a score. */

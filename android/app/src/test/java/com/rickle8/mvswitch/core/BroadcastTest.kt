@@ -341,4 +341,45 @@ class BroadcastTest {
         assertTrue(c.step(Heard.AD))
         assertEquals(3, nav.current)
     }
+
+    // ------------------------------------------------------------ syncing the TV with ESPN
+    @Test fun commercialAfterATimeoutSyncsTheTvWithEspn() {
+        var now = 0.0
+        val timing = BroadcastTiming()
+        val logs = mutableListOf<String>()
+        val nav = Navigator(quiet, LAYOUTS.getValue(2), home = false, sleep = {})
+        val f = GameFeed(emptyMap(), { JSONObject() }, { now }, pollSecs = 1e9)
+        val c = Controller(nav, listOf(1, 2), f, clock = { now }, timing = timing, log = { logs += it })
+        // Real time 100: TV timeout. ESPN shows it at 115. The TV (40 s behind) cuts to commercial at 145.
+        f.recordPlay(1, "Official Timeout at 05:32.", 100.0, 115.0, seq = 5)
+        now = 150.0; c.step(Heard.GAME)
+        now = 153.0; c.step(Heard.AD) // heard as commercial ~8 s after the cut
+        assertEquals(1, timing.delay.syncSamples)
+        // Second break, same thing: now it's decided.
+        nav.current = 1; now = 900.0; c.lastSwitch = 0.0
+        f.recordPlay(1, "End Period: END QUARTER 1", 800.0, 815.0, seq = 9)
+        c.step(Heard.GAME)
+        now = 853.0; c.step(Heard.AD)
+        assertEquals(40.0, timing.delay.seconds!!, 2.0)
+        assertTrue(logs.any { it.startsWith("Synced with ESPN") })
+    }
+
+    @Test fun goesBackWhenTheCommercialEnds() {
+        var now = 100.0
+        val timing = BroadcastTiming().apply { load("""{"delay":{"s":30,"w":5,"hist":[]}}""") }
+        val logs = mutableListOf<String>()
+        val nav = Navigator(quiet, LAYOUTS.getValue(4), home = false, sleep = {})
+        val f = GameFeed(emptyMap(), { JSONObject() }, { now }, pollSecs = 1e9)
+        val c = Controller(nav, listOf(1, 2, 3, 4), f, clock = { now }, timing = timing, log = { logs += it })
+        assertTrue(c.step(Heard.AD))                 // box 1 to commercial
+        val cover = nav.current!!
+        assertTrue(cover != 1)
+        now = 160.0; assertFalse(c.step(Heard.GAME)) // nothing from box 1 yet
+        // Box 1's first play after the break: real time 200, ESPN has it at 215, the TV shows it at 230.
+        f.recordPlay(1, "J.Allen pass short right to K.Coleman for 9 yards", 200.0, 215.0, seq = 40)
+        now = 220.0; assertFalse("the TV hasn't shown it yet", c.step(Heard.GAME))
+        now = 232.0; assertTrue(c.step(Heard.GAME))
+        assertEquals(1, nav.current)
+        assertTrue(logs.last().contains("back from commercial"))
+    }
 }

@@ -229,6 +229,11 @@ fun SettingsScreen(state: EngineState, settings: Settings, update: UpdateState, 
         // ------------------------------------------------------------ Switching
         SectionLabel("Switching")
         Panel {
+            ToggleRow("Go back when the commercial ends",
+                "After covering a commercial with another game, it returns to the game you were watching as soon " +
+                    "as that game is back on your TV.",
+                settings.returnToGame) { v -> Engine.update { it.copy(returnToGame = v) } }
+            HorizontalDivider(Modifier.padding(vertical = 14.dp), color = C.line)
             Text("Jump to a better game mid-play", color = C.text, fontWeight = FontWeight.Medium)
             Text("Off by default: only commercials move the audio. Turn on to also leave a blowout for a close game.",
                 color = C.muted, fontSize = 12.sp, modifier = Modifier.padding(bottom = 8.dp))

@@ -36,6 +36,8 @@ data class Settings(
     val micSensitivity: Float = 0.5f,
     val proactive: Boolean = true,
     val hopping: Hopping = Hopping.OFF,
+    /** Go back to the game you were watching when its commercial ends. */
+    val returnToGame: Boolean = true,
     val breakSecs: Int = 150,
     val league: String = "football/nfl",
     val githubToken: String = "",
@@ -67,7 +69,7 @@ data class Settings(
         .put("tvType", tvType.name).put("tvHost", tvHost).put("samsungToken", samsungToken ?: "")
         .put("layout", layout).put("homing2", homing).put("homePresses", homePresses)
         .put("useMic", useMic).put("micSensitivity", micSensitivity.toDouble())
-        .put("proactive", proactive).put("hopping2", hopping.name).put("breakSecs", breakSecs)
+        .put("proactive", proactive).put("hopping2", hopping.name).put("returnToGame", returnToGame).put("breakSecs", breakSecs)
         .put("league", league)
         .put("githubToken", githubToken)
         .put("openYouTubeTv", openYouTubeTv)
@@ -116,6 +118,7 @@ data class Settings(
                 useMic = j.optBoolean("useMic", d.useMic),
                 micSensitivity = j.optDouble("micSensitivity", d.micSensitivity.toDouble()).toFloat(),
                 proactive = j.optBoolean("proactive", d.proactive),
+                returnToGame = j.optBoolean("returnToGame", true),
                 hopping = runCatching { Hopping.valueOf(j.optString("hopping2")) }.getOrDefault(d.hopping),
                 breakSecs = j.optInt("breakSecs", d.breakSecs),
                 league = j.optString("league", d.league),

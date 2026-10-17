@@ -271,6 +271,7 @@ object Engine {
                 minDwellSecs = new.hopping.dwellSecs
                 assumedBreakSecs = new.breakSecs.toDouble()
                 proactive = new.proactive
+                returnAfterBreak = new.returnToGame
             }
             detector.verdict.adThreshold = new.adThreshold
             detector.verdict.gameThreshold = new.gameThreshold
@@ -646,7 +647,7 @@ object Engine {
                     assumedBreakSecs = s.breakSecs.toDouble(), upgradeMargin = s.hopping.margin,
                     minDwellSecs = s.hopping.dwellSecs, proactive = s.proactive,
                     clock = ::now, log = ::log, timing = detector.timing,
-                )
+                ).also { it.returnAfterBreak = s.returnToGame }
             }
         } catch (e: Exception) {
             error = e.message
@@ -922,6 +923,7 @@ object Engine {
                 // In multiview the arrows move the audio: keep track of where it went.
                 n.current = simulate(n.neighbors, n.current ?: 1, listOf(key))
                 ctrl?.lastSwitch = now()
+                ctrl?.returnTo = null
                 synchronized(detector) { detector.onSwitch() }
             }
         } else {
@@ -1240,7 +1242,7 @@ object Engine {
                     lockedBox = if (lock) box else null
                     holdUntil = 0.0
                     nav?.goTo(box)
-                    ctrl?.let { it.lastSwitch = now(); it.breakUntil.remove(box) }
+                    ctrl?.let { it.lastSwitch = now(); it.breakUntil.remove(box); it.returnTo = null }
                     synchronized(detector) { detector.onSwitch() }
                 }
                 log(if (lock) "Locked on box $box" else "You switched to box $box")
@@ -1256,6 +1258,7 @@ object Engine {
         synchronized(lock) {
             nav?.current = box
             ctrl?.lastSwitch = now()
+            ctrl?.returnTo = null
         }
         synchronized(detector) { detector.onSwitch() }
         log("Got it: the audio is on box $box.")

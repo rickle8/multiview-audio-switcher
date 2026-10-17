@@ -292,6 +292,22 @@ class Controller(
         return Bias.NORMAL
     }
 
+    /** Go back to the game you were watching once its commercial ends. */
+    var returnAfterBreak = true
+    /** The game to go back to after its commercial. */
+    @Volatile var returnTo: Int? = null
+
+    /** The game is back on the TV: a play since its break that the TV has shown, or ESPN says it's live. */
+    private fun isBack(box: Int, now: Double, status: Map<Int, GameStatus>): Boolean {
+        if (status[box] == GameStatus.BREAK) return false
+        val started = breakStarted[box]
+        if (feed != null && started != null && feed.pbpFresh(box, now)) {
+            if (resumedPlay(box, started, now) != null) return true
+            return now > started + breakCap(box) // never heard back: give up waiting eventually
+        }
+        return !inBreak(box, now, status)
+    }
+
     /** When it left a game for a commercial, recently. */
     private val adSwitches = ArrayDeque<Double>()
     /** Every game seems to be in commercials: stop bouncing between them until this time. */
@@ -307,6 +323,8 @@ class Controller(
         }
         breakUntil[cur] = now + if (breakIsHalf[cur] == true) 900.0 else breakLength(cur, breakAfterScore[cur] == true)
         val targets = ranked(now, status, exclude = cur)
+        // Remember the game you were watching (not a stop along the way) to come back to.
+        if (returnAfterBreak && returnTo == null) returnTo = cur
         if (targets.isNotEmpty()) { adSwitches.addLast(now); return switchTo(targets.first(), now, why) }
         backSoonest(now, status, cur)?.let { b ->
             adSwitches.addLast(now)
@@ -330,13 +348,50 @@ class Controller(
     fun commercialNow(): Boolean {
         val now = clock()
         val cur = nav.current ?: return false
+        syncAdStart(cur, now - 2) // you tapped a moment after it started
         return goToBreak(cur, now, feedStatus(), "You marked a commercial on box $cur")
     }
 
     /** Returns true if it switched (caller should reset the audio window). */
+    // ------------------------------------------------------------ syncing the TV with ESPN
+    private val SYNC_PLAY = Regex("official timeout|tv timeout|media timeout|end period|end of (the )?(1st|first|3rd|third) quarter|two.minute warning", RegexOption.IGNORE_CASE)
+    /** When the TV came back from a commercial on a box, waiting for ESPN's first play after it. */
+    private val returnedAt = HashMap<Int, Double>()
+    private val syncedPlay = HashMap<Int, Long>()
+
+    /**
+     * The TV went to commercial on [box] at [at]: if ESPN's last play there was a TV
+     * timeout or quarter end (which cut to commercial within seconds), the gap is how
+     * far behind ESPN's real time the TV runs.
+     */
+    private fun syncAdStart(box: Int, at: Double) {
+        val p = feed?.plays(box)?.lastOrNull { it.seq >= 0 } ?: return
+        if (!SYNC_PLAY.containsMatchIn(p.text) || syncedPlay[box] == p.seq) return
+        syncedPlay[box] = p.seq
+        val d = at - p.t - 5 // the cut usually follows the timeout call by about 5 s
+        if (d in 4.0..120.0) {
+            timing?.delay?.addSync(d)
+            log("Synced with ESPN: the TV runs about ${d.toInt()} s behind live.")
+        }
+    }
+
+    /** Back from commercial while still on this box: ESPN's first play after it times the TV. */
+    private fun syncReturn(box: Int, now: Double) {
+        val back = returnedAt[box] ?: return
+        if (now - back > 240) { returnedAt.remove(box); return }
+        val p = feed?.plays(box)?.firstOrNull { it.seq >= 0 && it.seen > back } ?: return
+        returnedAt.remove(box)
+        val d = back - p.t + 15 // the first snap or kickoff comes about 15 s after the broadcast is back
+        if (d in 4.0..120.0) timing?.delay?.addSync(d)
+    }
+
     fun step(heard: Heard, strongAd: Boolean = false, strongWhy: String? = null): Boolean {
         val now = clock()
         val cur = nav.current ?: return false
+        if (heard == Heard.GAME && lastHeard[cur] == Heard.AD && now - lastSwitch > 15) returnedAt[cur] = now - 4
+        // The sound settles on "commercial" about 8 s after it starts.
+        if (heard == Heard.AD && lastHeard[cur] != Heard.AD && !strongAd && now - lastSwitch > 20) syncAdStart(cur, now - 8)
+        syncReturn(cur, now)
         if (heard == Heard.GAME) {
             if (lastHeard[cur] == Heard.AD || cur in awayForBreak) lastBreakEnd[cur] = now
             awayForBreak.remove(cur)
@@ -389,6 +444,17 @@ class Controller(
             Heard.GAME -> Unit
         }
         breakUntil.remove(cur)
+        // Back to the game you were watching once its commercial is over.
+        returnTo?.let { home ->
+            val status0 = status[home]
+            when {
+                home == cur || status0 == GameStatus.FINAL -> returnTo = null
+                now - lastSwitch >= 15 && isBack(home, now, status) -> {
+                    returnTo = null
+                    return switchTo(home, now, "Box $home is back from commercial")
+                }
+            }
+        }
         // On a filler box: leave as soon as any real game is back on.
         if (games[cur]?.let { it.isOther && it.importance < 1.0 } == true) {
             val game = ranked(now, status, exclude = cur).firstOrNull { games[it]?.isOther != true }
