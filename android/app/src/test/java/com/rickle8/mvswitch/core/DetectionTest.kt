@@ -271,4 +271,16 @@ class DetectionTest {
         now = 130.0
         assertEquals(Bias.NORMAL, c.bias(2, now))
     }
+
+    @Test fun tappingRightAtTheStartDoesntTeachTheGameAsAnAd() {
+        val d = Detector()
+        val game = throughRoom(jingle(43, 30), 9, snrDb = 0.0)
+        var t = 0.0
+        for (s in 0 until 12) d.process(second(game, s), t++, 1, Bias.NORMAL, true)
+        val ad = throughRoom(jingle(42, 20), 1)
+        for (s in 0 until 2) d.process(second(ad, s), t++, 1, Bias.NORMAL, true)
+        d.label(isAd = true, now = t, box = 1)
+        d.onSwitch() // the tap skips to another game
+        assertTrue("only the last few seconds, not the game before: ${d.model.adSeconds}", d.model.adSeconds <= 3)
+    }
 }

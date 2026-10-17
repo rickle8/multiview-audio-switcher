@@ -36,6 +36,9 @@ class TransitionDetector {
     private var dipAt: Double? = null
     var lastTransition = -1e9
         private set
+    /** When the sound last dropped out briefly (the cut between the game and a commercial). */
+    var lastDip = -1e9
+        private set
 
     private fun dist(a: DoubleArray, b: DoubleArray): Double {
         var s = 0.0
@@ -55,7 +58,7 @@ class TransitionDetector {
             for (e in a.energiesDb) {
                 if (e < med - 18) { run++; best = max(best, run) } else run = 0
             }
-            if (best >= 8) dipAt = now
+            if (best >= 8) { dipAt = now; lastDip = now }
         }
         for (e in a.energiesDb) energies.addLast(e)
         while (energies.size > 470) energies.removeFirst()
@@ -260,14 +263,23 @@ class Detector(private val dir: File? = null) {
         prevMatch = null
     }
 
-    /** "It's the game" / "It's an ad": label the last 8 s and the next 12 s. */
+    /**
+     * "It's the game": the last 8 s (and the next 12 s). "It's an ad": you can tap
+     * the moment the commercial starts, so it only takes audio since the cut to
+     * the commercial (the brief drop in sound), or the last 3 s if there wasn't
+     * one, never the game right before it.
+     */
     fun label(isAd: Boolean, now: Double, box: Int? = null) {
+        val from = if (!isAd) now - 8 else {
+            val dip = transitions.lastDip
+            if (now - dip in 1.0..20.0) dip + 0.5 else now - 3
+        }
         // Only the game you're hearing now: an earlier box's audio isn't what you meant.
-        history.filter { now - it.t <= 8 && (box == null || it.box == box) }.forEach { labelRec(it, isAd) }
+        history.filter { it.t >= from && (box == null || it.box == box) }.forEach { labelRec(it, isAd) }
         labelAsAd = isAd
         labelUntil = now + 12
         if (isAd) {
-            pendingPrintFrom = fp.latestFrame - (8 * FpParams.FPS).toLong()
+            pendingPrintFrom = fp.latestFrame - ((now - from).coerceIn(3.0, 20.0) * FpParams.FPS).toLong()
             pendingPrintUntil = now + 12
         } else {
             pendingPrintFrom = null
