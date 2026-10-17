@@ -148,34 +148,3 @@ class BroadcastTiming {
 
     fun clear() { delay.clear(); breaks.clear() }
 }
-
-/** Words announcers say during play, by sport. Almost never heard in commercials. */
-fun gameTerms(league: String): List<String> = when {
-    league.startsWith("football") -> listOf(
-        "first down", "second down", "third down", "fourth down", "yard line", "end zone", "red zone",
-        "line of scrimmage", "quarterback", "touchdown", "interception", "fumble", "incomplete", "sacked",
-        "play action", "false start", "holding", "pass interference", "offside", "handoff", "scramble",
-        "tight end", "wide receiver", "running back", "linebacker", "pocket", "blitz", "huddle", "punt",
-        "field goal", "first and ten", "goal line",
-    )
-    league.startsWith("basketball") -> listOf(
-        "three pointer", "free throw", "rebound", "layup", "dunk", "jumper", "shot clock", "assist",
-        "fast break", "in the paint", "from downtown", "pick and roll", "and one", "turnover", "foul",
-    )
-    league.startsWith("hockey") -> listOf(
-        "power play", "penalty kill", "slap shot", "wrist shot", "faceoff", "icing", "goaltender",
-        "blue line", "the puck", "one timer", "breakaway", "empty net",
-    )
-    league.startsWith("baseball") -> listOf(
-        "strike one", "strike two", "strike three", "ball four", "full count", "home run", "double play",
-        "base hit", "fly ball", "ground ball", "bullpen", "the count", "on deck", "stolen base",
-    )
-    else -> emptyList()
-}
-
-/** Things commercials say and announcers don't. */
-val AD_TERMS = listOf(
-    "terms apply", "restrictions apply", "call now", "order now", "limited time", "per month",
-    "learn more", "sign up today", "save up to", "free shipping", "download the app", "dot com",
-    "see store for details", "offer ends", "available at", "visit us", "zero percent", "financing",
-)

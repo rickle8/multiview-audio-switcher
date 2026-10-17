@@ -95,18 +95,6 @@ class DetectionTest {
         return SecondAudio(emptyList(), frames, FloatArray(31), -20.0)
     }
 
-    @Test fun learnsAnnouncerVoices() {
-        val v = AnnouncerModel()
-        repeat(80) { v.learn(voiceSecond(0.0, it.toLong()), speech = 0.9, isGame = true) }
-        assertTrue(v.ready)
-        val same = v.evidence(voiceSecond(0.0, 999), 0.9)!!
-        val other = v.evidence(voiceSecond(2.5, 998), 0.9)!!
-        assertTrue("announcer $same", same > 0)
-        assertTrue("other voice $other", other < -1)
-        // No speech: no opinion.
-        assertEquals(null, v.evidence(voiceSecond(0.0, 997), 0.1))
-    }
-
     // ------------------------------------------------------------ transitions
     private fun shapeSecond(pattern: (Int) -> Double, seed: Long, dipFrames: Int = 0): SecondAudio {
         val r = java.util.Random(seed)
@@ -246,27 +234,6 @@ class DetectionTest {
             if (d.process(second(again, s), t++, 1, Bias.NORMAL, true).strongAd) recognized = true
         }
         assertTrue(recognized)
-    }
-
-    @Test fun announcerBreakPhraseSwitchesOnceThenCoolsDown() {
-        val d = Detector()
-        val audio = throughRoom(jingle(5, 90), 4)
-        var t = 0.0
-        for (s in 0 until 10) d.process(second(audio, s), t++, 1, Bias.NORMAL, true)
-        // Phrase "heard" but nobody is talking (music/noise): ignored.
-        assertFalse(d.process(second(audio, 10), t, 1, Bias.NORMAL, true, cue = "stay with us").strongAd)
-        val hit = d.process(second(audio, 10, speech = 0.7f), t++, 1, Bias.NORMAL, true, cue = "we'll be right back")
-        assertTrue(hit.strongAd)
-        assertEquals(Heard.AD, hit.heard)
-        assertEquals("we'll be right back", hit.cue)
-        assertTrue(hit.why!!.contains("right back"))
-        d.onSwitch()
-        // Same phrase again 20 s later (e.g. a replay of the call): ignored.
-        for (s in 11 until 30) d.process(second(audio, s), t++, 1, Bias.NORMAL, true)
-        val again = d.process(second(audio, 30, speech = 0.7f), t++, 1, Bias.NORMAL, true, cue = "stay with us")
-        assertFalse(again.strongAd)
-        // Phrases don't teach the classifier that announcer audio is an ad.
-        assertEquals(0, d.model.adSeconds)
     }
 
     @Test fun controllerLogsTheCue() {

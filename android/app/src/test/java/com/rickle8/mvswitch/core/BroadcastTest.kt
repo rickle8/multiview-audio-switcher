@@ -125,14 +125,14 @@ class BroadcastTest {
     }
 
     @Test fun playStillAheadOnTheTvMeansTheGameIsOn() {
-        var now = 100.0
+        var now = 70.0
         val timing = BroadcastTiming().apply { load("""{"delay":{"s":40,"w":5,"hist":[]}}""") }
         val nav = Navigator(quiet, LAYOUTS.getValue(2), home = false, sleep = {})
         val f = GameFeed(emptyMap(), { JSONObject() }, { now }, pollSecs = 1e9)
         f.recordPlay(1, "Rush up the middle for 3 yards", 0.0, 10.0, seq = 3) // on TV at 40
         val c = Controller(nav, listOf(1, 2), f, clock = { now }, timing = timing)
-        assertTrue("seen 90 s ago, but on TV only 60 s ago", c.recentPlay(1, now) != null)
-        now = 130.0
+        assertTrue("seen 60 s ago, but on TV only 30 s ago", c.recentPlay(1, now) != null)
+        now = 80.0
         assertNull(c.recentPlay(1, now))
     }
 
@@ -215,71 +215,6 @@ class BroadcastTest {
         return FloatArray(x.size) { ((x[it] + r.nextGaussian() * sd) * 0.7).toFloat() }
     }
 
-    @Test fun gameTalkOutweighsMusicySound() {
-        val audio = room(tones(3, 30), 4)
-        fun run(words: Boolean): Heard {
-            val d = Detector()
-            var last = Heard.UNSURE
-            for (s in 0 until 25) {
-                last = d.process(sec(audio, s, speech = 0.3f, music = 0.8f), s.toDouble(), 1, Bias.NORMAL, false,
-                    gameWords = if (words && s % 3 == 0) listOf("third down") else emptyList()).heard
-            }
-            return last
-        }
-        assertEquals(Heard.AD, run(words = false))
-        assertTrue(run(words = true) != Heard.AD)
-    }
-
-    @Test fun adTalkPushesTowardCommercial() {
-        val audio = room(tones(5, 30), 6)
-        val d = Detector()
-        var r: DetectResult? = null
-        for (s in 0 until 25) {
-            r = d.process(sec(audio, s, speech = 0.5f, music = 0.12f), s.toDouble(), 1, Bias.NORMAL, false,
-                adWords = if (s % 2 == 0) listOf("terms apply") else emptyList())
-        }
-        assertEquals(Heard.AD, r!!.heard)
-    }
-
-    @Test fun learnsTheNetworksBreakMusic() {
-        val d = Detector()
-        val bumper = tones(77, 4)
-        var t = 0.0
-        var recognizedAt: Double? = null
-        var why: String? = null
-        for (cycle in 0 until 3) {
-            val game = room(tones(100L + cycle, 25), 10L + cycle)
-            val bump = room(bumper, 20L + cycle)
-            val ad = room(tones(200L + cycle, 20), 30L + cycle)
-            for (s in 0 until 25) d.process(sec(game, s, 0.8f, 0f), t++, 1, Bias.NORMAL, true)
-            for (s in 0 until 4) {
-                val r = d.process(sec(bump, s, 0f, 0.8f), t++, 1, Bias.NORMAL, true)
-                if (r.strongAd && recognizedAt == null) { recognizedAt = t; why = r.why }
-            }
-            for (s in 0 until 20) d.process(sec(ad, s, 0f, 0.8f), t++, 1, Bias.NORMAL, true)
-            if (cycle == 0) assertEquals(0, d.bumpers.trustedCount)
-            if (cycle == 1) assertEquals(1, d.bumpers.trustedCount)
-            if (cycle < 2) assertNull("not before it's learned", recognizedAt)
-        }
-        assertNotNull("third break: recognized from the music alone", recognizedAt)
-        assertEquals("Heard the network's break music", why)
-    }
-
-    @Test fun noBreakMusicMeansNothingLearned() {
-        val d = Detector()
-        var t = 0.0
-        var strong = false
-        for (cycle in 0 until 4) {
-            val game = room(tones(300L + cycle, 25), 40L + cycle)
-            val ad = room(tones(400L + cycle, 24), 50L + cycle)
-            for (s in 0 until 25) d.process(sec(game, s, 0.8f, 0f), t++, 1, Bias.NORMAL, true)
-            for (s in 0 until 24) if (d.process(sec(ad, s, 0f, 0.8f), t++, 1, Bias.NORMAL, true).strongAd) strong = true
-        }
-        assertEquals(0, d.bumpers.trustedCount)
-        assertEquals(0, d.comebacks.trustedCount)
-        assertFalse(strong)
-    }
-
     @Test fun fillerBoxOnlyCoversBreaks() {
         var now = 100.0
         val nav = Navigator(quiet, LAYOUTS.getValue(2), home = false, sleep = {})
@@ -353,65 +288,7 @@ class BroadcastTest {
         assertTrue(logs.any { it.contains("No commercial came") })
     }
 
-    @Test fun learnsWhatThisGameSoundsLike() {
-        val d = Detector()
-        val game = room(tones(11, 200), 12)
-        // Something that doesn't sound like this broadcast: a steady low chord.
-        val other = FloatArray(Dsp.SR * 20) { i ->
-            val t = i.toDouble() / Dsp.SR
-            (0.2 * (sin(2 * PI * 196 * t) + sin(2 * PI * 247 * t) + sin(2 * PI * 294 * t))).toFloat()
-        }.let { room(it, 13) }
-        var t = 0.0
-        for (s in 0 until 180) d.process(sec(game, s, 0.8f, 0f), t++, 1, Bias.CLOCK, true)
-        assertTrue(d.profiles.ready(1))
-    }
-
     // ------------------------------------------------------------ which game is this?
-    private val tonight = mapOf(
-        1 to BoxFacts("football/college-football", names = setOf("smith", "jackson"), teams = setOf("hilltoppers", "western kentucky"),
-            scores = listOf(listOf(0, 7)), period = 2, down = 3, distance = 4),
-        2 to BoxFacts("football/college-football", names = setOf("smith", "brown"), teams = setOf("owls", "kennesaw state"),
-            scores = listOf(listOf(6, 0)), period = 2, down = 1, distance = 10),
-        3 to BoxFacts("baseball/mlb", names = setOf("ohtani", "yelich"), teams = setOf("dodgers", "brewers", "milwaukee"),
-            scores = listOf(listOf(0, 0), listOf(0, 1)), period = 3, half = "top", outs = 2),
-        4 to BoxFacts("basketball/nba", names = setOf("doncic", "irving"), teams = setOf("mavericks", "pelicans", "new orleans"),
-            scores = listOf(listOf(25, 30), listOf(25, 32)), period = 2),
-    )
-
-    @Test fun numbersReadTheSameEitherWay() {
-        assertEquals("trailing 32 to 25", numbersToDigits("trailing thirty-two to twenty-five"))
-        assertEquals("third and 4", numbersToDigits("third and four"))
-    }
-
-    @Test fun locatesTheGameFromWhatsSaid() {
-        val loc = Locator()
-        // The score, said either way, and even the one before the latest.
-        assertEquals(setOf(4), loc.clues("New Orleans up thirty two to twenty five", tonight).map { it.box }.toSet())
-        assertEquals(listOf(4), loc.clues("it was 30-25 a minute ago", tonight).map { it.box })
-        // Down and distance picks one of two football games.
-        assertEquals(listOf(1), loc.clues("third and four from the 30", tonight).filter { it.why.contains("and") }.map { it.box })
-        // Inning and sport words: only the baseball game.
-        assertTrue(loc.clues("top of the third, the pitch, strike two", tonight).all { it.box == 3 })
-        // A name two games share isn't enough on its own.
-        assertTrue(loc.clues("smith on the tackle", tonight).none { it.box == 3 || it.box == 4 })
-
-        loc.reset(1, 0.0)
-        assertNull(loc.where(0.0))
-        loc.hear("rebound Doncic", 5.0, tonight)
-        assertNull("not sure yet", loc.where(6.0))
-        loc.hear("Pelicans lead thirty two to twenty five", 12.0, tonight)
-        assertEquals(4, loc.where(13.0)!!.first)
-        assertNotNull(loc.heardRecently(4, 20.0, 15.0))
-        assertNull("fades out", loc.where(400.0))
-    }
-
-    @Test fun mixedSignalsDecideNothing() {
-        val loc = Locator()
-        loc.hear("the Dodgers and the Mavericks", 0.0, tonight)
-        loc.hear("Ohtani, Doncic", 1.0, tonight)
-        assertNull(loc.where(2.0))
-    }
-
     @Test fun teamNamesIncludeThePlace() {
         val ev = JSONObject().put("competitions", JSONArray().put(JSONObject().put("competitors", JSONArray()
             .put(JSONObject().put("team", JSONObject().put("name", "Owls").put("location", "Kennesaw State")))

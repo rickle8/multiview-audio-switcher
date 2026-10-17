@@ -29,7 +29,7 @@ class Controller(
     proactivePlays: String = DEFAULT_PROACTIVE,
     private val proactiveMaxAge: Double = 45.0,
     /** Ignore the mic's "commercial" if ESPN showed a normal play this recently. */
-    var liveGuardSecs: Double = 75.0,
+    var liveGuardSecs: Double = 35.0,
     private val clock: () -> Double,
     private val log: (String) -> Unit = {},
     /** What's been learned about the broadcast: stream delay and real break lengths. */
@@ -262,7 +262,8 @@ class Controller(
     /** A normal (non-break) play showed up for this box recently: the game is on. */
     fun recentPlay(box: Int, now: Double, within: Double = liveGuardSecs): String? {
         val p = feed?.plays(box)?.lastOrNull() ?: return null
-        if (isBreakPlay(p.text)) return null
+        // Punts, kickoffs, turnovers, scores often go straight to commercial: they don't prove the game is on.
+        if (isBreakPlay(p.text) || LIKELY_BREAK.containsMatchIn(p.text)) return null
         // A play the TV shows soon, or showed a moment ago, means the game is on.
         if (now - tvTime(p) > within) return null
         return p.text

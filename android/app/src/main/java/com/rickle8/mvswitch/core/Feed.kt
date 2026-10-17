@@ -301,17 +301,7 @@ class GameFeed(
     private val lagSamples = ArrayDeque<Double>()
     private val names = java.util.concurrent.ConcurrentHashMap<Int, Set<String>>()
     private val teams = java.util.concurrent.ConcurrentHashMap<Int, Set<String>>()
-    private val scoreHistory = java.util.concurrent.ConcurrentHashMap<Int, List<List<Int>>>()
 
-    /** What each game's announcers could be saying right now, for working out which one is heard. */
-    fun facts(): Map<Int, BoxFacts> = info.toMap().mapValues { (box, gi) ->
-        BoxFacts(
-            league = gi.league, names = names[box].orEmpty(), teams = teams[box].orEmpty(),
-            scores = scoreHistory[box].orEmpty(), period = gi.period,
-            half = gi.detail.lowercase().let { d -> when { d.startsWith("top") -> "top"; d.startsWith("bot") -> "bottom"; else -> null } },
-            down = gi.down, distance = gi.distance, outs = gi.outs,
-        )
-    }
     private val namesAt = HashMap<Int, Double>()
 
     /** The game whose play-by-play is polled every few seconds (the one you're hearing). */
@@ -380,11 +370,6 @@ class GameFeed(
             val gi = parseEvent(event, slot.league)
             rawStatus[box] = gi.status
             info[box] = gi
-            // Recent scores: the TV runs behind, so the announcers may still be saying an older one.
-            gi.scores.values.toList().takeIf { it.size == 2 }?.let { sc ->
-                val q = scoreHistory[box].orEmpty()
-                if (q.lastOrNull() != sc) scoreHistory[box] = (q + listOf(sc)).takeLast(4)
-            }
             if (gi.status == GameStatus.LIVE || gi.status == GameStatus.BREAK) noteClock(box, "board", gi.period, gi.clock, now)
             teamNames(event).takeIf { it.isNotEmpty() }?.let { t ->
                 val cur = names[box].orEmpty()
@@ -479,24 +464,6 @@ class GameFeed(
     /** Player and team names for every game, lowercase (for the announcers' words). */
     fun names(): Set<String> = names.values.flatten().toSet()
 
-    /** Each game's player and team names, for telling which game is being heard. */
-    fun namesByBox(): Map<Int, Set<String>> = HashMap(names)
-
-    /**
-     * Names for the speech recognizer, most useful first: every game's team names,
-     * then players taken in turn from each game so no game is left out.
-     */
-    fun namesForListening(limit: Int): List<String> {
-        val out = LinkedHashSet<String>()
-        teams.values.forEach { out += it }
-        val lists = names.values.map { it.toList() }
-        var i = 0
-        while (out.size < limit && lists.any { i < it.size }) {
-            for (l in lists) if (i < l.size && out.size < limit) out += l[i]
-            i++
-        }
-        return out.toList()
-    }
 
     @Synchronized
     fun latestPlay(box: Int): Pair<String, Double>? = log[box]?.lastOrNull()?.let { it.text to it.seen }

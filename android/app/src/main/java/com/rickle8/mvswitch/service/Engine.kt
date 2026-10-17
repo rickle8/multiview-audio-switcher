@@ -3,13 +3,8 @@ package com.rickle8.mvswitch.service
 import android.content.Context
 import android.os.Build
 import android.os.SystemClock
-import com.rickle8.mvswitch.audio.KeywordSpotter
-import com.rickle8.mvswitch.audio.PhoneSpeech
-import com.rickle8.mvswitch.audio.SpeechSource
 import com.rickle8.mvswitch.audio.MicClassifier
-import com.rickle8.mvswitch.audio.SpeechModel
 import com.rickle8.mvswitch.core.Controller
-import com.rickle8.mvswitch.core.Locator
 import com.rickle8.mvswitch.core.DetectResult
 import com.rickle8.mvswitch.core.Detector
 import com.rickle8.mvswitch.core.GameFeed
@@ -23,7 +18,6 @@ import com.rickle8.mvswitch.core.Navigator
 import com.rickle8.mvswitch.core.Remote
 import com.rickle8.mvswitch.core.ScheduledGame
 import com.rickle8.mvswitch.core.excitement
-import com.rickle8.mvswitch.core.gameTerms
 import com.rickle8.mvswitch.core.listGames
 import com.rickle8.mvswitch.core.scoreboardUrl
 import com.rickle8.mvswitch.core.simulate
@@ -101,18 +95,12 @@ data class EngineState(
     val usingLearned: Boolean = false,
     val labeling: String? = null,
     val adsRemembered: Int = 0,
-    val voiceLearned: Boolean = false,
     val why: String? = null,
     /** YouTube TV was just opened: waiting for you to put multiview up. */
     val waitingForMultiview: Boolean = false,
     /** Paused on its own because YouTube TV isn't on screen. */
     val autoPaused: Boolean = false,
-    val cuesOn: Boolean = false,
     val remoteMsg: String? = null,
-    /** "Hearing box 3 (“dodgers”, “ohtani”)": the game recognized by its names. */
-    val hearing: String? = null,
-    /** The announcers' latest words, as the speech recognizer heard them. */
-    val heardText: String? = null,
     val feedError: String? = null,
     /** Holding off on switching for a bit because you're using the remote. */
     val held: Boolean = false,
@@ -131,8 +119,6 @@ data class EngineState(
     /** How far behind live the TV stream runs, once learned (seconds). */
     val streamDelay: Int? = null,
     val breaksTimed: Int = 0,
-    /** Network break / coming-back music clips it recognizes. */
-    val breakMusic: Int = 0,
 )
 
 object Engine {
@@ -179,8 +165,6 @@ object Engine {
     private lateinit var detector: Detector
     @Volatile private var lastResult: DetectResult? = null
 
-    @Volatile private var spotter: SpeechSource? = null
-    @Volatile private var speechDir: java.io.File? = null
     @Volatile private var waitingForMultiview = false
     @Volatile private var autoPaused = false
     @Volatile private var autoPausedAt = 0.0
@@ -240,7 +224,6 @@ object Engine {
         detector = Detector(app.filesDir)
         // Learned sounds load in the background (a few MB); anything that needs them waits on the lock.
         scope.launch(Dispatchers.IO) { synchronized(detector) { runCatching { detector.load() } }; publish() }
-        scope.launch(Dispatchers.IO) { speechDir = runCatching { SpeechModel.install(app) }.getOrNull() }
         scope.launch(Dispatchers.IO) { previewLoop() }
     }
 
@@ -276,8 +259,7 @@ object Engine {
         fun games(x: Settings) = x.slots.mapValues { listOf(it.value.league, it.value.team, it.value.eventId, it.value.kind) }
         val structural = new.tvType != old.tvType || new.tvHost.trim() != old.tvHost.trim() ||
             new.layout != old.layout || games(new) != games(old) || new.useMic != old.useMic ||
-            new.homing != old.homing || new.homePresses != old.homePresses ||
-            new.useCues != old.useCues || new.cuePhrases != old.cuePhrases
+            new.homing != old.homing || new.homePresses != old.homePresses
         if (structural) {
             log("Settings changed, restarting")
             SwitcherService.restart(app, micChanged = new.useMic != old.useMic)
@@ -471,16 +453,12 @@ object Engine {
             usingLearned = detector.model.ready,
             labeling = detector.labelingNow(n),
             adsRemembered = detector.prints.size,
-            voiceLearned = detector.voices.ready,
-            hearing = hearing?.takeIf { running && micLive && n - it.second < 120 }?.first,
-            heardText = if (running && micLive) spotter?.lastText else null,
             why = if (running && micLive) {
                 nav?.current?.let { ctrl?.waitingFor(it) }?.let { "ESPN says a break is coming. Waiting for the commercial to start" }
                     ?: r?.why
             } else null,
             waitingForMultiview = running && waitingForMultiview,
             autoPaused = running && autoPaused,
-            cuesOn = running && spotter != null,
             remoteMsg = remoteMsg,
             feedError = f?.lastError,
             held = running && n < holdUntil,
@@ -492,7 +470,6 @@ object Engine {
             tvVolume = tvVolume,
             streamDelay = detector.timing.delay.seconds?.toInt(),
             breaksTimed = detector.timing.breaks.count(),
-            breakMusic = detector.bumpers.trustedCount + detector.comebacks.trustedCount,
         )
     }
 
@@ -512,20 +489,6 @@ object Engine {
 
     @Volatile private var startedAt = -1e9
 
-    private fun builtInSpeech(s: Settings): SpeechSource? {
-        val dir = speechDir ?: runCatching { SpeechModel.install(app) }.getOrNull()
-        return when {
-            dir == null -> { log("Speech model not available; skipping announcer phrases."); null }
-            else -> runCatching { KeywordSpotter(dir, s.cuePhrases) }
-                .onFailure { log("Couldn't start speech recognition (${it.message}).") }.getOrNull()
-        }
-    }
-    /** Tells which game is being heard from the names the announcers say. */
-    private val locator = Locator()
-    @Volatile private var lastGameTalk: Pair<Double, String>? = null
-    private var adVetoLogged = -1e9
-    /** Last game recognized by its names, and when. */
-    @Volatile private var hearing: Pair<String, Double>? = null
 
     fun start() {
         val old = job
@@ -554,7 +517,6 @@ object Engine {
                 runLoop()
             } finally {
                 synchronized(detector) { detector.save() }
-                spotter?.close(); spotter = null
                 synchronized(lock) {
                     mic?.close(); mic = null
                     nav = null; ctrl = null; feed = null
@@ -664,12 +626,6 @@ object Engine {
         } else {
             log("Microphone off. Using live game data only.")
         }
-        if (mic != null && s.useCues) {
-            // The phone's own recognizer hears announcers far better; the small built-in one is the backup.
-            spotter = (if (Build.VERSION.SDK_INT >= 33) PhoneSpeech.create(app, s.cuePhrases, ::log) else null)
-                ?: builtInSpeech(s)
-        }
-
         publish(starting = true)
         wakeTv(s)
         try {
@@ -720,7 +676,7 @@ object Engine {
         if (!opened) {
             try {
                 synchronized(lock) { nav?.resync() }
-                log("Running. Audio on box ${nav?.current}." + if (spotter != null) " Listening to the announcers." else "")
+                log("Running. Audio on box ${nav?.current}.")
             } catch (e: Exception) {
                 error = e.message
                 log(e.message ?: "TV error")
@@ -763,23 +719,6 @@ object Engine {
                         }
                     } else micFails = 0
                 }
-                // Keep the speech recognizer listening for these games' players and terms.
-                if (now() - vocabAt > 60) {
-                    vocabAt = now()
-                    spotter?.let { sp ->
-                        // Team and player names first: they're how the app tells which game it's hearing.
-                        val words = (feed?.namesForListening(420).orEmpty()) +
-                            s.slots.values.map { it.league }.distinct().flatMap { gameTerms(it) }
-                        runCatching { sp.setGameWords(words) }
-                    }
-                }
-                if (spotter?.failed == true) {
-                    spotter?.close()
-                    spotter = builtInSpeech(s)
-                    vocabAt = -1e9
-                }
-                val said = sec?.let { x -> spotter?.let { sp -> runCatching { sp.accept(x.boosted) }.getOrNull() } }
-                val cue = said?.cue
                 val n = now()
                 val cur = nav?.current
                 val c = ctrl ?: break
@@ -788,35 +727,9 @@ object Engine {
                 val result = if (sec != null) synchronized(detector) {
                     cur?.let { box -> feed?.let { detector.observePlays(box, it.plays(box), n) } }
                     detector.process(sec, n, cur, c.bias(cur, n),
-                        learning = !paused && !autoPaused && !waitingForMultiview && !held && lockedBox == null,
-                        cue = cue, gameWords = said?.gameWords.orEmpty(), adWords = said?.adWords.orEmpty())
+                        learning = !paused && !autoPaused && !waitingForMultiview && !held && lockedBox == null)
                 } else null
                 if (result != null) lastResult = result
-                // Which game is this, really? What the announcers say settles it: names, the score,
-                // down and distance, the inning, words only one sport uses.
-                val heardWords = said?.gameWords.orEmpty()
-                val facts = feed?.facts().orEmpty()
-                if (facts.isNotEmpty()) {
-                    val text = listOfNotNull(said?.text, heardWords.takeIf { said?.text == null }?.joinToString(" "))
-                        .joinToString(" ").trim()
-                    // Right after a switch the mic still has the old game's last words: skip those.
-                    if (text.isNotEmpty() && n - c.lastSwitch > 3) locator.hear(text, n, facts)
-                }
-                locator.where(n)?.let { (box, why) ->
-                    val navNow = nav
-                    hearing = "Hearing box $box (${why.joinToString { "\u201c$it\u201d" }})" to n
-                    if (navNow != null && navNow.current != box && !paused && !autoPaused && !waitingForMultiview &&
-                        !held && lockedBox == null && n - c.lastSwitch > 10) {
-                        synchronized(lock) {
-                            log("Heard ${why.joinToString { "\u201c$it\u201d" }}: the audio is on box $box, not box ${navNow.current}. Fixed.")
-                            navNow.current = box
-                            c.lastSwitch = n
-                        }
-                        synchronized(detector) { detector.onSwitch() }
-                        locator.reset(box, n)
-                    }
-                }
-                if (heardWords.isNotEmpty()) lastGameTalk = n to heardWords.first()
                 if (paused || autoPaused || waitingForMultiview || held) {
                     publish()
                     continue
@@ -827,19 +740,10 @@ object Engine {
                         .onFailure { log(it.message ?: "TV error") }
                     synchronized(detector) { detector.onSwitch() }
                 }
-                var heard = when {
+                val heard = when {
                     m == null -> Heard.GAME
                     result != null -> result.heard
                     else -> lastResult?.heard ?: Heard.UNSURE
-                }
-                // Announcers just said a player, team or "third down": that's the game, not a commercial.
-                if (heard == Heard.AD && result?.strongAd != true) {
-                    val name = cur?.let { locator.heardRecently(it, n, 15.0) }
-                    val talk = lastGameTalk?.takeIf { n - it.first <= 12 }?.second
-                    (name ?: talk)?.let { w ->
-                        if (n - adVetoLogged > 45) { adVetoLogged = n; log("Sounded like an ad, but the announcers just said \u201c$w\u201d. Staying.") }
-                        heard = Heard.UNSURE
-                    }
                 }
                 synchronized(lock) {
                     if (lockedBox == null) {
@@ -847,8 +751,6 @@ object Engine {
                             if (c.step(heard, strongAd = result?.strongAd == true,
                                     strongWhy = if (result?.strongAd == true) result.why else null)) {
                                 m?.drain()
-                                locator.reset(nav?.current, now())
-                                lastGameTalk = null
                                 synchronized(detector) { detector.onSwitch() }
                                 lastResult = null
                             }
@@ -970,7 +872,6 @@ object Engine {
         paused = false
         holdUntil = 0.0
         needResync = true
-        locator.reset(1, now())
         log("Running. Audio on box 1.")
     }
 
@@ -1018,7 +919,6 @@ object Engine {
                 r.press(key)
                 // In multiview the arrows move the audio: keep track of where it went.
                 n.current = simulate(n.neighbors, n.current ?: 1, listOf(key))
-                locator.reset(n.current, now())
                 ctrl?.lastSwitch = now()
                 synchronized(detector) { detector.onSwitch() }
             }
@@ -1348,6 +1248,18 @@ object Engine {
         }
     }
 
+    /** You told it the audio is already on this box (no keys pressed): it carries on from there. */
+    fun audioIsOn(box: Int) {
+        if (job?.isActive != true) return
+        synchronized(lock) {
+            nav?.current = box
+            ctrl?.lastSwitch = now()
+        }
+        synchronized(detector) { detector.onSwitch() }
+        log("Got it: the audio is on box $box.")
+        publish()
+    }
+
     fun unlock() {
         lockedBox = null
         log("Unlocked. Auto switching again.")
@@ -1399,7 +1311,7 @@ object Engine {
         sb.appendLine("YouTube TV app: ${s.youTubeTvAppId.ifBlank { "(not found yet)" }}")
         sb.appendLine("On the TV: ${st.nowOnTv ?: "?"}${st.tvVolume?.let { ", $it" } ?: ""}")
         sb.appendLine("Switching: ${if (st.running) "running" else "stopped"}, layout ${s.layout}, mic ${s.useMic}, " +
-            "cues ${s.useCues}, paused ${st.paused}, auto-paused ${st.autoPaused}, held ${st.held}")
+            "paused ${st.paused}, auto-paused ${st.autoPaused}, held ${st.held}")
         sb.appendLine("Games: " + s.slots.entries.sortedBy { it.key }.joinToString { "${it.key}=" + if (it.value.isOther) "other:${it.value.name}" else "${it.value.league}/${it.value.team}#${it.value.eventId}" })
         java.io.File(app.filesDir, "last_error.txt").takeIf { it.exists() }?.let { f ->
             sb.appendLine()

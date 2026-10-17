@@ -154,8 +154,18 @@ fun LiveScreen(
             containerColor = C.surface2,
             title = { Text("Box ${box.box}: ${box.slot?.name?.ifBlank { null } ?: "No game set"}") },
             text = {
-                Text("Play audio from this game now, or lock it here so nothing switches until you unlock.",
-                    color = C.muted)
+                Column {
+                    Text("Play audio from this game now, or lock it here so nothing switches until you unlock.",
+                        color = C.muted)
+                    if (state.running && state.currentBox != box.box) {
+                        Spacer(Modifier.height(10.dp))
+                        Text("Is the sound already coming from this box? Tell the app so it knows where it is.",
+                            color = C.muted, fontSize = 13.sp)
+                        TextButton(onClick = { Engine.audioIsOn(box.box); tapped = null }) {
+                            Text("Sound is already on this box", color = C.accent)
+                        }
+                    }
+                }
             },
             confirmButton = {
                 TextButton(onClick = { Engine.switchTo(box.box); tapped = null }) { Text("Play audio") }
@@ -296,12 +306,6 @@ private fun HearingRow(state: EngineState) {
                 Text(state.why, color = C.text, fontSize = 13.sp,
                     maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
-            state.heardText?.let {
-                Text("\u201c$it\u201d", color = C.muted, fontSize = 12.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
-            }
-            state.hearing?.let {
-                Text(it, color = C.accent, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            }
             if (state.micOn && state.topSounds.isNotEmpty()) {
                 Text(state.topSounds.joinToString(" · "), color = C.muted, fontSize = 12.sp,
                     maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -343,7 +347,7 @@ private fun LearnRow(state: EngineState) {
     }
     val learned = "Learned ${fmtSecs(state.learnedGameSecs)} of game, ${fmtSecs(state.learnedAdSecs)} of ads" +
         (if (state.adsRemembered > 0) ", remembers ${state.adsRemembered} ad${if (state.adsRemembered == 1) "" else "s"}" else "") +
-        (if (state.voiceLearned) ", knows the announcers." else ".")
+        "."
     val status = when {
         !state.running -> "$learned These work once you tap Start switching."
         state.starting && !state.micOn -> "Getting started…"
@@ -351,8 +355,8 @@ private fun LearnRow(state: EngineState) {
             "Check the mic permission and Settings > Listen with the microphone."
         state.labeling != null -> "Recording this as ${state.labeling}…"
         state.usingLearned -> "$learned Using what it learned."
-        else -> "$learned Tap \"It's an ad\" a few times during commercials (it also skips the ad). " +
-            "Game sound and the announcers' voices are learned automatically from live plays."
+        else -> "$learned Tap \"It's an ad\" during the first couple of commercials (it also skips the ad). " +
+            "That teaches it your TV and room. Game sound is learned on its own from live plays."
     }
     Text(status, color = C.muted, fontSize = 12.sp, modifier = Modifier.padding(top = 6.dp))
 }

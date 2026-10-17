@@ -212,48 +212,17 @@ fun SettingsScreen(state: EngineState, settings: Settings, update: UpdateState, 
                 Text("Learned sounds: ${state.learnedGameSecs}s game, ${state.learnedAdSecs}s ads" +
                     (if (state.usingLearned) " (in use)" else " (needs 25s of each)") +
                     "\nAds it can recognize on replay: ${state.adsRemembered}" +
-                    "\nAnnouncer voices: " + (if (state.voiceLearned) "learned" else "still listening") +
                     "\nYour stream runs " + (state.streamDelay?.let { "about $it s behind live" } ?: "(timing big plays to find out)") +
-                    "\nBreaks timed: ${state.breaksTimed} · Network break music known: ${state.breakMusic}",
+                    "\nBreaks timed: ${state.breaksTimed}",
                     color = C.muted, fontSize = 12.sp, lineHeight = 18.sp)
                 TextButton(onClick = { Engine.resetLearning() }) {
                     Text("Forget everything it learned", color = C.red)
                 }
             }
             HorizontalDivider(Modifier.padding(vertical = 14.dp), color = C.line)
-            ToggleRow("Listen to what the announcers say",
-                "Switches when they say things like \u201cwe'll be right back.\u201d Player names and game talk " +
-                    "(\u201cthird down\u201d) mean the game is on; ad talk (\u201cterms apply\u201d) means it isn't. " +
-                    "Runs offline on the phone.",
-                settings.useCues) { v -> Engine.update { it.copy(useCues = v) } }
-            if (settings.useCues) {
-                Spacer(Modifier.height(10.dp))
-                var text by remember(settings.cuePhrases) { mutableStateOf(settings.cuePhrases.joinToString("\n")) }
-                val parsed = text.split("\n", ",").map { it.trim() }.filter { it.isNotBlank() }
-                OutlinedTextField(
-                    value = text,
-                    onValueChange = { text = it },
-                    label = { Text("Phrases (one per line)") },
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(12.dp),
-                    minLines = 3,
-                    maxLines = 8,
-                )
-                Row {
-                    if (parsed != settings.cuePhrases && parsed.isNotEmpty()) {
-                        TextButton(onClick = { Engine.update { it.copy(cuePhrases = parsed) }; focus.clearFocus() }) {
-                            Text("Save phrases", color = C.accent)
-                        }
-                    }
-                    TextButton(onClick = {
-                        Engine.update { it.copy(cuePhrases = com.rickle8.mvswitch.audio.DEFAULT_CUE_PHRASES) }
-                    }) { Text("Reset to defaults", color = C.muted) }
-                }
-            }
-            HorizontalDivider(Modifier.padding(vertical = 14.dp), color = C.line)
-            ToggleRow("Switch early on scores and stoppages",
-                "Moves as soon as live data shows a touchdown, field goal, 2-minute warning, end of quarter, " +
-                    "injury or halftime, before the ad even starts.",
+            ToggleRow("Get ready when ESPN says a break is coming",
+                "After a touchdown, field goal, timeout, end of quarter or halftime on ESPN, it listens extra closely " +
+                    "and switches the moment your TV actually goes to commercial.",
                 settings.proactive) { v -> Engine.update { it.copy(proactive = v) } }
         }
 
