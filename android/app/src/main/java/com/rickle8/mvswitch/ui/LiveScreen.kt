@@ -120,6 +120,19 @@ fun LiveScreen(
         MultiviewGrid(settings.layout, state.boxes, state.currentBox, state.lockedBox) {
             if (state.running) tapped = it else onGoToGames()
         }
+        state.outlineAsk?.let { b ->
+            // The camera thinks the sound moved (you used the TV remote?). It only asks: you decide.
+            Row(
+                Modifier.fillMaxWidth().padding(top = 10.dp).clip(RoundedCornerShape(14.dp))
+                    .background(C.blue.copy(alpha = 0.14f)).padding(start = 14.dp, end = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text("Camera saw the sound move to box $b. Is it there?", color = C.blue, fontSize = 13.sp,
+                    modifier = Modifier.weight(1f))
+                TextButton(onClick = { Engine.answerOutline(true) }) { Text("Yes", color = C.blue, fontWeight = FontWeight.Bold) }
+                TextButton(onClick = { Engine.answerOutline(false) }) { Text("No", color = C.muted) }
+            }
+        }
         state.boxes.filter { it.noGame }.forEach {
             Text("Box ${it.box}: ${it.slot?.name?.ifBlank { null } ?: it.slot?.team} isn't on today. Tap it to pick today's game.",
                 color = C.amber, fontSize = 13.sp, modifier = Modifier.padding(top = 8.dp))
@@ -308,9 +321,9 @@ private fun HearingRow(state: EngineState) {
             }
             if (state.cameraLive) {
                 val ads = state.cameraGame.filterValues { it == false }.keys.sorted()
-                val learning = state.cameraGame.filterValues { it == null }.size
-                Text("Camera: " + (if (ads.isNotEmpty()) "commercial on ${ads.joinToString()}" else "no commercials") +
-                    (if (learning > 0) " · learning $learning score bug${if (learning == 1) "" else "s"}" else ""),
+                val games = state.cameraGame.filterValues { it == true }.keys.sorted()
+                Text("Camera: " + (if (games.isNotEmpty()) "game on ${games.joinToString()}" else "no score bugs read yet") +
+                    (if (ads.isNotEmpty()) " · commercial on ${ads.joinToString()}" else ""),
                     color = C.blue, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
             if (state.micOn && state.topSounds.isNotEmpty()) {

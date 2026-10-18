@@ -18,13 +18,16 @@ import java.util.concurrent.atomic.AtomicBoolean
  * the phone's built-in text recognition. Works offline, free. One box at a time, in
  * turn, so the phone keeps up.
  *
- * It must never take the app down. Anything that goes wrong turns it off for this run.
- * And since a crash inside the text recognition library itself can't be caught, a marker
- * file is left while it hasn't yet read a box successfully: if the app died with the
- * marker still there, text reading stays off from then on (the rest of camera mode keeps working).
+ * It must never take the app down. A missing library or running out of memory turns it
+ * off for this run; a read that fails now and then is just skipped (it stops after many
+ * in a row). And since a crash inside the text recognition library itself can't be
+ * caught, a marker file is left while it hasn't read a box yet: if the app died with the
+ * marker still there, text reading stays off for this version of the app (the rest of
+ * camera mode keeps working). A new version tries again.
  */
 class TileOcr(
     filesDir: File,
+    private val version: String,
     private val onText: (box: Int, text: String) -> Unit,
     private val onError: (String) -> Unit,
 ) {
@@ -37,16 +40,19 @@ class TileOcr(
     private var recognizer: TextRecognizer? = null
     private var proven = false
     private var next = 0
+    private var failsInARow = 0
 
     init {
         runCatching {
             if (trying.exists()) {
                 // Last time it started reading and the app died before it got a single box read.
-                trying.delete(); disabled.writeText("crashed")
+                trying.delete(); disabled.writeText(version)
             }
             if (disabled.exists()) {
-                dead = true
-                onError("text reading is off on this phone (it crashed the app before)")
+                if (disabled.readText().trim() == version) {
+                    dead = true
+                    onError("text reading is off on this phone (it crashed the app before)")
+                } else disabled.delete() // an older version's problem: try again
             }
         }
     }
@@ -68,6 +74,7 @@ class TileOcr(
     }
 
     private fun readOne(raw: GrayFrame, deg: Int, corners: List<Pair<Double, Double>>, layout: Int) {
+        var read: Pair<Int, String>? = null
         try {
             if (closed || dead) return
             if (corners.size < 4) return
@@ -89,15 +96,21 @@ class TileOcr(
             val rec = recognizer ?: TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS).also { recognizer = it }
             val result = Tasks.await(rec.process(image), 5, TimeUnit.SECONDS)
             if (!proven) { proven = true; runCatching { trying.delete() } }
-            onText(box, result.text)
+            failsInARow = 0
+            read = box to result.text
         } catch (t: Throwable) {
-            // Missing library, out of memory, anything: stop reading text, keep everything else going.
-            dead = true
-            runCatching { trying.delete() }
-            runCatching { onError("text reading stopped: ${t.message ?: t.javaClass.simpleName}") }
+            if (!proven) runCatching { trying.delete() }
+            failsInARow++
+            // Missing library or out of memory: stop. A read that failed now and then: skip it.
+            if (t is LinkageError || t is OutOfMemoryError || failsInARow >= 20) {
+                dead = true
+                runCatching { onError("text reading stopped: ${t.message ?: t.javaClass.simpleName}") }
+            }
         } finally {
             busy.set(false)
         }
+        // What the text means is decided elsewhere; a problem there isn't a reading problem.
+        read?.let { (box, text) -> runCatching { onText(box, text) } }
     }
 
     fun close() {

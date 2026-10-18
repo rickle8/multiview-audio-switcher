@@ -34,6 +34,12 @@ jobs:
           curl -fsSL -o app/src/main/assets/yamnet.tflite \
             https://storage.googleapis.com/mediapipe-models/audio_classifier/yamnet/float32/1/yamnet.tflite
 
+      - name: Every pattern compiles on Android
+        # Unit tests use desktop Java's regex engine; phones use ICU, which refuses some patterns
+        # Java accepts (a refused pattern crashes the app). This checks them all with ICU.
+        working-directory: .
+        run: python3 .github/scripts/check_regex_android.py android/app/src/main/java
+
       - name: Unit tests
         run: gradle --no-daemon testDebugUnitTest 2>&1 | tee ../build.log; exit ${PIPESTATUS[0]}
         shell: bash

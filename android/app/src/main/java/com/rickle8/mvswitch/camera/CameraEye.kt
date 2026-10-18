@@ -37,7 +37,9 @@ class CameraEye(
     private val grid: () -> Pair<List<Pair<Double, Double>>, Int>?,
     private val onText: (Int, String) -> Unit,
 ) {
-    private val ocr = TileOcr(context.filesDir, onText, onError)
+    private val ocr = TileOcr(context.filesDir,
+        runCatching { context.packageManager.getPackageInfo(context.packageName, 0).versionName }.getOrNull() ?: "?",
+        onText, onError)
     private var lastOcrAt = 0L
     private val executor = Executors.newSingleThreadExecutor()
     private var provider: ProcessCameraProvider? = null

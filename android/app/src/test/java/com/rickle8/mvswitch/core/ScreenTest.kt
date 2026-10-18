@@ -57,6 +57,34 @@ class ScreenTest {
         assertEquals(listOf(3, 2), onsets)
     }
 
+    @Test fun graphicsAndBrightScenesArentTheOutline() {
+        val sw = ScreenWatcher(4)
+        val rnd = Random(11)
+        val onsets = mutableListOf<Int>()
+        for (t in 0 until 20) sw.frame(grid(t, null, emptySet(), rnd)).outlineAppeared?.let { onsets += it }
+        // A white banner pops up along the bottom edge of box 2 (a lower-third, a score bar coming back).
+        for (t in 20 until 34) {
+            val img = grid(t, null, emptySet(), rnd)
+            val r = boxRects(4).getValue(2)
+            val x0 = (r[0] * w).toInt(); val x1 = (r[2] * w).toInt(); val y1 = (r[3] * h).toInt()
+            for (y in y1 - 12 until y1) for (x in x0 until x1) img[y * w + x] = 245f
+            sw.frame(img).outlineAppeared?.let { onsets += it }
+        }
+        // Box 4 cuts to a bright scene (snow, a white studio): the whole picture brightens.
+        for (t in 34 until 50) {
+            val img = grid(t, null, emptySet(), rnd)
+            val r = boxRects(4).getValue(4)
+            val x0 = (r[0] * w).toInt(); val x1 = (r[2] * w).toInt()
+            val y0 = (r[1] * h).toInt(); val y1 = (r[3] * h).toInt()
+            for (y in y0 until y1) for (x in x0 until x1) img[y * w + x] = minOf(255f, img[y * w + x] + 110f)
+            sw.frame(img).outlineAppeared?.let { onsets += it }
+        }
+        assertTrue("no outline: $onsets", onsets.isEmpty())
+        // The real outline still shows up.
+        for (t in 50 until 58) sw.frame(grid(t, 1, emptySet(), rnd)).outlineAppeared?.let { onsets += it }
+        assertEquals(listOf(1), onsets)
+    }
+
     @Test fun learnsEachScoreBugAndSpotsCommercials() {
         val sw = ScreenWatcher(4)
         val rnd = Random(2)

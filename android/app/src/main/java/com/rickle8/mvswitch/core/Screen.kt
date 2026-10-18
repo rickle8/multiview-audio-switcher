@@ -113,7 +113,8 @@ class ScreenWatcher(private val layout: Int, private val w: Int = 384, private v
     private val rects = boxRects(layout)
 
     // ------------------------------------------------------------ outline
-    private val ringHistory = HashMap<Int, ArrayDeque<Double>>()
+    /** Per box, per side (top, bottom, left, right): recent edge-line contrast. */
+    private val sideHistory = HashMap<Int, Array<ArrayDeque<Double>>>()
     private var candidate: Int? = null
     private var candidateRuns = 0
     private var lastOnsetFrame = -100
@@ -121,45 +122,67 @@ class ScreenWatcher(private val layout: Int, private val w: Int = 384, private v
     private var frameNo = 0
     private val outlineUntil = HashMap<Int, Int>()
 
-    /** Brightest thin ring around the box edge (a few insets tried, since the outline's exact spot varies), minus inside. */
-    private fun ringContrast(img: FloatArray, r: DoubleArray): Double {
+    private fun hBand(img: FloatArray, ya: Int, yb: Int, xa: Int, xb: Int): Double {
+        var s = 0.0; var c = 0
+        for (y in maxOf(0, ya) until minOf(h, yb)) { var x = maxOf(0, xa); while (x <= minOf(w - 1, xb)) { s += img[y * w + x]; c++; x += 2 } }
+        return if (c == 0) 0.0 else s / c
+    }
+
+    private fun vBand(img: FloatArray, xa: Int, xb: Int, ya: Int, yb: Int): Double {
+        var s = 0.0; var c = 0
+        for (x in maxOf(0, xa) until minOf(w, xb)) { var y = maxOf(0, ya); while (y <= minOf(h - 1, yb)) { s += img[y * w + x]; c++; y += 2 } }
+        return if (c == 0) 0.0 else s / c
+    }
+
+    /**
+     * Per side of the box (top, bottom, left, right): the brightest thin line along that edge (a few
+     * insets tried, since the outline's exact spot varies with how well the grid is lined up), minus
+     * the picture just inside it. An outline lights up all four at once; a graphic along one edge
+     * (a lower-third, the score bar) or a picture getting brighter doesn't.
+     */
+    private fun sideContrasts(img: FloatArray, r: DoubleArray): DoubleArray {
         val x0 = (r[0] * w).toInt(); val x1 = (r[2] * w).toInt() - 1
         val y0 = (r[1] * h).toInt(); val y1 = (r[3] * h).toInt() - 1
-        fun ring(d: Int, t: Int): Double {
-            var s = 0.0; var c = 0
-            for (k in d until d + t) {
-                if (x0 + k >= x1 - k || y0 + k >= y1 - k) break
-                var x = x0 + k
-                while (x <= x1 - k) { s += img[(y0 + k) * w + x] + img[(y1 - k) * w + x]; c += 2; x += 2 }
-                var y = y0 + k
-                while (y <= y1 - k) { s += img[y * w + x0 + k] + img[y * w + x1 - k]; c += 2; y += 2 }
-            }
-            return if (c == 0) 0.0 else s / c
+        val m = 12 // stay off the corners, where boxes meet
+        val inTop = hBand(img, y0 + 11, y0 + 16, x0 + m, x1 - m)
+        val inBottom = hBand(img, y1 - 15, y1 - 10, x0 + m, x1 - m)
+        val inLeft = vBand(img, x0 + 11, x0 + 16, y0 + m, y1 - m)
+        val inRight = vBand(img, x1 - 15, x1 - 10, y0 + m, y1 - m)
+        val out = DoubleArray(4) { -1e9 }
+        for (d in 0..6 step 2) {
+            out[0] = maxOf(out[0], hBand(img, y0 + d, y0 + d + 3, x0 + m, x1 - m) - inTop)
+            out[1] = maxOf(out[1], hBand(img, y1 - d - 2, y1 - d + 1, x0 + m, x1 - m) - inBottom)
+            out[2] = maxOf(out[2], vBand(img, x0 + d, x0 + d + 3, y0 + m, y1 - m) - inLeft)
+            out[3] = maxOf(out[3], vBand(img, x1 - d - 2, x1 - d + 1, y0 + m, y1 - m) - inRight)
         }
-        val inside = ring(12, 6)
-        return (0..6 step 2).maxOf { ring(it, 3) } - inside
+        return out
     }
 
     private fun detectOutline(img: FloatArray): Pair<Int?, Int?> {
+        // Per box: how much its weakest side brightened against how that side usually looks.
         val jumps = HashMap<Int, Double>()
         for ((box, r) in rects) {
-            val c = ringContrast(img, r)
-            val hist = ringHistory.getOrPut(box) { ArrayDeque() }
-            if (hist.size >= 12) {
-                // Baseline: how this box's edge usually looks (leaving out the last second, in case it's rising).
-                val base = hist.toList().dropLast(4).sorted().let { it[it.size / 2] }
-                jumps[box] = c - base
+            val c = sideContrasts(img, r)
+            val hist = sideHistory.getOrPut(box) { Array(4) { ArrayDeque() } }
+            if (hist[0].size >= 12) {
+                // Baseline: how each side usually looks (leaving out the last second, in case it's rising).
+                jumps[box] = (0 until 4).minOf { k ->
+                    val base = hist[k].toList().dropLast(4).sorted().let { it[it.size / 2] }
+                    c[k] - base
+                }
             }
-            hist.addLast(c)
-            while (hist.size > 50) hist.removeFirst()
+            for (k in 0 until 4) {
+                hist[k].addLast(c[k])
+                while (hist[k].size > 50) hist[k].removeFirst()
+            }
         }
         frameNo++
         if (jumps.size < rects.size) return null to null
         val ranked = jumps.entries.sortedByDescending { it.value }
         val top = ranked[0]
         val second = ranked.getOrNull(1)?.value ?: 0.0
-        // A clear jump on one box only (a scene change brightens a whole picture, not just its rim).
-        val clear = top.value > 22 && top.value > 2.2 * maxOf(second, 4.0)
+        // A clear jump on all four sides of one box only.
+        val clear = top.value > 16 && top.value > 2.5 * maxOf(second, 4.0)
         if (clear && candidate == top.key) candidateRuns++ else { candidate = if (clear) top.key else null; candidateRuns = if (clear) 1 else 0 }
         if (clear) outlineUntil[top.key] = frameNo + 3
         val now = outlineUntil.entries.firstOrNull { it.value >= frameNo }?.key
@@ -190,6 +213,9 @@ class ScreenWatcher(private val layout: Int, private val w: Int = 384, private v
     }
 
     private val bugs = HashMap<Int, Bug>()
+
+    /** Start over learning this box's score bug (what it learned turned out wrong). */
+    fun forgetBug(box: Int) { bugs.remove(box) }
     /** Frames (about 4 a second) the bug has to stay gone before it counts as a commercial. */
     var GONE_FRAMES = 100
     private val EDGE = 10f

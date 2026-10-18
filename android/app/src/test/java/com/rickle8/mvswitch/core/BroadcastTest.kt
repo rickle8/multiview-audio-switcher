@@ -409,14 +409,78 @@ class BroadcastTest {
         val nav = Navigator(quiet, LAYOUTS.getValue(4), home = false, sleep = {})
         val f = GameFeed(emptyMap(), { JSONObject() }, { now }, pollSecs = 1e9)
         val c = Controller(nav, listOf(1, 2, 3, 4), f, clock = { now }, log = { logs += it })
-        // The camera sees the game on box 1: a commercial-sounding moment isn't one.
+        // The camera reads box 1's score bug right now: a commercial-sounding moment isn't one.
         c.camera = now to mapOf(1 to true, 2 to false, 3 to false, 4 to true)
+        c.cameraReading = setOf(1)
         assertFalse(c.step(Heard.AD))
         assertTrue(logs.last().contains("camera sees the game"))
         // Now the camera sees box 1's score bar gone: go, and skip the boxes it sees in commercial.
         now = 120.0
         c.camera = now to mapOf(1 to false, 2 to false, 3 to false, 4 to true)
+        c.cameraReading = emptySet()
         assertTrue(c.step(Heard.UNSURE))
         assertEquals(4, nav.current)
+    }
+
+    @Test fun theScoreBugsLookAloneNeverHoldsYouOnACommercial() {
+        var now = 100.0
+        val nav = Navigator(quiet, LAYOUTS.getValue(4), home = false, sleep = {})
+        val f = GameFeed(emptyMap(), { JSONObject() }, { now }, pollSecs = 1e9)
+        val c = Controller(nav, listOf(1, 2, 3, 4), f, clock = { now })
+        // The look says "game" on box 1 but nothing's been read there: the commercial sound wins.
+        c.camera = now to mapOf(1 to true, 2 to true, 3 to false, 4 to false)
+        assertTrue(c.step(Heard.AD))
+        assertEquals(2, nav.current)
+    }
+
+    @Test fun cameraNeverTurnsGameAudioIntoACommercial() {
+        var now = 100.0
+        val nav = Navigator(quiet, LAYOUTS.getValue(4), home = false, sleep = {})
+        val f = GameFeed(emptyMap(), { JSONObject() }, { now }, pollSecs = 1e9)
+        val c = Controller(nav, listOf(1, 2, 3, 4), f, clock = { now })
+        // The camera thinks box 1 is in commercial, but it sounds like the game: stay.
+        c.camera = now to mapOf(1 to false, 2 to true, 3 to true, 4 to true)
+        assertFalse(c.step(Heard.GAME))
+        now = 110.0; c.camera = now to mapOf(1 to false, 2 to true, 3 to true, 4 to true)
+        assertFalse(c.step(Heard.GAME))
+        assertEquals(1, nav.current)
+    }
+
+    @Test fun cameraBacksUpAnAdSoundOverAStalePlay() {
+        var now = 100.0
+        val nav = Navigator(quiet, LAYOUTS.getValue(4), home = false, sleep = {})
+        val f = GameFeed(emptyMap(), { JSONObject() }, { now }, pollSecs = 1e9)
+        f.recordPlay(1, "J.Smith pass short right to K.Jones for 12 yards", now - 5, now - 5, seq = 1)
+        val c = Controller(nav, listOf(1, 2, 3, 4), f, clock = { now })
+        // ESPN just had a play on box 1, so an ad-sounding moment alone stays...
+        assertFalse(c.step(Heard.AD))
+        // ...but with the camera seeing no score bug there, it's a commercial.
+        now = 108.0
+        c.camera = now to mapOf(1 to false, 2 to false, 3 to true, 4 to null)
+        assertTrue(c.step(Heard.AD))
+        assertEquals(3, nav.current)
+    }
+
+    @Test fun youSayingItsTheGameBeatsTheCamera() {
+        var now = 100.0
+        val logs = mutableListOf<String>()
+        val nav = Navigator(quiet, LAYOUTS.getValue(4), home = false, sleep = {})
+        val f = GameFeed(emptyMap(), { JSONObject() }, { now }, pollSecs = 1e9)
+        val c = Controller(nav, listOf(1, 2, 3, 4), f, clock = { now }, log = { logs += it })
+        nav.current = 2
+        c.camera = now to mapOf(1 to true, 2 to false, 3 to false, 4 to false)
+        assertEquals(Controller.Outlook.BREAK, c.outlook(2, now).first)
+        // You're watching box 2 and say it's the game: the camera's "commercial" doesn't count there.
+        c.userSaysGame(2)
+        assertEquals(Controller.Outlook.LIVE, c.outlook(2, now).first)
+        assertFalse(c.looksOnBreak(2, now, emptyMap()))
+        now = 110.0; c.camera = now to mapOf(1 to true, 2 to false, 3 to false, 4 to false)
+        assertFalse(c.step(Heard.UNSURE))
+        assertEquals(2, nav.current)
+        // A real commercial heard there still moves it, and then box 2 counts as in commercial again.
+        now = 130.0; c.camera = now to mapOf(1 to true, 2 to false, 3 to false, 4 to false)
+        assertTrue(c.step(Heard.AD))
+        assertEquals(1, nav.current)
+        assertEquals(Controller.Outlook.BREAK, c.outlook(2, now).first)
     }
 }

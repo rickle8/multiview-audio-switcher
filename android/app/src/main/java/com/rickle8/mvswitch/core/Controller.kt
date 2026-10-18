@@ -132,6 +132,7 @@ class Controller(
 
     /** For the screen: same answer as [inBreak] without changing anything. */
     fun looksOnBreak(box: Int, now: Double, status: Map<Int, GameStatus>): Boolean {
+        if (userSaidGame(box, now)) return false
         if (status[box] == GameStatus.BREAK) return true
         if (box != nav.current && feed != null && outlook(box, now, status).first == Outlook.BREAK) return true
         val until = breakUntil[box] ?: return false
@@ -167,6 +168,31 @@ class Controller(
 
     /** What the camera sees: per box, showing the game (true) or a commercial (false), and when. */
     @Volatile var camera: Pair<Double, Map<Int, Boolean?>>? = null
+    /**
+     * Boxes whose score bug the camera read off the screen just now (the clock, the quarter): sure
+     * enough to keep an ad-sounding moment on the box you're hearing from switching. The bug's look
+     * alone isn't: if it latched onto something that stays up in commercials, it would hold you there.
+     */
+    @Volatile var cameraReading: Set<Int> = emptySet()
+
+    /**
+     * You said "It's the game" on a box: you're looking at the TV, so nothing the app guesses
+     * (the camera, ESPN's timing) calls that game a commercial until it hears one there, or a
+     * few minutes pass.
+     */
+    private val userLive: MutableMap<Int, Double> = java.util.concurrent.ConcurrentHashMap()
+    var userLiveSecs = 240.0
+
+    fun userSaysGame(box: Int) {
+        val now = clock()
+        userLive[box] = now
+        breakUntil.remove(box)
+        breakStarted.remove(box)
+        awayForBreak.remove(box)
+    }
+
+    /** You said this game is on, recently. */
+    fun userSaidGame(box: Int, now: Double): Boolean = userLive[box]?.let { now - it < userLiveSecs } == true
 
     /** The camera's word on a box, if it's watching and sure. */
     fun cameraSays(box: Int, now: Double): Boolean? = camera?.takeIf { now - it.first < 4 }?.second?.get(box)
@@ -179,7 +205,9 @@ class Controller(
      */
     fun outlook(box: Int, now: Double, status: Map<Int, GameStatus> = feedStatus(), ignoreCamera: Boolean = false): Pair<Outlook, String> {
         if (status[box] == GameStatus.BREAK) return Outlook.BREAK to (info(box)?.detail?.ifBlank { null } ?: "break")
-        // The camera sees the box itself: nothing beats that.
+        // You're watching it and said it's on.
+        if (userSaidGame(box, now)) return Outlook.LIVE to "you said it's the game"
+        // The camera sees the box itself (when it's sure).
         if (!ignoreCamera) when (cameraSays(box, now)) {
             true -> return Outlook.LIVE to "camera sees the game"
             false -> return Outlook.BREAK to "camera sees a commercial"
@@ -336,6 +364,7 @@ class Controller(
 
     private fun goToBreak(cur: Int, now: Double, status: Map<Int, GameStatus>, why: String): Boolean {
         armed.remove(cur)
+        userLive.remove(cur)
         awayForBreak += cur
         if ((breakUntil[cur] ?: 0.0) <= now) {
             breakStarted[cur] = now
@@ -415,11 +444,17 @@ class Controller(
         val now = clock()
         val cur = nav.current ?: return false
         var heard = heard0; var strongAd = strongAd0; var strongWhy = strongWhy0
-        // The camera on the box you're hearing: the score bar gone means commercial (unless the
-        // sound clearly says game); the score bar up means it's the game, whatever the sound thinks.
-        when (cameraSays(cur, now)) {
-            false -> if (heard != Heard.GAME) { heard = Heard.AD; strongAd = true; strongWhy = "Camera sees a commercial" }
-            true -> if (heard == Heard.AD && !strongAd) {
+        // The camera on the box you're hearing backs up the sound, it never overrules it: the score bug
+        // gone makes an ad-sounding moment a sure commercial (and an unsure one a likely one), but
+        // never turns game audio into a commercial. The score bug up keeps an ad-sounding moment from
+        // switching. Your "It's the game" outranks the camera.
+        when (cameraSays(cur, now)?.takeIf { !(it == false && userSaidGame(cur, now)) }) {
+            false -> when (heard) {
+                Heard.AD -> if (!strongAd) { strongAd = true; strongWhy = "Sounds like a commercial and the camera sees no score bug" }
+                Heard.UNSURE -> heard = Heard.AD
+                Heard.GAME -> Unit
+            }
+            true -> if (heard == Heard.AD && !strongAd && cur in cameraReading) {
                 if (now - cameraLogged > 60) { cameraLogged = now; log("Sounded like an ad, but the camera sees the game on box $cur. Staying.") }
                 heard = Heard.UNSURE
             }

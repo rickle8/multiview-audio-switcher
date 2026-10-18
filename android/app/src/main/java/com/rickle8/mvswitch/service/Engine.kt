@@ -116,6 +116,8 @@ data class EngineState(
     val cameraText: Map<Int, String> = emptyMap(),
     /** Per box: how much of the learned score bar is on screen, 0..100. */
     val cameraBars: Map<Int, Int?> = emptyMap(),
+    /** The camera saw the outline flash on this box (not where the app thinks the sound is): ask. */
+    val outlineAsk: Int? = null,
     /** Auto-finding the TV: progress or result. */
     val cameraFind: String? = null,
     /** Samsung: whether the TV connection is up right now (null for other TVs). */
@@ -150,10 +152,14 @@ object Engine {
         if (!this::app.isInitialized) return
         runCatching {
             java.io.File(app.filesDir, "last_error.txt").writeText(
-                "${java.text.SimpleDateFormat("MMM d h:mm:ss a", java.util.Locale.US).format(java.util.Date())} in $where\n" +
-                    e.stackTraceToString().take(6000))
+                "${java.text.SimpleDateFormat("MMM d h:mm:ss a", java.util.Locale.US).format(java.util.Date())} in $where " +
+                    "(version ${appVersion()})\n" + e.stackTraceToString().take(6000))
         }
     }
+
+    private fun appVersion(): String = runCatching {
+        app.packageManager.getPackageInfo(app.packageName, 0).versionName
+    }.getOrNull() ?: "?"
     private val http = OkHttpClient.Builder().connectTimeout(8, TimeUnit.SECONDS)
         .readTimeout(8, TimeUnit.SECONDS).build()
 
@@ -232,6 +238,11 @@ object Engine {
         Thread.setDefaultUncaughtExceptionHandler { t, e ->
             saveCrash(e, "app (thread ${t.name})")
             previous?.uncaughtException(t, e)
+        }
+        // An error saved by an older version was reported already: start clean after an update.
+        runCatching {
+            val f = java.io.File(app.filesDir, "last_error.txt")
+            if (f.exists() && !f.readText().contains("(version ${appVersion()})")) f.delete()
         }
         store = SettingsStore(app)
         _settings.value = store.load()
@@ -435,9 +446,13 @@ object Engine {
         }
     }
 
+    private val CONNECTING_MSGS = setOf(SamsungRemote.NO_ANSWER_FIRST, SamsungRemote.NO_ANSWER, SamsungRemote.PROMPT_TIMED_OUT)
+
     private fun publish(starting: Boolean = false) = synchronized(publishLock) {
         val s = _settings.value
         val running = job?.isActive == true
+        val linked = (tv as? SamsungRemote)?.linked
+        if (linked == true && remoteMsg in CONNECTING_MSGS) remoteMsg = null
         val f = if (running) feed else previewFeed
         val n = now()
         val boxes = (1..boxCount(s)).map { box ->
@@ -485,8 +500,9 @@ object Engine {
             cameraGame = cameraMerged.takeIf { n - cameraAt < 5 }.orEmpty(),
             cameraText = tileRead.mapValues { (_, r) -> r.first.summary.ifBlank { "(no text)" } }.takeIf { n - cameraAt < 5 }.orEmpty(),
             cameraBars = cameraView?.scoreBar?.takeIf { n - cameraAt < 5 }.orEmpty(),
+            outlineAsk = outlineAsk?.takeIf { running && n - it.second < 25 && it.first != nav?.current }?.first,
             cameraFind = findStatus,
-            tvLinked = (tv as? SamsungRemote)?.linked,
+            tvLinked = linked,
             tvWaiting = tvWaiting,
             tvKeyboard = tvKeyboard,
             askInput = askInput,
@@ -772,13 +788,10 @@ object Engine {
                 synchronized(lock) {
                     if (lockedBox == null) {
                         try {
-                            val before = nav?.current
-                            val started = now()
                             if (c.step(heard, strongAd = result?.strongAd == true,
                                     strongWhy = if (result?.strongAd == true) result.why else null)) {
                                 m?.drain()
-                                appMoveStart = started; appMovedAt = now(); moveRetried = false
-                                verifyTarget = nav?.current?.takeIf { it != before }
+                                appMovedAt = now(); outlineAsk = null
                                 synchronized(detector) { detector.onSwitch() }
                                 lastResult = null
                             }
@@ -860,13 +873,15 @@ object Engine {
     // ---------------------------------------------------------------- learning
     /** "It's the game" / "It's an ad": label the last 8 s and the next 12 s. */
     fun label(isAd: Boolean) {
-        synchronized(detector) { detector.label(isAd, now(), nav?.current) }
+        val cur = nav?.current
+        synchronized(detector) { detector.label(isAd, now(), cur) }
         if (isAd) {
             log("Got it, commercial. Learning this sound.")
             scope.launch(Dispatchers.IO) {
                 synchronized(lock) {
                     try {
                         if (lockedBox == null && ctrl?.commercialNow() == true) {
+                            appMovedAt = now(); outlineAsk = null
                             mic?.drain()
                             synchronized(detector) { detector.onSwitch() }
                         }
@@ -876,9 +891,27 @@ object Engine {
                 }
             }
         } else {
+            // You're looking at it: this game is on, whatever the camera or ESPN's timing guessed.
+            if (cur != null) {
+                ctrl?.userSaysGame(cur)
+                gameSaidAt[cur] = now()
+            }
             log("Got it, game audio. Learning this sound.")
         }
         publish()
+    }
+
+    /** Your answer to "Camera saw the sound move to box N. Is it there?" */
+    fun answerOutline(yes: Boolean) {
+        val ask = outlineAsk ?: return
+        outlineAsk = null
+        if (yes) {
+            log("Camera was right: the sound moved to box ${ask.first}.")
+            audioIsOn(ask.first)
+        } else {
+            log("Camera was wrong: the sound didn't move to box ${ask.first}.")
+            publish()
+        }
     }
 
     // ---------------------------------------------------------------- camera
@@ -901,18 +934,22 @@ object Engine {
     @Volatile private var cameraMerged: Map<Int, Boolean?> = emptyMap()
     @Volatile private var cameraAt = -1e9
     @Volatile private var cameraRotation = -1
+    /** When the phone last turned (a re-find waits for it to stay put). */
+    private var rotationAt = -1e9
+    /** When the last look for the TV ended (it doesn't keep re-looking back to back). */
+    @Volatile private var findEndedAt = -1e9
     private var watcher: com.rickle8.mvswitch.core.ScreenWatcher? = null
     private var watcherKey: String? = null
-    private var camMismatchSince = -1e9
-    /** When the app last moved the sound itself, so the camera can tell a lost key press from your own move. */
+    /** When the app last moved the sound itself (its own outline flash isn't news). */
     @Volatile private var appMovedAt = -1e9
-    @Volatile private var moveRetried = false
-    @Volatile private var fixingMove = false
     /** The last box YouTube TV flashed its outline on, and when. */
     @Volatile private var lastOutline: Pair<Int, Double>? = null
-    /** When the app started its last move, and the box it should check the sound landed on. */
-    @Volatile private var appMoveStart = -1e9
-    @Volatile private var verifyTarget: Int? = null
+    /**
+     * The camera saw the outline flash on a box other than where the app thinks the sound is, and
+     * the app didn't move it: the box and when. Only asked about on the Live screen, never acted on:
+     * a misread here used to send the app's idea of the sound box somewhere else.
+     */
+    @Volatile private var outlineAsk: Pair<Int, Double>? = null
     private val finder = com.rickle8.mvswitch.core.GridFinder()
     @Volatile private var finding = false
     @Volatile private var findSkip = 0
@@ -957,16 +994,93 @@ object Engine {
         }
     }
 
-    /** Game (true) / commercial (false) / not sure, from the score bug's text and its look together. */
-    private fun cameraVerdict(box: Int, bug: Boolean?, n: Double): Boolean? {
-        val textAt = tileGameAt[box]
-        if (textAt != null && n - textAt < 25) return true          // read a score bug lately: the game
-        if (bug == true) return true                                 // the bug's shape is there
-        if (bug == false) return false                               // the bug's been gone ~25 s
+    /**
+     * The score bug's look (its shape, learned per box) only decides anything on a box once it
+     * has matched what's read off the screen both ways: up while the score text reads, and gone
+     * in a commercial. Until then it's only shown on the setup screen. When something surer
+     * contradicts it, what it learned for that box is thrown out and learned again. (A look that
+     * latched onto something that never goes away, like the edge of the box, would otherwise call
+     * every commercial "the game".)
+     */
+    private val bugUp = java.util.concurrent.ConcurrentHashMap<Int, Int>()
+    private val bugGone = java.util.concurrent.ConcurrentHashMap<Int, Int>()
+    private val bugCheckedAt = java.util.concurrent.ConcurrentHashMap<Int, Double>()
+    private val bugDoubtLogged = java.util.concurrent.ConcurrentHashMap<Int, Double>()
+    /** Boxes whose learned score bug turned out wrong: forgotten on the camera's next frame. */
+    private val bugForget = java.util.concurrent.ConcurrentLinkedQueue<Int>()
+    /** You said "It's the game" on this box: if the camera still says commercial a bit later, it's wrong. */
+    private val gameSaidAt = java.util.concurrent.ConcurrentHashMap<Int, Double>()
+
+    private fun bugTrusted(box: Int) = (bugUp[box] ?: 0) >= 2 && (bugGone[box] ?: 0) >= 1
+
+    private fun forgetBugChecks() { bugUp.clear(); bugGone.clear(); bugCheckedAt.clear() }
+
+    private fun doubtBug(box: Int, why: String, n: Double) {
+        bugUp.remove(box); bugGone.remove(box); bugCheckedAt.remove(box)
+        bugForget.add(box)
+        if (n - (bugDoubtLogged[box] ?: -1e9) > 120) {
+            bugDoubtLogged[box] = n
+            log("Camera: box $box's score bug was learned wrong ($why). Learning it again.")
+        }
+    }
+
+    /**
+     * What the text on a box says: the game (its score bug read in the last 10 s), a commercial
+     * (it reads this box's score bug normally but nothing for 45 s, longer than replays and
+     * close-ups, while it still reads other boxes, so the camera can see), or not sure.
+     */
+    private fun textSays(box: Int, n: Double, boxes: Int): Boolean? {
+        val at = tileGameAt[box] ?: return null
+        if (n - at < 10) return true
         val read = tileRead[box]
-        // Text reading works on this box (it has read a bug before) but no bug for 40 s: commercial.
-        if (textAt != null && read != null && n - read.second < 10 && n - textAt > 40) return false
+        val seesTv = (1..boxes).any { it != box && tileGameAt[it]?.let { t -> n - t < 45 } == true }
+        if (n - at in 45.0..1200.0 && read != null && n - read.second < 10 && seesTv) return false
         return null
+    }
+
+    /** When each contradiction started (it has to last a few seconds: the look lags the text by a moment). */
+    private val doubtSince = java.util.concurrent.ConcurrentHashMap<String, Double>()
+
+    /** Checks each box's score bug look against what's read on screen (and the sound, and you), every frame. */
+    private fun checkBugs(v: com.rickle8.mvswitch.core.CameraView, cur: Int?, onSound: Boolean, n: Double, boxes: Int) {
+        val r = lastResult
+        for (b in 1..boxes) {
+            val bug = v.showingGame[b] ?: continue
+            val text = textSays(b, n, boxes)
+            val textNow = tileGameAt[b]?.let { n - it < 3 } == true
+            val here = onSound && b == cur
+            val knownAd = here && r != null && r.heard == Heard.AD && r.strongAd
+            val saidGame = here && gameSaidAt[b]?.let { n - it in 8.0..20.0 } == true
+            fun lasted(kind: String, cond: Boolean, secs: Double): Boolean {
+                val key = "$b:$kind"
+                if (!cond) { doubtSince.remove(key); return false }
+                val since = doubtSince.getOrPut(key) { n }
+                if (n - since < secs) return false
+                doubtSince.remove(key)
+                return true
+            }
+            when {
+                // It reads the score on screen, but the look says the bug's gone (it comes back within ~3 s).
+                lasted("text", !bug && textNow, 8.0) -> doubtBug(b, "it reads the game's score on screen", n)
+                lasted("commercial", bug && text == false, 4.0) -> doubtBug(b, "it's still there in a commercial", n)
+                lasted("ad", bug && knownAd && (v.scoreBar[b] ?: 0) >= 55, 4.0) ->
+                    doubtBug(b, "it's still there in a commercial it knows", n)
+                !bug && saidGame -> { gameSaidAt.remove(b); doubtBug(b, "you said it's the game", n) }
+                n - (bugCheckedAt[b] ?: -1e9) < 5 -> Unit
+                bug && textNow -> { bugCheckedAt[b] = n; bugUp.merge(b, 1, Int::plus) }
+                !bug && text == false -> { bugCheckedAt[b] = n; bugGone.merge(b, 1, Int::plus) }
+            }
+        }
+    }
+
+    /**
+     * Game (true) / commercial (false) / not sure, as the camera sees a box. The score bug's text
+     * read off the screen is the surest (the clock, the quarter, down and distance); its look counts
+     * once it's proven on that box. Not sure changes nothing.
+     */
+    private fun cameraVerdict(box: Int, bug: Boolean?, n: Double, boxes: Int): Boolean? {
+        textSays(box, n, boxes)?.let { return it }
+        return if (bugTrusted(box)) bug else null
     }
 
     /** Look for the TV in the camera picture (a few seconds, while the games play). */
@@ -986,11 +1100,9 @@ object Engine {
         val n = now()
         // Keep the screens current even when switching isn't running (setting up the camera).
         if (job?.isActive != true && n - cameraPublished > 0.9) { cameraPublished = n; publish() }
-        // Turned the phone, or never lined up: find the TV again on its own.
-        if (rotation != cameraRotation) {
-            cameraRotation = rotation
-            if (s.gridRotation != rotation && !finding) findTv()
-        }
+        // Turned the phone (and left it that way, not a wobble), or never lined up: find the TV again on its own.
+        if (rotation != cameraRotation) { cameraRotation = rotation; rotationAt = n }
+        if (s.gridRotation != rotation && !finding && n - rotationAt > 3 && n - findEndedAt > 30) findTv()
         if (finding) {
             if (findSkip > 0) { findSkip--; return }
             val corners = synchronized(finder) {
@@ -1000,6 +1112,7 @@ object Engine {
             when {
                 corners != null -> {
                     finding = false
+                    findEndedAt = n
                     val flat = corners.flatMap { listOf(it.first, it.second) }
                     update { it.copy(gridCorners = flat, gridRotation = rotation) }
                     findStatus = "Found the TV. Drag a dot if a corner's a little off."
@@ -1009,21 +1122,26 @@ object Engine {
                 }
                 finder.frames > 75 -> {
                     finding = false
+                    findEndedAt = n
                     findStatus = "Couldn't find the TV. Make sure the whole TV is in view and the games are playing, then try again."
                     publish()
                 }
             }
             return
         }
-        val key = "${s.layout}:${s.gridCorners}"
+        // A tiny nudge of a corner doesn't throw away what it learned.
+        val key = "${s.layout}:${s.gridCorners.map { kotlin.math.round(it * 100).toInt() }}"
         if (watcher == null || watcherKey != key) {
             watcher = com.rickle8.mvswitch.core.ScreenWatcher(s.layout); watcherKey = key
+            forgetBugChecks()
             meterOnGrid(s.gridCorners)
         }
+        while (true) { val b = bugForget.poll() ?: break; watcher?.forgetBug(b) }
         val corners = s.gridCorners.chunked(2).map { it[0] to it[1] }
         val img = runCatching { com.rickle8.mvswitch.core.warpGrid(frame, corners) }.getOrNull() ?: return
         val c = ctrl
         val cur = nav?.current
+        val running = job?.isActive == true && !paused && !autoPaused && !waitingForMultiview && lockedBox == null
         // Score bars are only learned from boxes known to be showing the game.
         val gameLikely = (1..boxCount(s)).filter { b ->
             (b == cur && lastResult?.heard == Heard.GAME) ||
@@ -1032,70 +1150,24 @@ object Engine {
         }.toSet()
         // ...and never from one known to be in commercial.
         val adLikely = (1..boxCount(s)).filter { b ->
-            (b == cur && lastResult?.heard == Heard.AD) ||
+            (b == cur && lastResult?.heard == Heard.AD) || textSays(b, n, boxCount(s)) == false ||
                 (c != null && c.outlook(b, n, ignoreCamera = true).first == com.rickle8.mvswitch.core.Controller.Outlook.BREAK)
         }.toSet() - gameLikely
         val v = watcher!!.frame(img, gameLikely, adLikely)
         cameraView = v
         cameraAt = n
-        cameraMerged = (1..boxCount(s)).associateWith { cameraVerdict(it, v.showingGame[it], n) }
+        checkBugs(v, cur, job?.isActive == true, n, boxCount(s))
+        cameraMerged = (1..boxCount(s)).associateWith { cameraVerdict(it, v.showingGame[it], n, boxCount(s)) }
+        // Sure enough to overrule an ad-sounding moment on the box you're hearing: its score read just now.
+        c?.cameraReading = (1..boxCount(s)).filter { b -> tileGameAt[b]?.let { n - it < 6 } == true }.toSet()
         c?.camera = n to cameraMerged
-        // Where did the sound just go? YouTube TV flashes an outline on the box it moved to.
-        if (v.outlineAppeared != null) lastOutline = v.outlineAppeared to n
-        val running = job?.isActive == true && !paused && !autoPaused && !waitingForMultiview && lockedBox == null
-        if (cur == null || c == null || !running || fixingMove) return
-        val last = lastOutline
-        val target = verifyTarget
-        if (target != null) {
-            // The app just moved the sound: once it's settled, check where the outline ended up
-            // (pressing two arrows flashes the box in between too; only the last flash counts).
-            if (n < appMovedAt + 1.5) return
-            val flash = last?.takeIf { it.second >= appMoveStart - 0.2 }
-            when {
-                flash == null -> if (n > appMovedAt + 4) verifyTarget = null // no flash seen: can't tell, carry on
-                flash.first == target -> verifyTarget = null // landed where it should
-                !moveRetried -> {
-                    // A key press got lost: try again from where the sound really is.
-                    moveRetried = true
-                    verifyTarget = null
-                    fixingMove = true
-                    val from = flash.first
-                    log("Camera: the move to box $target didn't land (sound is on box $from). Trying again.")
-                    scope.launch(Dispatchers.IO) {
-                        try {
-                            appMoveStart = now()
-                            synchronized(lock) {
-                                nav?.current = from
-                                nav?.goTo(target)
-                                ctrl?.lastSwitch = now()
-                            }
-                            appMovedAt = now()
-                            verifyTarget = target
-                        } catch (e: Exception) {
-                            log(e.message ?: "TV error")
-                        } finally { fixingMove = false }
-                    }
-                }
-                else -> {
-                    // Tried twice: believe the camera.
-                    verifyTarget = null
-                    synchronized(lock) { nav?.current = flash.first; c.lastSwitch = n }
-                    synchronized(detector) { detector.onSwitch() }
-                    log("Camera: the sound is on box ${flash.first}, not box $target. Fixed.")
-                }
-            }
-            return
-        }
-        // A flash nobody in the app caused: you moved the sound with the TV remote. Go with your pick.
-        if (last != null && n - last.second < 2 && last.first != cur && last.second > appMovedAt + 2) {
-            synchronized(lock) {
-                nav?.current = last.first
-                c.lastSwitch = n
-                c.returnTo = null
-            }
-            synchronized(detector) { detector.onSwitch() }
-            log("Camera: you moved the sound to box ${last.first}. Going with it.")
-            lastOutline = last.first to -1e9 // handled
+        // YouTube TV flashes an outline on the box the sound moves to. That's only shown and asked
+        // about, never acted on by itself: reading it wrong used to move the app off the right box.
+        val flash = v.outlineAppeared
+        if (flash != null) {
+            lastOutline = flash to n
+            if (running && cur != null && flash != cur && n - appMovedAt > 3) outlineAsk = flash to n
+            else if (flash == cur) outlineAsk = null
         }
     }
 
@@ -1188,7 +1260,7 @@ object Engine {
                 r.press(key)
                 // In multiview the arrows move the audio: keep track of where it went.
                 n.current = simulate(n.neighbors, n.current ?: 1, listOf(key))
-                appMoveStart = now() - 0.5; appMovedAt = now(); moveRetried = false; verifyTarget = n.current
+                appMovedAt = now(); outlineAsk = null
                 ctrl?.lastSwitch = now()
                 ctrl?.returnTo = null
                 synchronized(detector) { detector.onSwitch() }
@@ -1508,9 +1580,8 @@ object Engine {
                 synchronized(this@Engine.lock) {
                     lockedBox = if (lock) box else null
                     holdUntil = 0.0
-                    val started = now()
                     nav?.goTo(box)
-                    appMoveStart = started; appMovedAt = now(); moveRetried = false; verifyTarget = box
+                    appMovedAt = now(); outlineAsk = null
                     ctrl?.let { it.lastSwitch = now(); it.breakUntil.remove(box); it.returnTo = null }
                     synchronized(detector) { detector.onSwitch() }
                 }
@@ -1524,6 +1595,7 @@ object Engine {
     /** You told it the audio is already on this box (no keys pressed): it carries on from there. */
     fun audioIsOn(box: Int) {
         if (job?.isActive != true) return
+        outlineAsk = null
         synchronized(lock) {
             nav?.current = box
             ctrl?.lastSwitch = now()
@@ -1587,6 +1659,35 @@ object Engine {
         sb.appendLine("Switching: ${if (st.running) "running" else "stopped"}, layout ${s.layout}, mic ${s.useMic}, " +
             "paused ${st.paused}, auto-paused ${st.autoPaused}, held ${st.held}")
         sb.appendLine("Games: " + s.slots.entries.sortedBy { it.key }.joinToString { "${it.key}=" + if (it.value.isOther) "other:${it.value.name}" else "${it.value.league}/${it.value.team}#${it.value.eventId}" })
+        val n = now()
+        sb.appendLine("Sound box (app): ${st.currentBox ?: "-"}, homing ${s.homing}, locked ${st.lockedBox ?: "-"}")
+        sb.appendLine("Mic learned: ${detector.model.gameSeconds} s game, ${detector.model.adSeconds} s ads, " +
+            "${detector.prints.size} ads remembered, using learned ${detector.model.ready}")
+        val c = ctrl
+        if (c != null) {
+            for (b in 1..boxCount(s)) {
+                val (look, why) = runCatching { c.outlook(b, n) }.getOrDefault(Controller.Outlook.UNKNOWN to "?")
+                sb.appendLine("Box $b decides: $look${why.ifBlank { null }?.let { " ($it)" } ?: ""}" +
+                    (if (c.userSaidGame(b, n)) ", you said game" else "") +
+                    (c.breakUntil[b]?.takeIf { it > n }?.let { ", break for ${(it - n).toInt()} s more" } ?: ""))
+            }
+        }
+        if (s.useCamera) {
+            sb.appendLine("Camera: " + (if (n - cameraAt < 5) "watching" else "no frames lately") +
+                ", phone turned $cameraRotation (lined up at ${s.gridRotation}), corners " +
+                s.gridCorners.joinToString(",") { String.format(Locale.US, "%.2f", it) })
+            val v = cameraView
+            for (b in 1..boxCount(s)) {
+                val text = tileRead[b]
+                sb.appendLine("  Box $b: says " + when (cameraMerged[b]) { true -> "game"; false -> "commercial"; null -> "not sure" } +
+                    ", score bug look " + when (v?.showingGame?.get(b)) { true -> "up"; false -> "gone"; null -> "learning" } +
+                    (v?.scoreBar?.get(b)?.let { " $it%" } ?: "") +
+                    " (matched the text up ${bugUp[b] ?: 0}/2, gone ${bugGone[b] ?: 0}/1)" +
+                    ", text " + (text?.let { (r, t) -> "\"${r.summary.take(40)}\" ${(n - t).toInt()} s ago" } ?: "none read") +
+                    (tileGameAt[b]?.let { ", score bug text ${(n - it).toInt()} s ago" } ?: ""))
+            }
+            sb.appendLine("  Outline last flashed on " + (lastOutline?.let { (b, t) -> "box $b, ${(n - t).toInt()} s ago" } ?: "no box yet"))
+        }
         java.io.File(app.filesDir, "last_error.txt").takeIf { it.exists() }?.let { f ->
             sb.appendLine()
             sb.appendLine("Last error:")

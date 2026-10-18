@@ -18,13 +18,18 @@ data class TileRead(
 )
 
 object TileText {
-    private val CLOCK = Regex("""(?<![\d:])([0-5]?\d)[:.]([0-5]\d)(?![\d:])""")
+    // Note for every pattern here: Android's regex engine (ICU) reads "[:" as the start of a
+    // "[:Letter:]"-style class and refuses the pattern, crashing the app. Never begin a set with ':'.
+    private val CLOCK = Regex("""(?<![\d:])([0-5]?\d)[.:]([0-5]\d)(?![\d:])""")
     private val PERIOD = Regex("""\b(1ST|2ND|3RD|4TH|OT|HALF|HALFTIME|FINAL|Q[1-4])\b""")
     private val DOWN = Regex("""\b(1ST|2ND|3RD|4TH)\s*(&|AND|8)\s*(\d{1,2}|GOAL|GL|INCHES)\b""")
     private val SCORE = Regex("""\b(\d{1,2})\b""")
 
-    private fun norm(s: String) = s.uppercase().replace('’', '\'').replace(Regex("[^A-Z0-9:&.' ]"), " ")
-        .replace(Regex("\\s+"), " ").trim()
+    private val OTHER_CHARS = Regex("[^A-Z0-9.:&' ]")
+    private val SPACES = Regex("\\s+")
+
+    private fun norm(s: String) = s.uppercase().replace('’', '\'').replace(OTHER_CHARS, " ")
+        .replace(SPACES, " ").trim()
 
     /**
      * [teams]: each box's team words (names, places, abbreviations), [scores]: each box's

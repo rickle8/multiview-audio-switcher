@@ -156,15 +156,15 @@ fun CameraSetup(state: EngineState, settings: Settings, onDismiss: () -> Unit) {
                         (state.cameraBox?.let { " (outline last flashed on box $it)" } ?: "") + "\n" +
                         boxRects(settings.layout).keys.joinToString("\n") { b ->
                             val g = state.cameraGame[b]
-                            "Box $b: " + when (g) { true -> "game"; false -> "commercial"; null -> "learning" } +
+                            "Box $b: " + when (g) { true -> "game"; false -> "commercial"; null -> "not sure" } +
                                 (state.cameraBars[b]?.let { " ($it%)" } ?: "") +
                                 (state.cameraText[b]?.let { "\n   reads: $it" } ?: "")
                         },
                     color = C.text, fontSize = 13.sp,
                 )
-                Text("Green: it sees the game (score bug up). Orange: commercial (score bug gone). Thick outline: the " +
-                    "box with the sound. Yellow: where it found each game's score bug, learned in the first couple of " +
-                    "minutes of play.", color = C.muted, fontSize = 12.sp,
+                Text("Green: it sees the game (reads the score bug). Orange: commercial (no score bug for a while). " +
+                    "Thick outline: the box with the sound. Yellow: where it found each game's score bug; that only " +
+                    "counts once it has matched what it reads or hears a few times.", color = C.muted, fontSize = 12.sp,
                     modifier = Modifier.padding(top = 6.dp))
             }
         },
