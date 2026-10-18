@@ -35,7 +35,7 @@ class CameraEye(
     private val onError: (String) -> Unit,
     /** Where the grid is (fractions of the upright picture) and the layout, for reading each box's text. */
     private val grid: () -> Pair<List<Pair<Double, Double>>, Int>?,
-    private val onText: (Int, String) -> Unit,
+    private val onText: (Int, List<com.rickle8.mvswitch.core.TileLine>) -> Unit,
     /** The phone got bumped or shaken (so the TV may have moved in the picture). */
     private val onBump: () -> Unit = {},
     /** Per box, the share of the picture that's football-field green, every frame once the TV is lined up. */

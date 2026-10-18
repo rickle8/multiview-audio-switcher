@@ -112,6 +112,8 @@ data class EngineState(
     val cameraBugs: Map<Int, DoubleArray?> = emptyMap(),
     /** Per box: game (true) / commercial (false) / not sure (null), as the camera sees it. */
     val cameraGame: Map<Int, Boolean?> = emptyMap(),
+    /** Boxes where the camera sees the network's show (its ticker) but not the game: halftime, the studio. */
+    val cameraShow: Set<Int> = emptySet(),
     /** Per box: what the phone read in it (score bug text), for the setup screen. */
     val cameraText: Map<Int, String> = emptyMap(),
     /** Per box: how much of the learned score bar is on screen, 0..100. */
@@ -500,6 +502,7 @@ object Engine {
             cameraBox = lastOutline?.takeIf { n - it.second < 30 }?.first,
             cameraBugs = cameraView?.bugArea?.takeIf { n - cameraAt < 5 }.orEmpty(),
             cameraGame = cameraMerged.takeIf { n - cameraAt < 5 }.orEmpty(),
+            cameraShow = cameraShow.takeIf { n - cameraAt < 5 }.orEmpty(),
             cameraText = tileRead.mapValues { (_, r) -> r.first.summary.ifBlank { "(no text)" } }.takeIf { n - cameraAt < 5 }.orEmpty(),
             cameraBars = cameraView?.scoreBar?.takeIf { n - cameraAt < 5 }.orEmpty(),
             outlineAsk = outlineAsk?.takeIf { running && n - it.second < 25 && it.first != nav?.current }?.first,
@@ -965,6 +968,7 @@ object Engine {
     @Volatile var wantCameraColor = false
     @Volatile private var cameraView: com.rickle8.mvswitch.core.CameraView? = null
     @Volatile private var cameraMerged: Map<Int, Boolean?> = emptyMap()
+    @Volatile private var cameraShow: Set<Int> = emptySet()
     @Volatile private var cameraAt = -1e9
     @Volatile private var cameraRotation = -1
     /** When the phone last turned (a re-find waits for it to stay put). */
@@ -1030,6 +1034,13 @@ object Engine {
     private val tileGameAt = java.util.concurrent.ConcurrentHashMap<Int, Double>()
     /** Per box: when it last read commercial text there (a web address, fine print) with no score bug. */
     private val tileAdAt = java.util.concurrent.ConcurrentHashMap<Int, Double>()
+    /** Per box: when it last read the network's scores ticker there (its programming is on, not a commercial). */
+    private val tileTickerAt = java.util.concurrent.ConcurrentHashMap<Int, Double>()
+
+    /** The network's own programming without the game being played: its ticker, but no score bug, lately. */
+    private fun textShowsNetwork(box: Int, n: Double): Boolean =
+        tileTickerAt[box]?.let { n - it < 10 } == true && tileGameAt[box]?.let { n - it < 10 } != true &&
+            tileAdAt[box]?.let { n - it < 10 } != true
     /** Per box: when it read a score bug, over the last couple of minutes (how dependable reading that box is). */
     private val tileGameTimes = java.util.concurrent.ConcurrentHashMap<Int, ArrayDeque<Double>>()
     private val tileMismatchLogged = java.util.Collections.synchronizedSet(HashSet<String>())
@@ -1042,16 +1053,17 @@ object Engine {
     }
 
     /** The text read off one box: a score bug means that box is showing its game. */
-    fun onTileText(box: Int, text: String) = runCatching { tileText(box, text) }.let { }
+    fun onTileText(box: Int, lines: List<com.rickle8.mvswitch.core.TileLine>) = runCatching { tileText(box, lines) }.let { }
 
-    private fun tileText(box: Int, text: String) {
+    private fun tileText(box: Int, lines: List<com.rickle8.mvswitch.core.TileLine>) {
         val n = now()
         val f = feed ?: previewFeed
         val teams = f?.teamWords().orEmpty()
         val scores = f?.info?.mapValues { it.value.scores.values.toList() }.orEmpty()
-        val r = com.rickle8.mvswitch.core.TileText.read(text, teams, scores)
+        val r = com.rickle8.mvswitch.core.TileText.read(lines, teams, scores, own = box)
         tileRead[box] = r to n
         if (r.ad) tileAdAt[box] = n
+        if (r.ticker) tileTickerAt[box] = n
         if (r.game) {
             tileGameAt[box] = n
             val q = tileGameTimes.getOrPut(box) { ArrayDeque() }
@@ -1109,6 +1121,8 @@ object Engine {
         if (adAt != null && n - adAt < 10 && (tileGameAt[box] ?: -1e9) < adAt) return false
         val at = tileGameAt[box] ?: return null
         if (n - at < 10) return true
+        // The network's ticker is up: not a commercial, whatever else.
+        if (tileTickerAt[box]?.let { n - it < 15 } == true) return null
         val read = tileRead[box]
         val seesTv = (1..boxes).any { it != box && tileGameAt[it]?.let { t -> n - t < 45 } == true }
         // Only where reading this box's score bug is dependable: read 4+ times in the minute before it went.
@@ -1272,6 +1286,9 @@ object Engine {
         cameraMerged = (1..boxCount(s)).associateWith { cameraVerdict(it, v.showingGame[it], n, boxCount(s)) }
         // Sure enough to overrule an ad-sounding moment on the box you're hearing: its score read just now.
         c?.cameraReading = (1..boxCount(s)).filter { b -> tileGameAt[b]?.let { n - it < 6 } == true }.toSet()
+        // Showing the network (halftime, the studio): better than a commercial, not the game.
+        cameraShow = (1..boxCount(s)).filter { b -> cameraMerged[b] == null && textShowsNetwork(b, n) }.toSet()
+        c?.cameraShowing = cameraShow
         c?.camera = n to cameraMerged
         // YouTube TV flashes an outline on the box the sound moves to. Every move the app makes
         // checks it; once it has proven it reads the outline right, a flash the app didn't cause
@@ -1792,6 +1809,7 @@ object Engine {
             info == null -> ""
             info.status == GameStatus.FINAL -> "FINAL"
             info.status == GameStatus.PREGAME -> "LATER"
+            info.statusName == "STATUS_HALFTIME" -> "HALFTIME"
             v.onBreak || info.status == GameStatus.BREAK -> "BREAK"
             info.status == GameStatus.LIVE -> "LIVE"
             else -> ""
@@ -1839,7 +1857,8 @@ object Engine {
             .put("name", b.slot?.name?.ifBlank { null } ?: b.slot?.team ?: "")
             .put("chip", chip(b))
             .put("detail", b.info?.detail ?: "")
-            .put("camera", when (st.cameraGame[b.box]) { true -> "game"; false -> "commercial"; null -> "" })
+            .put("camera", when (st.cameraGame[b.box]) {
+                true -> "game"; false -> "commercial"; null -> if (b.box in st.cameraShow) "show" else "" })
             .put("reads", st.cameraText[b.box] ?: ""))
         j.put("boxes", boxes)
         return j.toString()
@@ -1921,7 +1940,9 @@ object Engine {
                     (v?.scoreBar?.get(b)?.let { " $it%" } ?: "") +
                     " (matched the text up ${bugUp[b] ?: 0}/2, gone ${bugGone[b] ?: 0}/1)" +
                     ", text " + (text?.let { (r, t) -> "\"${r.summary.take(40)}\" ${(n - t).toInt()} s ago" } ?: "none read") +
-                    (tileGameAt[b]?.let { ", score bug text ${(n - it).toInt()} s ago" } ?: ""))
+                    (tileGameAt[b]?.let { ", score bug text ${(n - it).toInt()} s ago" } ?: "") +
+                    (tileTickerAt[b]?.let { ", ticker ${(n - it).toInt()} s ago" } ?: "") +
+                    (tileAdAt[b]?.let { ", commercial text ${(n - it).toInt()} s ago" } ?: ""))
             }
             sb.appendLine("  Looked for the TV again ${tracker.looks} times, moved the grid ${tracker.moves}" +
                 (if (tracker.lastLookAt > 0) ", last look ${(n - tracker.lastLookAt).toInt()} s ago" else ""))

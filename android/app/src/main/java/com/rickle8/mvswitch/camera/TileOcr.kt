@@ -28,7 +28,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 class TileOcr(
     filesDir: File,
     private val version: String,
-    private val onText: (box: Int, text: String) -> Unit,
+    private val onText: (box: Int, lines: List<com.rickle8.mvswitch.core.TileLine>) -> Unit,
     private val onError: (String) -> Unit,
 ) {
     private val trying = File(filesDir, "ocr_trying")
@@ -74,7 +74,7 @@ class TileOcr(
     }
 
     private fun readOne(raw: GrayFrame, deg: Int, corners: List<Pair<Double, Double>>, layout: Int) {
-        var read: Pair<Int, String>? = null
+        var read: Pair<Int, List<com.rickle8.mvswitch.core.TileLine>>? = null
         try {
             if (closed || dead) return
             if (corners.size < 4) return
@@ -97,7 +97,13 @@ class TileOcr(
             val result = Tasks.await(rec.process(image), 5, TimeUnit.SECONDS)
             if (!proven) { proven = true; runCatching { trying.delete() } }
             failsInARow = 0
-            read = box to result.text
+            // Each line with where it sits in the box (a ticker runs along the very bottom).
+            read = box to result.textBlocks.flatMap { it.lines }.map { l ->
+                val r = l.boundingBox
+                com.rickle8.mvswitch.core.TileLine(l.text,
+                    (r?.top ?: 0) / h.toDouble(), (r?.bottom ?: h / 2) / h.toDouble(),
+                    (r?.left ?: 0) / w.toDouble(), (r?.right ?: w) / w.toDouble())
+            }
         } catch (t: Throwable) {
             if (!proven) runCatching { trying.delete() }
             failsInARow++
@@ -110,7 +116,7 @@ class TileOcr(
             busy.set(false)
         }
         // What the text means is decided elsewhere; a problem there isn't a reading problem.
-        read?.let { (box, text) -> runCatching { onText(box, text) } }
+        read?.let { (box, lines) -> runCatching { onText(box, lines) } }
     }
 
     fun close() {

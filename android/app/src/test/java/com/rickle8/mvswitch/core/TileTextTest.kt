@@ -50,6 +50,34 @@ class TileTextTest {
         assertFalse(TileText.read("ESPN FLORIDA ST 14 1ST & 10 3RD 5:45 MIAMI 14", teams).ad)
     }
 
+    private fun line(text: String, center: Double) = TileLine(text, center - 0.03, center + 0.03, 0.02, 0.98)
+
+    @Test fun theTickerIsTheNetworkNotTheGame() {
+        // ESPN, live: the game's score bug, and the BottomLine under it with another game's score.
+        val live = TileText.read(listOf(
+            line("BYU 14 UTAH 10 2ND 4:32 3RD & 6", 0.84),
+            line("NCAAF ALABAMA 24 LSU 17 3RD 4:12", 0.96)), teams, own = 2)
+        assertTrue(live.game); assertTrue(live.ticker); assertEquals(2, live.showsGameOf)
+        // Halftime show: only the ticker, which has quarters and clocks of other games. Not the game being played.
+        val half = TileText.read(listOf(line("NCAAF GEORGIA 21 TENN 14 3RD 8:01", 0.96)), teams, own = 2)
+        assertFalse(half.game); assertTrue(half.ticker); assertFalse(half.ad)
+        // No league name, but along the very bottom with teams that aren't one of your games.
+        val other = TileText.read(listOf(line("OHIO ST 28 PENN ST 21 3RD 4:15", 0.95)), teams, own = 3)
+        assertFalse(other.game); assertTrue(other.ticker)
+        // One of your other games scrolling by on this box's ticker: not this box's game.
+        val yours = TileText.read(listOf(line("BYU 14 UTAH 10 2ND 4:32", 0.95)), teams, own = 1)
+        assertFalse(yours.game); assertTrue(yours.ticker); assertEquals(null, yours.showsGameOf)
+        // ...but the same at the bottom of BYU's own box is its score bug.
+        val own = TileText.read(listOf(line("BYU 14 UTAH 10 2ND 4:32", 0.93)), teams, own = 2)
+        assertTrue(own.game); assertFalse(own.ticker)
+    }
+
+    @Test fun halftimeAndFinalArentPlay() {
+        val half = TileText.read("BYU 14 UTAH 10 HALFTIME", teams)
+        assertFalse(half.game); assertTrue(half.notLive); assertEquals(2, half.showsGameOf)
+        assertFalse(TileText.read("FINAL MIAMI 31 FLORIDA ST 24", teams).game)
+    }
+
     @Test fun sharedNicknamesDontPickAGame() {
         // "COUGARS" is both BYU and Houston: no call on which game it is.
         assertEquals(null, TileText.read("COUGARS 2ND 10:12", teams).showsGameOf)

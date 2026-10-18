@@ -214,6 +214,46 @@ class LogicTest {
         assertNotEquals(1, nav.current)
     }
 
+    @Test fun aHalftimeShowBeatsACommercial() {
+        val info = (1..4).associateWith { nfl(14, 10, 3, 400.0) }.toMutableMap()
+        info[2] = nfl(14, 10, 2, 0.0, GameStatus.BREAK, statusName = "STATUS_HALFTIME")
+        val status = mapOf(1 to GameStatus.LIVE, 2 to GameStatus.BREAK, 3 to GameStatus.LIVE, 4 to GameStatus.LIVE)
+        val (ctrl, nav, c) = setup(info, status)
+        c.t = 100.0
+        // Your game goes to commercial; boxes 3 and 4 are in commercials too (the camera sees them).
+        ctrl.camera = c.t to mapOf(3 to false, 4 to false)
+        assertTrue(ctrl.step(Heard.AD))
+        assertEquals(2, nav.current)
+    }
+
+    @Test fun staysForItsHalftimeShowThenLeavesForALiveGame() {
+        val info = (1..4).associateWith { nfl(14, 10, 3, 400.0) }.toMutableMap()
+        info[1] = nfl(14, 10, 2, 0.0, GameStatus.BREAK, statusName = "STATUS_HALFTIME")
+        val status = mapOf(1 to GameStatus.BREAK, 2 to GameStatus.LIVE, 3 to GameStatus.LIVE, 4 to GameStatus.LIVE)
+        val (ctrl, nav, c) = setup(info, status)
+        c.t = 100.0; ctrl.camera = c.t to mapOf(2 to false, 3 to false, 4 to false)
+        assertFalse("the TV isn't at halftime yet", ctrl.step(Heard.GAME))
+        c.t = 141.0; ctrl.camera = c.t to mapOf(2 to false, 3 to false, 4 to false)
+        assertFalse("nothing else is being played: stays for the halftime show", ctrl.step(Heard.GAME))
+        assertEquals(1, nav.current)
+        // Box 3 is back from its commercial: a live game beats the halftime show.
+        c.t = 170.0; ctrl.camera = c.t to mapOf(2 to false, 3 to true, 4 to false)
+        assertTrue(ctrl.step(Heard.GAME))
+        assertEquals(3, nav.current)
+        // Box 1 is still the one to go back to when its second half starts.
+        assertEquals(1, ctrl.returnTo)
+    }
+
+    @Test fun theNetworksTickerMeansItsNotACommercial() {
+        val info = (1..4).associateWith { nfl(14, 10, 3, 400.0) }
+        val (ctrl, _, c) = setup(info, plays = mutableMapOf(2 to ("Timeout #1 by BBB at 04:12." to 95.0)))
+        c.t = 150.0
+        assertEquals(Controller.Outlook.BREAK, ctrl.outlook(2, c.t).first)
+        // The camera reads the network's ticker on box 2 (no score bug): its show, not a commercial.
+        ctrl.camera = c.t to emptyMap(); ctrl.cameraShowing = setOf(2)
+        assertEquals(Controller.Outlook.SHOW, ctrl.outlook(2, c.t).first)
+    }
+
     @Test fun returnsToImportantGameAfterBreak() {
         val info = mapOf(1 to nfl(14, 10, 3, 400.0), 2 to nfl(14, 10, 3, 400.0),
             3 to nfl(0, 30, 3, 400.0), 4 to nfl(0, 30, 3, 400.0))
