@@ -42,6 +42,8 @@ data class Settings(
     val gridCorners: List<Double> = listOf(0.1, 0.2, 0.9, 0.2, 0.9, 0.8, 0.1, 0.8),
     /** Which way the phone was turned when the corners were set (-1: never set; found again if it changes). */
     val gridRotation: Int = -1,
+    /** Where it last found the TV on its own (before any dot you dragged): tells a moved phone from your fine-tuning. */
+    val foundCorners: List<Double> = emptyList(),
     /** Camera zoom, 0 = wide. */
     val cameraZoom: Float = 0f,
     /** Go back to the game you were watching when its commercial ends. */
@@ -79,6 +81,7 @@ data class Settings(
         .put("useMic", useMic).put("micSensitivity", micSensitivity.toDouble())
         .put("proactive", proactive).put("hopping2", hopping.name).put("returnToGame", returnToGame)
         .put("useCamera", useCamera).put("gridCorners", org.json.JSONArray(gridCorners))
+        .put("foundCorners", org.json.JSONArray(foundCorners))
         .put("gridRotation", gridRotation).put("cameraZoom", cameraZoom.toDouble()).put("breakSecs", breakSecs)
         .put("league", league)
         .put("githubToken", githubToken)
@@ -134,6 +137,8 @@ data class Settings(
                 cameraZoom = j.optDouble("cameraZoom", 0.0).toFloat(),
                 gridCorners = j.optJSONArray("gridCorners")?.let { a -> (0 until a.length()).map { a.optDouble(it) } }
                     ?.takeIf { it.size == 8 && it.all { v -> !v.isNaN() } } ?: d.gridCorners,
+                foundCorners = j.optJSONArray("foundCorners")?.let { a -> (0 until a.length()).map { a.optDouble(it) } }
+                    ?.takeIf { it.size == 8 && it.all { v -> !v.isNaN() } } ?: emptyList(),
                 hopping = runCatching { Hopping.valueOf(j.optString("hopping2")) }.getOrDefault(d.hopping),
                 breakSecs = j.optInt("breakSecs", d.breakSecs),
                 league = j.optString("league", d.league),

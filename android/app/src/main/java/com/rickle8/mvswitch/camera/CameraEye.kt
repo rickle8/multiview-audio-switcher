@@ -36,6 +36,8 @@ class CameraEye(
     /** Where the grid is (fractions of the upright picture) and the layout, for reading each box's text. */
     private val grid: () -> Pair<List<Pair<Double, Double>>, Int>?,
     private val onText: (Int, String) -> Unit,
+    /** The phone got bumped or shaken (so the TV may have moved in the picture). */
+    private val onBump: () -> Unit = {},
 ) {
     private val ocr = TileOcr(context.filesDir,
         runCatching { context.packageManager.getPackageInfo(context.packageName, 0).versionName }.getOrNull() ?: "?",
@@ -66,8 +68,35 @@ class CameraEye(
         }
     }
 
+    // Bumps: a jolt on the motion sensor, beyond the phone's own stillness on its stand.
+    private val sensors = context.getSystemService(Context.SENSOR_SERVICE) as? android.hardware.SensorManager
+    private val linear = sensors?.getDefaultSensor(android.hardware.Sensor.TYPE_LINEAR_ACCELERATION)
+    private val accel = sensors?.getDefaultSensor(android.hardware.Sensor.TYPE_ACCELEROMETER)
+    private val gravity = FloatArray(3)
+    private var gravitySet = false
+    private var lastBump = 0L
+    private val motion = object : android.hardware.SensorEventListener {
+        override fun onSensorChanged(e: android.hardware.SensorEvent) {
+            var x = e.values[0]; var y = e.values[1]; var z = e.values[2]
+            if (e.sensor.type == android.hardware.Sensor.TYPE_ACCELEROMETER) {
+                // No linear sensor: take gravity out by hand (a slow average of the reading).
+                if (!gravitySet) { gravity[0] = x; gravity[1] = y; gravity[2] = z; gravitySet = true }
+                for (i in 0..2) gravity[i] = 0.9f * gravity[i] + 0.1f * e.values[i]
+                x -= gravity[0]; y -= gravity[1]; z -= gravity[2]
+            }
+            if (x * x + y * y + z * z > 1.2f * 1.2f) {
+                val t = System.currentTimeMillis()
+                if (t - lastBump > 1000) { lastBump = t; runCatching { onBump() } }
+            }
+        }
+        override fun onAccuracyChanged(sensor: android.hardware.Sensor?, accuracy: Int) {}
+    }
+
     fun start(owner: LifecycleOwner) {
         if (orientation.canDetectOrientation()) orientation.enable()
+        runCatching {
+            (linear ?: accel)?.let { sensors?.registerListener(motion, it, android.hardware.SensorManager.SENSOR_DELAY_UI) }
+        }
         val future = ProcessCameraProvider.getInstance(context)
         future.addListener({
             try {
@@ -103,6 +132,7 @@ class CameraEye(
 
     fun stop() {
         orientation.disable()
+        runCatching { sensors?.unregisterListener(motion) }
         ocr.close()
         runCatching { provider?.unbindAll() }
         provider = null; camera = null; analysis = null

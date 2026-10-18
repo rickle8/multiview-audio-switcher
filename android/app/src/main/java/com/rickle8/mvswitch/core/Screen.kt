@@ -451,3 +451,103 @@ class GridFinder(private val cols: Int = 96) {
 
     fun reset() { prev = null; motion = null; bright = null; frames = 0 }
 }
+
+/**
+ * Keeps the TV lined up while the camera runs. Every minute, and a couple of seconds after the
+ * phone gets bumped, it looks for the TV again in the background (the camera keeps reading the
+ * games meanwhile). It only moves the grid when the TV really moved in the picture: compared
+ * with where it last found the TV, not with a dot you dragged since, so your fine-tuning stays
+ * until the phone actually moves. A spot that looks different in size or shape (a person walking
+ * by, a box sitting still on a paused picture) has to show up twice in a row before it's believed.
+ */
+class GridTracker(
+    private val everySecs: Double = 60.0,
+    /** Frames to watch per look (about 4 a second): more than a first find, for a steadier answer. */
+    private val lookFrames: Int = 20,
+) {
+    private val finder = GridFinder()
+    private var startedAt: Double? = null
+    private var skip = 0
+    private var dueAt: Double? = null
+    private var pending: List<Pair<Double, Double>>? = null
+    @Volatile private var bumpAt = -1e9
+    private var bumpUsed = -1e9
+    /** Bumps in the last minute: a phone that never stops shaking (on a speaker) can't wait for stillness. */
+    private val recentBumps = ArrayDeque<Double>()
+
+    /** For the diagnostics: looks taken, times it moved the grid, and when it last looked. */
+    var looks = 0
+        private set
+    var moves = 0
+        private set
+    var lastLookAt = -1e9
+        private set
+
+    /**
+     * The phone got bumped at [t] (from the motion sensor). If it keeps shaking (more than 8 bumps
+     * a minute: sitting on a speaker, say), bumps are ignored and it just looks every minute.
+     */
+    @Synchronized fun bumped(t: Double) {
+        recentBumps.addLast(t)
+        while (recentBumps.isNotEmpty() && t - recentBumps.first() > 60) recentBumps.removeFirst()
+        if (recentBumps.size <= 8) bumpAt = t
+    }
+
+    /** The TV was just found (or lined up by hand): the next look is a minute away. */
+    fun reset(now: Double) { startedAt = null; pending = null; dueAt = now + everySecs }
+
+    /**
+     * One camera frame. [base] is where the TV was last found. Returns the TV's new corners when it
+     * moved in the picture, else null.
+     */
+    fun frame(f: GrayFrame, now: Double, base: List<Pair<Double, Double>>): List<Pair<Double, Double>>? {
+        val start = startedAt
+        if (start == null) {
+            if (now - bumpAt < 2) return null // just bumped: let it settle first
+            val due = dueAt ?: (now + everySecs).also { dueAt = it }
+            if (now < due && bumpAt <= bumpUsed) return null
+            bumpUsed = maxOf(bumpUsed, bumpAt)
+            finder.reset(); startedAt = now; skip = 2
+            return null
+        }
+        // Bumped while looking: what it saw is smeared. Look again once it settles.
+        if (bumpAt > start) { startedAt = null; return null }
+        if (skip > 0) { skip--; return null }
+        finder.add(f)
+        if (finder.frames < lookFrames) return null
+        val found = finder.find()
+        startedAt = null
+        dueAt = now + everySecs
+        looks++; lastLookAt = now
+        if (found == null || base.size != 4) return null // couldn't tell this time: keep what it has
+        // How far it moved, in the finder's own cells (its answers wobble by about one).
+        val cellsX = 96.0; val cellsY = 96.0 * f.height / f.width
+        fun shift(a: List<Pair<Double, Double>>, b: List<Pair<Double, Double>>) =
+            a.zip(b).maxOf { (p, q) -> maxOf(abs(p.first - q.first) * cellsX, abs(p.second - q.second) * cellsY) }
+        if (shift(found, base) <= 1.5) { pending = null; return null } // same place
+        val p = pending
+        if (sameShape(found, base) || (p != null && shift(found, p) <= 1.5)) {
+            pending = null
+            moves++
+            return found
+        }
+        // A different size or shape: check again soon before believing it.
+        pending = found
+        dueAt = now + 10
+        return null
+    }
+
+    private fun area(q: List<Pair<Double, Double>>): Double =
+        abs((0 until 4).sumOf { i -> val (x1, y1) = q[i]; val (x2, y2) = q[(i + 1) % 4]; x1 * y2 - x2 * y1 }) / 2
+
+    private fun side(q: List<Pair<Double, Double>>, i: Int): Double {
+        val (x1, y1) = q[i]; val (x2, y2) = q[(i + 1) % 4]
+        return kotlin.math.hypot(x2 - x1, y2 - y1)
+    }
+
+    /** The same TV, just shifted or tilted a little (a bump), not a different patch of motion. */
+    private fun sameShape(a: List<Pair<Double, Double>>, b: List<Pair<Double, Double>>): Boolean {
+        fun close(x: Double, y: Double) = y > 1e-9 && x / y in 0.85..1.18
+        return close(area(a), area(b)) && (0 until 4).all { close(side(a, it), side(b, it)) }
+    }
+}

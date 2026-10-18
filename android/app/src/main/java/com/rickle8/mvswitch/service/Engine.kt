@@ -951,6 +951,8 @@ object Engine {
      */
     @Volatile private var outlineAsk: Pair<Int, Double>? = null
     private val finder = com.rickle8.mvswitch.core.GridFinder()
+    /** Keeps the TV lined up: it looks again in the background every minute, and right after a bump. */
+    private val tracker = com.rickle8.mvswitch.core.GridTracker()
     @Volatile private var finding = false
     @Volatile private var findSkip = 0
     private var cameraPublished = -1e9
@@ -959,6 +961,9 @@ object Engine {
         private set
 
     fun onCameraColor(b: android.graphics.Bitmap) { cameraColor = b }
+
+    /** The camera phone got bumped (its motion sensor): look for the TV again once it settles. */
+    fun cameraBumped() { tracker.bumped(now()) }
 
     // What the phone's text recognition reads in each box.
     private val tileRead = java.util.concurrent.ConcurrentHashMap<Int, Pair<com.rickle8.mvswitch.core.TileRead, Double>>()
@@ -1114,7 +1119,8 @@ object Engine {
                     finding = false
                     findEndedAt = n
                     val flat = corners.flatMap { listOf(it.first, it.second) }
-                    update { it.copy(gridCorners = flat, gridRotation = rotation) }
+                    update { it.copy(gridCorners = flat, foundCorners = flat, gridRotation = rotation) }
+                    tracker.reset(n)
                     findStatus = "Found the TV. Drag a dot if a corner's a little off."
                     log("Camera found the TV.")
                     meterOnGrid(flat)
@@ -1128,6 +1134,19 @@ object Engine {
                 }
             }
             return
+        }
+        // Every minute, and right after a bump, it looks for the TV again in the background (the
+        // camera keeps reading meanwhile). If the TV moved in the picture, it lines it up again.
+        if (s.gridRotation == rotation) {
+            val base = (s.foundCorners.takeIf { it.size == 8 } ?: s.gridCorners).chunked(2).map { it[0] to it[1] }
+            val moved = tracker.frame(frame, n, base)
+            if (moved != null) {
+                val flat = moved.flatMap { listOf(it.first, it.second) }
+                update { it.copy(gridCorners = flat, foundCorners = flat, gridRotation = rotation) }
+                log("Camera: the TV moved in the picture. Lined it up again.")
+                meterOnGrid(flat)
+                return
+            }
         }
         // A tiny nudge of a corner doesn't throw away what it learned.
         val key = "${s.layout}:${s.gridCorners.map { kotlin.math.round(it * 100).toInt() }}"
@@ -1686,6 +1705,8 @@ object Engine {
                     ", text " + (text?.let { (r, t) -> "\"${r.summary.take(40)}\" ${(n - t).toInt()} s ago" } ?: "none read") +
                     (tileGameAt[b]?.let { ", score bug text ${(n - it).toInt()} s ago" } ?: ""))
             }
+            sb.appendLine("  Looked for the TV again ${tracker.looks} times, moved the grid ${tracker.moves}" +
+                (if (tracker.lastLookAt > 0) ", last look ${(n - tracker.lastLookAt).toInt()} s ago" else ""))
             sb.appendLine("  Outline last flashed on " + (lastOutline?.let { (b, t) -> "box $b, ${(n - t).toInt()} s ago" } ?: "no box yet"))
         }
         java.io.File(app.filesDir, "last_error.txt").takeIf { it.exists() }?.let { f ->

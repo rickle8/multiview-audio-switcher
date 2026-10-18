@@ -58,7 +58,8 @@ class MainActivity : ComponentActivity() {
             wantColor = { Engine.wantCameraColor },
             onError = { msg -> Engine.cameraError(msg) },
             grid = { Engine.cameraGrid() },
-            onText = Engine::onTileText)
+            onText = Engine::onTileText,
+            onBump = { Engine.cameraBumped() })
         eye = e
         e.start(this)
         e.setZoom(Engine.settings.value.cameraZoom)

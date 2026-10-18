@@ -76,7 +76,8 @@ fun CameraSetup(state: EngineState, settings: Settings, onDismiss: () -> Unit) {
         text = {
             Column(Modifier.verticalScroll(rememberScrollState())) {
                 Text("Put this phone on a stand facing the TV (standing up or on its side), plugged in, with " +
-                    "multiview and the games playing. It finds the TV on its own; drag a dot to fine-tune.",
+                    "multiview and the games playing. It finds the TV on its own, and checks again every minute " +
+                    "and after a bump. Drag a dot to fine-tune.",
                     color = C.muted, fontSize = 13.sp)
                 Spacer(Modifier.height(8.dp))
                 Button(onClick = { Engine.findTv() }, modifier = Modifier.fillMaxWidth().height(46.dp),
