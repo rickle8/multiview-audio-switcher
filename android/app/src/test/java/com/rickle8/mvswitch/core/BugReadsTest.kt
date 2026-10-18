@@ -21,6 +21,9 @@ class BugReadsTest {
         run(b, 104.0, 340.0, live)
         val g = b.goneSecs(1, 339.9)
         assertTrue("still gone after 4 minutes: $g", g != null && g > 230)
+        // Past 5 minutes the camera has more likely lost the bug than the break is still on.
+        run(b, 340.0, 420.0, live)
+        assertNull(b.goneSecs(1, 419.9))
     }
 
     @Test fun justGoneNeedsADependableBox() {

@@ -1,4 +1,4 @@
-# Multiview Audio: how it decides (v1.0.85)
+# Multiview Audio: how it decides (v1.0.86)
 
 Built for one setup: a Samsung QN75Q8F, YouTube TV multiview with 4 games (2x2), and a Galaxy S21 on a stand facing the TV doing everything (listening, watching, pressing the TV's buttons). College football Saturdays, NFL Sundays.
 
@@ -48,7 +48,7 @@ The camera can make it quicker still: see "gone" in section 5.
 **It also learns on its own:** audio between plays that came less than 50 seconds apart is game, and replayed commercials it recognizes are commercials.
 
 **Your buttons:**
-- **It's an ad:** learns the audio since the cut, saves a fingerprint, and moves now.
+- **It's an ad:** learns the audio since the cut, saves a fingerprint, and moves now. If no game looks better, it goes to the best other game that isn't over anyway (pregame included), unless every one shows commercial text.
 - **It's the game:** learns the last 8 seconds and next 12, deletes a fingerprint that just fired wrongly, and tells the switching logic this game is on. For 4 minutes (or until it leaves that game for a commercial), the camera and ESPN can't call it a commercial or show it as BREAK.
 
 ## 4. What ESPN tells it
@@ -69,19 +69,19 @@ The camera can make it quicker still: see "gone" in section 5.
 
 ## 5. What the camera tells it
 
-**Lining up.** It finds the TV by motion (the games move, the room doesn't). It checks again every minute and 2 seconds after a bump, and only moves the grid if the TV really moved. Turning the phone triggers a full find after it sits still 3 seconds.
+**Lining up.** It finds the TV by motion (the games move, the room doesn't). It checks again every minute and 2 seconds after a bump. After a bump it moves the grid at once; on the minute check only when a second look 10 s later agrees, and never for a shift under about 2.5% of the picture (a box on a still graphic makes the motion wobble). Turning the phone triggers a full find after it sits still 3 seconds.
 
 **The picture.** 4K when the phone allows it (each box gets about twice the detail of 1080p), 15 frames a second (less heat over a long game, and exposures that don't band on the TV), the phone's best noise reduction and sharpening. Focus and exposure are measured on the TV itself, sized to it, and refreshed every 10 minutes and whenever the TV moves in the picture. Exposure is also nudged a third of a stop at a time so the TV's whites (the score bug's lettering, the yard lines) don't blow out and dark scenes don't go murky. The picture on your phone's camera view is in color at 1280 x 720.
 
 **The close look.** One box every half second (each box about every 2 s), straightened out at 1280 x 720 (960 x 540 from a 1080p camera). It reads the text and looks for yard lines.
 
-**What counts as the game being played:** that game's own teams and a score at or near ESPN's current one (your TV runs behind ESPN, so up to 8 points lower or 3 higher counts as near). Any of: ESPN's exact score with a team or the clock; a team, a near score and the clock or quarter (or both teams); both teams with the clock or quarter; a team with down and distance. A team name alone (a promo for the game) isn't enough, and the score bug's own HALF or FINAL isn't play.
+**What counts as the game being played:** that game's own teams and a score at or near ESPN's current one. NFL bugs on FOX and CBS show logos, not names, so a score at or near ESPN's with down and distance ("3RD & 8", "3RD DOWN"), or with a quarter and clock, counts on its own. Common misreads in the bug's small type are fixed first ("15T" for 1ST, "3R0" for 3RD, a clock that lost its colon) (your TV runs behind ESPN, so up to 8 points lower or 3 higher counts as near). Any of: ESPN's exact score with a team or the clock; a team, a near score and the clock or quarter (or both teams); both teams with the clock or quarter; a team with down and distance. A team name alone (a promo for the game) isn't enough, and the score bug's own HALF or FINAL isn't play.
 - Read in the last 10 s: that game is on.
 - **Gone:** on a box where it reads the bug nearly every time (60%+ of reads), missing it 8 s or more, enough reads in a row that it isn't a misread, while it still reads the other boxes. A cut to commercial looks like that. Some replays drop the bug too, so it only backs up the sound: an ad-leaning sound becomes a commercial and an ad-sounding one a sure one (section 6), a few seconds sooner than the sound alone.
-- Nothing for 45 s on a box it normally reads well (4+ reads in the minute before it went), while it still reads the other boxes: commercial, for as long as the break lasts. 45 s is longer than replays and close-ups.
+- Nothing for 45 s on a box it normally reads well (4+ reads in the minute before it went), while it still reads the other boxes: leans commercial, for up to 5 minutes. Past that it has more likely lost the bug (a graphic over it) than the break is still going.
 - **At halftime** the score bug is off for much of the studio show, so it being gone means nothing there; commercial text still counts.
 
-**The ticker:** some networks (ESPN's BottomLine) run other games' scores and headlines along the bottom, sometimes over commercials too, so a ticker says nothing about the box: not the game, not a commercial, not a show. Each line comes with where it sits, and ticker lines never count toward the game: a league name like NCAAF, two of your games in one line, another game's score, "final" or a headline along the very bottom, or anything in the band where the text keeps changing read after read (it scrolls or flips). The score bug never makes that band: lines with the game's own teams, and its clock, quarter and down and distance, are left out, one change (a "review" banner) isn't enough, and the game's own teams staying put still count even inside a band.
+**The ticker:** some networks (ESPN's BottomLine) run other games' scores and headlines along the bottom, sometimes over commercials too, so a ticker says nothing about the box: not the game, not a commercial, not a show. Each line comes with where it sits, and ticker lines never count toward the game: a league name like NCAAF, two of your games in one line, another game's score, "final" or a headline along the very bottom, or anything in the band where the text keeps changing read after read (it scrolls or flips). A line that's nothing but score bug (down and distance, or quarter and clock, with at most one other word) is never ticker, inside a band or not. The score bug never makes that band: lines with the game's own teams, and its clock, quarter and down and distance, are left out, one change (a "review" banner) isn't enough, and the game's own teams staying put still count even inside a band.
 
 **Commercial text:** web addresses, APR or MSRP, "see dealer", "closed course", "ask your doctor", 1-800 numbers, two of "shop now" / "lease" / "limited time" and the like, with no score bug in the same read: that box is in a commercial, no waiting. Fine print counts even along the bottom where a ticker runs.
 
@@ -92,15 +92,16 @@ The camera can make it quicker still: see "gone" in section 5.
 **Yard lines:** in each close look it searches the green for thin, straight, bright lines that run a good part of the way across the box (yard lines, sidelines, a row of hash marks), leaving out the box's edges and the bottom fifth where the score bar and a ticker run. Two or more long ones in the last 5 s are as strong a sign of the game as its score bug. Lawn stripes (too wide), a golf flag (just one), busy texture like leaves, and lines off the green don't count. A box proves them first: lines with the game twice, none in a commercial once. Lines in a commercial it's sure of start that over.
 
 **Sound and camera, paired.** Each second, the sound's call on the box you're hearing is paired with what the camera sees there. The camera adds up its evidence: score bug read (strong game), yard lines (strong game), field green (leans game), score bug look (proven) up or gone, commercial text (strong commercial), score bug gone 8-45 s (leans commercial) or 45 s+ (strong commercial). Yard lines or green with the dependable score bug missing count for little: that's a promo or an ad shot on a field.
-- **Camera sure it's the game** (score bug or yard lines): an ad-sounding moment doesn't switch, and unsure sound counts as the game (so it comes back from a commercial sooner). A recognized commercial still gets past yard lines, but nothing gets past the score bug read right off the screen. This is what keeps the band's music during a stoppage from moving you.
-- **Leaning game** (green): holds an ad-sounding moment unless the sound is 75%+ ad-like.
-- **Camera sure it's a commercial**: an ad-sounding moment is a sure one (beats ESPN's guards), unsure sound is a commercial, and even game-like sound is one when commercial text and a long-gone score bug agree and the sound is only shaky (30%+ ad-like). Sound that's clearly the game is never overruled.
-- **Leaning commercial** (score bug just gone): ad-leaning sound (45%+) is a commercial, ad-sounding is a sure one.
+**The sound leads; the camera only helps.**
+- **The score bug read off the screen right now:** an ad-sounding moment under 80% ad-like doesn't switch, and unsure sound counts as the game. A recognized commercial, or 80%+ ad-like sound, still switches.
+- **Yard lines and green never hold the sound.** They show up in close-ups, promos and ads shot on a field.
+- **Camera sure it's a commercial**: an ad-sounding moment is a sure one (beats ESPN's guards). Unsure sound becomes a commercial only with commercial text read there, or the sound already 50%+ ad-like. Game-like sound is a commercial only when commercial text and a long-gone score bug agree and the sound is shaky (30%+).
+- **Leaning commercial** (score bug just gone): ad-leaning sound (50%+) is a commercial, ad-sounding is a sure one.
 - Your "It's the game" keeps the camera from calling that game a commercial.
 
 The Live screen and your phone page show what the camera sees on each box ("score bug, yard lines", "score bug gone 12 s") and how the last call paired up ("Sound: commercial (72% ad) · Camera: score bug → the game (camera sees it)").
 
-**Other games:** the camera's word ("on" with the score bug, yard lines, green or a proven score bar; "commercial" with commercial text or the bug long gone) makes a box a good place to go, marks your game as back, or rules a box out. While ESPN says a game is at halftime or between quarters, only its live score bug read off the screen counts (the band on the field at halftime isn't the game), and that beats ESPN's status, which lags your TV by 30-90 s.
+**Other games:** the camera seeing the game there (score bug, yard lines, green, a proven score bar) makes a box a good place to go and marks your game as back. Only commercial text read there rules a box out. The score bug not being read lately just puts that box behind the others; ESPN decides the rest, the way it did before the camera. While ESPN says a game is at halftime or between quarters, only its live score bug read off the screen counts (the band on the field at halftime isn't the game), and that beats ESPN's status, which lags your TV by 30-90 s.
 
 ## 6. When it switches (the game you're hearing)
 
@@ -153,7 +154,7 @@ Both phones need the same Wi-Fi, and the app open on the camera phone. Only a de
 ## 10. Weak spots for your setup
 
 1. **The camera is untested on your TV.** Distance, glare and each network's bug design decide how much it reads, and the yard-line finder was tuned on drawn pictures, not your TV. Diagnostics show, per box, what it sees and its points, how many yard lines its last look found, whether lines, field and score bug shape are proven, and how many of the app's moves the outline confirmed.
-2. **Fields in commercials.** Baseball and other sports promos, or ads shot on a field, have green and lines too. A box where the score bug reads dependably catches it within about 8 s (lines without the bug count for little); on a box where it doesn't, a field-heavy promo can hold the sound there for its length.
+2. **Fields in commercials.** Promos and ads shot on a field have green and lines too, which is why those no longer hold the sound.
 3. **ESPN's college play-by-play is late,** often 30-90 seconds and sometimes in bursts. That's why the mic leads and ESPN mostly guards and picks targets. Going back to your game is slow without the camera.
 4. **The start position is a guess** (box 1, or where it was). If it's wrong, every switch after it is wrong until you tap "Sound is already on this box," or (once the outline is proven) press an arrow on the TV remote so the camera sees where the sound is.
 5. **Your TV's delay** is assumed to be 40 s until it learns it from a few timeouts.
@@ -194,3 +195,15 @@ A full read-through of the logic, with every fix covered by a test that failed b
 6. Coming back to your game could "switch" to the box it was already on; box reads kept going for a few seconds after the phone was turned; Go after opening YouTube TV said box 1 without assuming it.
 
 **Simpler:** the switching logic takes the camera's word from one place (what it sees per box); the score bug's read history is one small tested piece instead of three lists in the engine; the no-live-data "go back to box 1" fallback (which fought where you put the sound) and unused leftovers (athlete-name collection, read strength, old helpers) are gone.
+
+## 13. Camera as helper (v1.0.86)
+
+From the first NFL Sunday with the camera on: it held the sound on commercials and blocked switches because it couldn't read the bugs.
+
+1. **The score bug was thrown out as a ticker.** FOX and CBS bugs sit along the bottom and their clock changes every read, so the "text keeps changing" band swallowed them. A line that's nothing but score bug is never ticker now.
+2. **Logo bugs.** With no team names to read, almost nothing counted as the game. A score near ESPN's with down and distance, or a quarter and clock, counts now, after fixing common misreads.
+3. **The camera blocked switches.** A box whose bug it couldn't read was called a commercial and ruled out, so "every other game is in commercial, staying." Now only commercial text rules a box out.
+4. **The camera held commercials.** Yard lines (found on close-ups) and green held ad-sounding moments. Now only the score bug read right now holds, and not past 80% ad-like sound.
+5. **"Score bug gone" lasted 20 minutes.** Capped at 5, and it no longer turns unsure sound into a commercial by itself.
+6. **Your "It's an ad" tap always moves you** unless every other box shows commercial text.
+7. **The grid slid around** on the minute checks and mixed up which game was where. It needs two looks agreeing now, unless the phone was bumped.

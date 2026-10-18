@@ -417,7 +417,7 @@ class BroadcastTest {
         // Now box 1's score bug has been gone a long while: go, and skip the boxes it sees in commercial.
         now = 120.0
         c.see(now, 1 to Sight(bugGoneSecs = 50.0), 2 to Sight(adText = true), 3 to Sight(adText = true), 4 to Sight(bug = true))
-        assertTrue(c.step(Heard.UNSURE))
+        assertTrue(c.step(Heard.UNSURE, adPct = 55))
         assertEquals(4, nav.current)
     }
 
@@ -476,20 +476,52 @@ class BroadcastTest {
         assertTrue(logs.last().startsWith("Commercials everywhere"))
     }
 
-    @Test fun yardLinesHoldAnAdSoundingMoment() {
+    @Test fun yardLinesNeverHoldAnAdSoundingMoment() {
         var now = 100.0
         val nav = Navigator(quiet, LAYOUTS.getValue(4), home = false, sleep = {})
         val f = GameFeed(emptyMap(), { JSONObject() }, { now }, pollSecs = 1e9)
         val c = Controller(nav, listOf(1, 2, 3, 4), f, clock = { now })
-        // The band plays during a stoppage (music) while the camera sees the field and its yard lines.
+        // Yard lines (or a close-up's stripes) without the score bug: the sound decides.
         c.see(now, 1 to Sight(lines = true), 2 to Sight(bug = true))
-        assertFalse(c.step(Heard.AD, adPct = 80))
-        assertEquals("the game (camera sees it)", c.lastCall!!.summary.substringAfter("→ "))
-        // The field's green alone holds it unless the sound is very sure.
-        now = 110.0; c.see(now, 1 to Sight(grass = true), 2 to Sight(bug = true))
-        assertFalse(c.step(Heard.AD, adPct = 65))
-        now = 120.0; c.see(now, 1 to Sight(grass = true), 2 to Sight(bug = true))
-        assertTrue(c.step(Heard.AD, adPct = 90))
+        assertTrue(c.step(Heard.AD, adPct = 70))
+        assertEquals(2, nav.current)
+    }
+
+    @Test fun theScoreBugNotReadDoesntRuleOutAGame() {
+        var now = 100.0
+        val nav = Navigator(quiet, LAYOUTS.getValue(4), home = false, sleep = {})
+        val f = GameFeed(emptyMap(), { JSONObject() }, { now }, pollSecs = 1e9)
+        val c = Controller(nav, listOf(1, 2, 3, 4), f, clock = { now })
+        // The camera can't read the bugs on boxes 2-4 (small type, logos): commercial on box 1 still moves you.
+        val lost = Sight(bugGoneSecs = 120.0)
+        c.see(now, 1 to Sight(), 2 to lost, 3 to lost, 4 to lost)
+        assertTrue(c.step(Heard.AD, adPct = 75))
+        assertNotEquals(1, nav.current)
+    }
+
+    @Test fun aBoxWithCommercialTextGoesBehindOneTheCameraCantRead() {
+        val now = 100.0
+        val nav = Navigator(quiet, LAYOUTS.getValue(4), home = false, sleep = {})
+        val f = GameFeed(emptyMap(), { JSONObject() }, { now }, pollSecs = 1e9)
+        val c = Controller(nav, listOf(1, 2, 3, 4), f, clock = { now })
+        c.see(now, 1 to Sight(), 2 to Sight(adText = true), 3 to Sight(bugGoneSecs = 60.0), 4 to Sight(adText = true))
+        assertTrue(c.step(Heard.AD, adPct = 75))
+        assertEquals(3, nav.current)
+    }
+
+    @Test fun yourAdTapAlwaysMovesYou() {
+        val now = 100.0
+        val logs = mutableListOf<String>()
+        val nav = Navigator(quiet, LAYOUTS.getValue(4), home = false, sleep = {})
+        val f = GameFeed(emptyMap(), { JSONObject() }, { now }, pollSecs = 1e9)
+        val c = Controller(nav, listOf(1, 2, 3, 4), f, clock = { now }, log = { logs += it })
+        // Every other box shows commercial text: nowhere better to go.
+        c.see(now, 1 to Sight(), 2 to Sight(adText = true), 3 to Sight(adText = true), 4 to Sight(adText = true))
+        assertFalse(c.commercialNow())
+        // Only "not read lately" elsewhere: your tap moves you.
+        c.see(now, 1 to Sight(), 2 to Sight(bugGoneSecs = 60.0), 3 to Sight(bugGoneSecs = 60.0), 4 to Sight(adText = true))
+        assertTrue(c.commercialNow())
+        assertTrue(nav.current == 2 || nav.current == 3)
     }
 
     @Test fun aFieldWithTheScoreBugGoneIsAPromo() {

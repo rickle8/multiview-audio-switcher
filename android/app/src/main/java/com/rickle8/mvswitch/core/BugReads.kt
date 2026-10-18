@@ -37,7 +37,7 @@ class BugReads {
      * How long [box]'s score bug has been missing, when that means something, else null:
      * - 8 to 45 s on a box where it's read nearly every time (60%+ of reads in the 40 s before it
      *   went), missing enough reads in a row that it isn't a misread;
-     * - 45 s to 20 minutes on a box where it was read dependably (4+ times in the minute before).
+     * - 45 s to 5 minutes on a box where it was read dependably (4+ times in the minute before).
      * Only while the camera still reads another box's score bug (so it can see the TV) and is still
      * reading this box, and never when this box's own graphics said halftime or final in the last minute.
      */
@@ -45,7 +45,8 @@ class BugReads {
     fun goneSecs(box: Int, now: Double): Double? {
         val at = gameAt[box] ?: return null
         val gone = now - at
-        if (gone < 8 || gone > 1200) return null
+        // Past 5 minutes it is more likely the camera lost the bug (a graphic over it, the grid off) than a break.
+        if (gone < 8 || gone > 300) return null
         val q = reads[box] ?: return null
         val last = q.lastOrNull() ?: return null
         if (q.any { it.notLive && now - it.t < 60 }) return null

@@ -38,7 +38,9 @@ object TileText {
     // "[:Letter:]"-style class and refuses the pattern, crashing the app. Never begin a set with ':'.
     private val CLOCK = Regex("""(?<![\d:])([0-5]?\d)[.:]([0-5]\d)(?![\d:])""")
     private val PERIOD = Regex("""\b(1ST|2ND|3RD|4TH|OT|Q[1-4])\b""")
-    private val DOWN = Regex("""\b(1ST|2ND|3RD|4TH)\s*(&|AND|8)\s*(\d{1,2}|GOAL|GL|INCHES)\b""")
+    private val DOWN = Regex("""\b(1ST|2ND|3RD|4TH)\s*(&|AND|8)\s*(\d{1,2}|GOAL|GL|INCHES)\b|\b(1ST|2ND|3RD|4TH)\s*(DOWN|DN)\b""")
+    /** A quarter followed by a clock the reader lost the colon in ("1ST 1121" for 1ST 11:21). */
+    private val PERIOD_CLOCK = Regex("""\b(1ST|2ND|3RD|4TH|OT)\s+([0-1]?\d)([0-5]\d)\b""")
     private val SCORE = Regex("""\b(\d{1,2})\b""")
     /** The game's own graphics saying it isn't being played right now. */
     private val NOT_LIVE = Regex("""\b(HALF|HALFTIME|FINAL|END OF (THE )?(1ST|2ND|3RD|4TH|QUARTER|QTR)|END (1ST|2ND|3RD|4TH|QTR))\b""")
@@ -64,8 +66,41 @@ object TileText {
     private val OTHER_CHARS = Regex("[^A-Z0-9.:&' ]")
     private val SPACES = Regex("\\s+")
 
-    private fun norm(s: String) = s.uppercase().replace('’', '\'').replace(OTHER_CHARS, " ")
-        .replace(SPACES, " ").trim()
+    /** What the phone's reader commonly gets wrong in a score bug's small type: "15T" for 1ST, "3R0" for 3RD. */
+    private val OCR_FIXES = listOf(
+        Regex("""\b[1IL][S5][T7]\b""") to "1ST",
+        Regex("""\b2N[D0O]\b""") to "2ND",
+        Regex("""\b3R[D0O]\b""") to "3RD",
+        Regex("""\b4T[HN]\b""") to "4TH",
+    )
+
+    private fun norm(s: String): String {
+        var t = s.uppercase().replace('’', '\'').replace(OTHER_CHARS, " ").replace(SPACES, " ").trim()
+        for ((re, to) in OCR_FIXES) t = t.replace(re, to)
+        return t
+    }
+
+    /**
+     * A line that's the game's own score bug, whatever else it reads: down and distance, or a quarter
+     * and a clock. Tickers show quarters and clocks of other games too, but never down and distance,
+     * and a ticker line names a league or other teams, which the ticker checks catch first.
+     */
+    /** [raw] (as read) looks like a line of a score bug: see [bugLike]. */
+    fun looksLikeBug(raw: String): Boolean = bugOnly(" ${norm(raw)} ")
+
+    private val BUG_VOCAB = setOf("1ST", "2ND", "3RD", "4TH", "AND", "GOAL", "DOWN", "QTR", "YDS", "TO", "GO", "FLAG", "TIMEOUT")
+    private val WORD = Regex("""\b[A-Z][A-Z']{2,}\b""")
+
+    /**
+     * Nothing but score bug: down and distance or a quarter and clock, with at most one other word.
+     * A network bug that shows team logos reads like this ("0 3RD & 8 1ST 12:21 0"); a ticker line
+     * always names teams or a league.
+     */
+    private fun bugOnly(t: String) = bugLike(t) && !LEAGUE.containsMatchIn(t) &&
+        WORD.findAll(t).count { it.value !in BUG_VOCAB } <= 1
+
+    private fun bugLike(t: String) = DOWN.containsMatchIn(t) ||
+        (PERIOD.containsMatchIn(t) && (CLOCK.containsMatchIn(t) || PERIOD_CLOCK.containsMatchIn(t)))
 
     /** Plain text, one line per line (as the phone's text recognition gives it). */
     fun read(text: String, teams: Map<Int, Set<String>>, scores: Map<Int, List<Int>> = emptyMap(), own: Int? = null,
@@ -95,12 +130,15 @@ object TileText {
             val t = " " + norm(l.text) + " "
             if (t.isBlank()) continue
             // In the ticker's band: set aside, unless it's this game's own score bug staying put there.
-            val inBand = tickerBand?.contains(center(l)) == true && !(ownNames.any { t.contains(" $it ") } && steady(l))
+            // Network NFL bugs (FOX, CBS) sit along the bottom and use logos, not team names, so the
+            // reader often has only the score, clock and down there: never set that aside.
+            val inBand = tickerBand?.contains(center(l)) == true && !(ownNames.any { t.contains(" $it ") } && steady(l)) &&
+                !bugOnly(t)
             if (inBand || isTicker(t, l, owner, own)) ticker.append(t) else picture.append(t)
         }
         val t = " " + norm(picture.toString()) + " "
         val notLive = NOT_LIVE.containsMatchIn(t)
-        val clock = CLOCK.containsMatchIn(t)
+        val clock = CLOCK.containsMatchIn(t) || PERIOD_CLOCK.containsMatchIn(t)
         val period = PERIOD.containsMatchIn(t)
         val down = DOWN.containsMatchIn(t)
         // Which game: the most team words from one game's teams (whole words only, so "OSU" isn't in "BOSUN").
@@ -112,7 +150,9 @@ object TileText {
         // its score, at or near ESPN's (your TV runs behind ESPN, so up to a touchdown and a two-point
         // conversion lower, or a field goal higher when ESPN is the late one).
         val g = showsGameOf ?: own
-        val numbers = SCORE.findAll(t.replace(CLOCK, " ").replace(DOWN, " ")).map { it.groupValues[1].toInt() }.toList()
+        // A lone "O" next to the bug's numbers is a zero the reader took for a letter.
+        val numbers = SCORE.findAll(t.replace(PERIOD_CLOCK, " ").replace(CLOCK, " ").replace(DOWN, " ").replace(Regex("""(?<= )O(?= )"""), "0"))
+            .map { it.groupValues[1].toInt() }.toList()
         val teamsSeen = g?.let { gb ->
             sides[gb]?.count { side -> side.map { norm(it) }.any { w -> w.length >= 2 && t.contains(" $w ") } }
                 ?: minOf(2, hits[gb] ?: 0)
@@ -134,6 +174,10 @@ object TileText {
                 (teamsSeen >= 1 && closeScore && (clue || teamsSeen == 2)) ||
                 (teamsSeen == 2 && clue) ||
                 (teamsSeen >= 1 && down) ||
+                // Logo bugs: no team names to read, but ESPN's score (or near it) with down and distance,
+                // or with a quarter and a running clock, is this game's bug.
+                (closeScore && down) ||
+                (closeScore && period && clock && numbers.size <= 6) ||
                 (score == null && down && (clock || period)))
         // Commercial-like, only without the game's score bug in the same picture (sponsor graphics show up
         // mid-game). Fine print along the bottom counts too, even where a ticker runs.
@@ -153,7 +197,7 @@ object TileText {
         val games = owner.filterValues { it != null }.filterKeys { w -> t.contains(" $w ") }.values.toSet()
         if (games.size >= 2) return true
         val bottom = (l.top + l.bottom) / 2 >= 0.86
-        if (!bottom || DOWN.containsMatchIn(t)) return false
+        if (!bottom || DOWN.containsMatchIn(t) || bugOnly(t)) return false
         if (games.isNotEmpty()) return own != null && own !in games // one of your other games, on this box's ticker
         val nums = SCORE.findAll(t.replace(CLOCK, " ")).count()
         return nums >= 2 || NOT_LIVE.containsMatchIn(t) || (l.right - l.left >= 0.55 && t.trim().length >= 12)
@@ -229,6 +273,7 @@ class TickerBands {
             if (c < 0.7 || l.text.trim().length < 8) continue // tickers run along the bottom
             val w = words(l.text)
             if (w.any { it in own }) continue
+            if (TileText.looksLikeBug(l.text)) continue // the score bug's clock ticks: that's not a ticker
             if (w.count { x -> x.any(Char::isLetter) && x !in bugWords } < 2) continue
             val was = near(prev, c)
             if (was.isEmpty()) continue

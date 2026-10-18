@@ -227,11 +227,13 @@ class Controller(
         }
         // You're watching it and said it's on.
         if (userSaidGame(box, now)) return Outlook.LIVE to "you said it's the game"
-        // The camera sees the box itself (when it's sure).
-        if (!ignoreCamera) when (cameraSays(box, now)) {
-            true -> return Outlook.LIVE to "camera sees the game"
-            false -> return Outlook.BREAK to "camera sees a commercial"
-            null -> Unit
+        // The camera sees the box itself. It rules a box out only on commercial text it read there; its
+        // score bug just not being read (a graphic over it, small type) only puts the box further down
+        // the list, behind what ESPN says (see [ranked]).
+        if (!ignoreCamera) {
+            val sight = sightOf(box, now)
+            if (cameraSays(box, now) == true) return Outlook.LIVE to "camera sees the game"
+            if (sight?.adText == true) return Outlook.BREAK to "camera sees a commercial"
         }
         val f = feed ?: return Outlook.UNKNOWN to ""
         val plays = f.plays(box)
@@ -275,7 +277,9 @@ class Controller(
         if (feed == null && sights == null) return open
         val look = open.associateWith { outlook(it, now, status).first }
         val usable = open.filter { look[it] == Outlook.LIVE || look[it] == Outlook.UNKNOWN }
-        return usable.sortedWith(compareByDescending<Int> { look[it] == Outlook.LIVE }.thenByDescending { score(it) })
+        // The camera leaning commercial (score bug not read lately) puts a box behind the others, never out.
+        return usable.sortedWith(compareByDescending<Int> { look[it] == Outlook.LIVE }
+            .thenBy { cameraSays(it, now) == false }.thenByDescending { score(it) })
     }
 
     /** No game being played anywhere else: boxes showing a halftime show, the closest game first. */
@@ -383,7 +387,9 @@ class Controller(
         // Halftime or the end of a quarter: back only once the camera reads the live score bug (the
         // field in view isn't enough: the band plays on it at halftime), or ESPN's status moves on.
         if (status[box] == GameStatus.BREAK) return sightOf(box, now)?.bug == true
-        cameraSays(box, now)?.let { return it }
+        // The camera reading the game there is the fastest sign it's back; its silence proves nothing.
+        if (cameraSays(box, now) == true) return true
+        if (sightOf(box, now)?.adText == true) return false
         val started = breakStarted[box]
         if (feed != null && started != null && feed.pbpFresh(box, now)) {
             if (resumedPlay(box, started, now) != null) return true
@@ -402,7 +408,7 @@ class Controller(
      * (another game's halftime show, or staying on this one's when it's halftime: [stayOnShow]), then
      * the commercial that started first, else stay.
      */
-    private fun goToBreak(cur: Int, now: Double, status: Map<Int, GameStatus>, why: String, stayOnShow: Boolean = false): Boolean {
+    private fun goToBreak(cur: Int, now: Double, status: Map<Int, GameStatus>, why: String, stayOnShow: Boolean = false, quiet: Boolean = false): Boolean {
         armed.remove(cur)
         userLive.remove(cur)
         awayForBreak += cur
@@ -431,7 +437,7 @@ class Controller(
             adSwitches.addLast(now)
             return switchTo(b, now, "$why; every game is in commercial, box $b should be back first")
         }
-        log("$why, but every other game is in commercial too. Staying.")
+        if (!quiet) log("$why, but every other game is in commercial too. Staying.")
         return false
     }
 
@@ -450,7 +456,15 @@ class Controller(
         val now = clock()
         val cur = nav.current ?: return false
         syncAdStart(cur, now - 2) // you tapped a moment after it started
-        return goToBreak(cur, now, feedStatus(), "You marked a commercial on box $cur")
+        val status = feedStatus()
+        if (goToBreak(cur, now, status, "You marked a commercial on box $cur", quiet = true)) return true
+        // You said it's a commercial: go somewhere anyway, the best other game that isn't over
+        // (pregame shows included), rather than sit on it.
+        val any = boxes.filter { it != cur && status[it] != GameStatus.FINAL && sightOf(it, now)?.adText != true }
+            .sortedWith(compareByDescending<Int> { status[it] != GameStatus.PREGAME }.thenByDescending { score(it) })
+            .firstOrNull() ?: return false
+        adSwitches.addLast(now)
+        return switchTo(any, now, "You marked a commercial on box $cur; going to box $any anyway")
     }
 
     /** Returns true if it switched (caller should reset the audio window). */

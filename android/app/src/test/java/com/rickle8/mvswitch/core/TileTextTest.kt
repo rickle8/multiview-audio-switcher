@@ -160,4 +160,35 @@ class TileTextTest {
         assertEquals(1.0 to 1.0, uprightToRaw(0.0, 0.0, 180))
         assertEquals(1.0 to 0.0, uprightToRaw(0.0, 0.0, 270))
     }
+
+    private val nfl = mapOf(
+        2 to listOf(setOf("jets", "new york jets", "nyj"), setOf("patriots", "new england", "ne")),
+        3 to listOf(setOf("steelers", "pittsburgh", "pit"), setOf("buccaneers", "tampa bay", "tb")),
+    )
+    private val nflTeams = nfl.mapValues { it.value.flatten().toSet() }
+
+    @Test fun readsALogoScoreBugAsTheGame() {
+        // Sunday's FOX and CBS bugs show logos, so the reader gets only the score, down and clock,
+        // with its usual slips ("15T" for 1ST, a lost colon): that's the game at 0-0.
+        val zero = mapOf(2 to listOf(0, 0), 3 to listOf(0, 0))
+        val band = 0.88..0.98
+        val pit = TileText.read(listOf(line("0 3RD &8 15T 122 0", 0.93)), nflTeams, zero, own = 3, sides = nfl, tickerBand = band)
+        assertTrue(pit.summary, pit.game); assertFalse(pit.ticker)
+        val nyj = TileText.read(listOf(line("ATL 0 2ND &4 1ST 10:46 0", 0.93)), nflTeams, zero, own = 2, sides = nfl, tickerBand = band)
+        assertTrue(nyj.summary, nyj.game)
+        // FOX's "3RD DOWN" banner counts as down and distance.
+        assertTrue(TileText.read(listOf(line("0 3RD DOWN 1ST 11:21 0", 0.93)), nflTeams, zero, own = 3, sides = nfl).game)
+        // A ticker line with other teams and a quarter and clock is still a ticker, and not this game.
+        val tick = TileText.read(listOf(line("OHIO ST 28 PENN ST 21 3RD 4:15", 0.95)), nflTeams, zero, own = 3, sides = nfl)
+        assertFalse(tick.game); assertTrue(tick.ticker)
+    }
+
+    @Test fun aScoreBugsTickingClockNeverMakesATickerBand() {
+        val tb = TickerBands()
+        val own = setOf("steelers", "pittsburgh", "buccaneers", "tampa")
+        tb.update(3, listOf(line("PITTS 0 3RD & 8 1ST 12:21 0", 0.93)), 0.0, own)
+        tb.update(3, listOf(line("PlTTS 0 4TH & 8 1ST 12:15 0", 0.93)), 2.0, own)
+        tb.update(3, listOf(line("PITT5 0 1ST & 10 1ST 12:02 0", 0.93)), 4.0, own)
+        assertNull(tb.band(3, 4.0))
+    }
 }

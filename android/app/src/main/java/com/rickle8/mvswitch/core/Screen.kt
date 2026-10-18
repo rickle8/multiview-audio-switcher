@@ -474,6 +474,8 @@ class GridTracker(
     private var bumpUsed = -1e9
     /** Bumps in the last minute: a phone that never stops shaking (on a speaker) can't wait for stillness. */
     private val recentBumps = ArrayDeque<Double>()
+    /** This look was started by a bump (the phone really moved), not the minute check. */
+    private var bumpLook = false
 
     /** For the diagnostics: looks taken, times it moved the grid, and when it last looked. */
     var looks = 0
@@ -506,6 +508,7 @@ class GridTracker(
             if (now - bumpAt < 2) return null // just bumped: let it settle first
             val due = dueAt ?: (now + everySecs).also { dueAt = it }
             if (now < due && bumpAt <= bumpUsed) return null
+            bumpLook = bumpAt > bumpUsed
             bumpUsed = maxOf(bumpUsed, bumpAt)
             finder.reset(); startedAt = now; skip = 2
             return null
@@ -524,9 +527,13 @@ class GridTracker(
         val cellsX = 96.0; val cellsY = 96.0 * f.height / f.width
         fun shift(a: List<Pair<Double, Double>>, b: List<Pair<Double, Double>>) =
             a.zip(b).maxOf { (p, q) -> maxOf(abs(p.first - q.first) * cellsX, abs(p.second - q.second) * cellsY) }
-        if (shift(found, base) <= 1.5) { pending = null; return null } // same place
+        // Same place. The motion it finds the TV by wobbles more than a cell when a box sits on a still
+        // graphic, so small shifts are that wobble, not the TV moving.
+        if (shift(found, base) <= 2.5) { pending = null; return null }
         val p = pending
-        if (sameShape(found, base) || (p != null && shift(found, p) <= 1.5)) {
+        // Moved: believe it at once after a bump; on the minute check only when a second look agrees
+        // (a lone off look slid the grid half a box and mixed up which game was where).
+        if ((bumpLook && sameShape(found, base)) || (p != null && shift(found, p) <= 1.5)) {
             pending = null
             moves++
             return found

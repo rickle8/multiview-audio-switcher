@@ -14,20 +14,23 @@ class PairingTest {
         assertEquals(Heard.AD, c.heard); assertFalse(c.strong)
     }
 
-    @Test fun theScoreBugAndYardLinesMeanTheGame() {
-        for (s in listOf(Sight(bug = true), Sight(lines = true))) {
-            val held = call(Heard.AD, 85, s)
-            assertEquals(Heard.UNSURE, held.heard); assertTrue(held.held)
-            assertEquals(Heard.GAME, call(Heard.UNSURE, 50, s).heard)
-        }
-        // A recognized commercial gets past yard lines, never past the score bug read off the screen.
-        assertEquals(Heard.AD, call(Heard.AD, 90, Sight(lines = true), strongAd = true).heard)
-        assertEquals(Heard.UNSURE, call(Heard.AD, 90, Sight(bug = true), strongAd = true).heard)
+    @Test fun onlyTheScoreBugHoldsTheSound() {
+        // The game's score bug read off the screen holds an ad-sounding moment, unless the sound is sure.
+        val held = call(Heard.AD, 72, Sight(bug = true))
+        assertEquals(Heard.UNSURE, held.heard); assertTrue(held.held)
+        assertEquals(Heard.AD, call(Heard.AD, 85, Sight(bug = true)).heard)
+        assertEquals(Heard.GAME, call(Heard.UNSURE, 50, Sight(bug = true)).heard)
+        assertEquals(Heard.AD, call(Heard.AD, 70, Sight(bug = true), strongAd = true).heard)
+        // Yard lines and green show up in promos and close-ups too: they never hold the sound back.
+        assertEquals(Heard.AD, call(Heard.AD, 65, Sight(lines = true)).heard)
+        assertEquals(Heard.AD, call(Heard.AD, 65, Sight(grass = true)).heard)
+        assertEquals(Heard.UNSURE, call(Heard.UNSURE, 50, Sight(lines = true)).heard)
     }
 
-    @Test fun theFieldsGreenLeansGame() {
-        assertEquals(Heard.UNSURE, call(Heard.AD, 65, Sight(grass = true)).heard)
-        assertEquals(Heard.AD, call(Heard.AD, 90, Sight(grass = true)).heard)
+    @Test fun theScoreBugLongGoneAloneDoesntTurnUnsureSoundIntoACommercial() {
+        // A lineup graphic over the score bug for minutes, game-ish sound: stay.
+        assertEquals(Heard.UNSURE, call(Heard.UNSURE, 35, Sight(bugGoneSecs = 120.0)).heard)
+        assertEquals(Heard.AD, call(Heard.UNSURE, 55, Sight(bugGoneSecs = 120.0)).heard)
     }
 
     @Test fun commercialSignsBackUpTheSound() {
@@ -49,7 +52,7 @@ class PairingTest {
         assertEquals("score bug, yard lines", Sight(bug = true, lines = true).describe())
         assertEquals("ad text, score bug gone 12 s", Sight(adText = true, bugGoneSecs = 12.4).describe())
         val c = call(Heard.AD, 72, Sight(bug = true))
-        assertEquals("Sound: commercial (72% ad) · Camera: score bug → the game (camera sees it)", c.summary)
+        assertEquals("Sound: commercial (72% ad) · Camera: score bug → the game (camera reads the score bug)", c.summary)
         assertEquals(true, Sight(grass = true).word)
         assertEquals(null, Sight(bugGoneSecs = 10.0).word)
         assertEquals(false, Sight(bugGoneSecs = 50.0).word)

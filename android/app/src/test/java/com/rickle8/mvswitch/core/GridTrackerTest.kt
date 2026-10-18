@@ -69,10 +69,11 @@ class GridTrackerTest {
         val shifted = quad.map { (x, y) -> x + 0.04 to y + 0.05 }
         var found: List<Pair<Double, Double>>? = null
         var t = 0
-        while (found == null && t < 4 * 40) { found = tr.frame(room(shifted, t, rnd), t / 4.0, base); t++ }
+        while (found == null && t < 4 * 60) { found = tr.frame(room(shifted, t, rnd), t / 4.0, base); t++ }
         assertNotNull("never followed it", found)
         assertTrue("found $found", near(found!!, shifted, 0.04))
-        assertTrue("took ${t / 4.0} s", t / 4.0 < 30)
+        // Without a bump it takes a second look agreeing (10 s after the first) before it moves the grid.
+        assertTrue("took ${t / 4.0} s", t / 4.0 in 25.0..45.0)
     }
 
     @Test fun aBumpLooksRightAway() {

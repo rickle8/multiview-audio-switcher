@@ -53,13 +53,11 @@ data class Sight(
  * The sound and the camera, paired into one call on the box you're hearing: commercial or the game.
  * The sound leads (it hears the cut to commercial first) and the camera confirms or holds it:
  *
- * - The camera sure it's the game (score bug, yard lines): an ad-sounding moment doesn't switch, and
- *   unsure sound counts as the game. Only a recognized commercial gets past, and not past the score
- *   bug read right off the screen.
- * - Leaning game (the field's green): holds an ad-sounding moment unless the sound is very sure.
+ * - The game's score bug read right off the screen: an ad-sounding moment under 80% ad doesn't
+ *   switch, and unsure sound counts as the game. Yard lines and green never hold the sound.
  * - Sure it's a commercial (commercial text, the score bug long gone): an ad-sounding moment is a
- *   sure commercial, unsure sound is one too, and even game-like sound is when two camera signs agree.
- * - Leaning commercial (the score bug just went away): ad-leaning sound is a commercial, an
+ *   sure commercial; unsure sound is one with commercial text or 50%+ ad-like sound.
+ * - Leaning commercial (the score bug just went away): 50%+ ad-like sound is a commercial, an
  *   ad-sounding one a sure one.
  *
  * Your "It's the game" keeps the camera from calling that game a commercial.
@@ -67,7 +65,8 @@ data class Sight(
 object Pairing {
     const val SURE = 2.5
     const val LEAN_AD = 1.0
-    const val LEAN_GAME = 1.8
+    /** Above this much ad-like sound, even the score bug on screen doesn't hold it (a sponsor spot over the field). */
+    const val HOLD_MAX_PCT = 80
 
     data class Call(
         val heard: Heard,
@@ -88,25 +87,30 @@ object Pairing {
         val pct = adPct ?: 0
         fun call(h: Heard, strong: Boolean, w: String?, held: Boolean, verdict: String) =
             Call(h, strong, w, held, "Sound: $sound · Camera: $seen → $verdict")
+        // The sound leads. The camera holds an ad-sounding moment only when it reads the game's own
+        // score bug right now and the sound isn't sure (yard lines and green also show up in promos and
+        // close-ups, so they never hold the sound back). Everything else the camera sees only speeds a
+        // switch up or helps come back.
         return when {
             pts <= -SURE -> when {
-                heard == Heard.AD && (!strongAd || sight.bug) ->
-                    call(Heard.UNSURE, false, null, true, "the game (camera sees it)")
-                heard == Heard.AD -> call(heard, true, why, false, "commercial (recognized it)")
-                else -> call(Heard.GAME, false, null, false, "the game")
+                heard == Heard.AD && sight.bug && !strongAd && pct < HOLD_MAX_PCT ->
+                    call(Heard.UNSURE, false, null, true, "the game (camera reads the score bug)")
+                heard == Heard.AD -> call(heard, strongAd, why, false, if (strongAd) "commercial (recognized it)" else "commercial (sound)")
+                heard == Heard.UNSURE && sight.bug -> call(Heard.GAME, false, null, false, "the game (camera reads the score bug)")
+                else -> call(heard, strongAd, why, false, soundVerdict(heard))
             }
-            pts <= -LEAN_GAME && heard == Heard.AD && !strongAd && pct < 75 ->
-                call(Heard.UNSURE, false, null, true, "probably the game (holding)")
             pts >= SURE -> when (heard) {
                 Heard.AD -> call(Heard.AD, true, why.takeIf { strongAd } ?: "Sounds like a commercial and the camera agrees ($seen)", false, "commercial (both agree)")
-                Heard.UNSURE -> call(Heard.AD, false, why, false, "commercial (camera sure)")
+                // Unsure sound: the camera tips it only with commercial text, or sound already leaning ad.
+                Heard.UNSURE -> if (sight.adText || pct >= 50) call(Heard.AD, false, why ?: "The camera sees a commercial ($seen)", false, "commercial (camera sure)")
+                    else call(heard, strongAd, why, false, soundVerdict(heard))
                 Heard.GAME -> if (sight.adText && sight.bugGoneSecs != null && pct >= 30)
                     call(Heard.AD, false, "The camera sees a commercial ($seen)", false, "commercial (camera sure)")
                 else call(heard, strongAd, why, false, "the game (sound)")
             }
             pts >= LEAN_AD -> when {
                 heard == Heard.AD -> call(Heard.AD, true, why.takeIf { strongAd } ?: "Sounds like a commercial and the camera agrees ($seen)", false, "commercial (both agree)")
-                heard == Heard.UNSURE && pct >= 45 -> call(Heard.AD, false, why, false, "commercial (both lean that way)")
+                heard == Heard.UNSURE && pct >= 50 -> call(Heard.AD, false, why, false, "commercial (both lean that way)")
                 else -> call(heard, strongAd, why, false, soundVerdict(heard))
             }
             else -> call(heard, strongAd, why, false, soundVerdict(heard))
