@@ -1,4 +1,4 @@
-# Multiview Audio: how it decides (v1.0.83)
+# Multiview Audio: how it decides (v1.0.85)
 
 Built for one setup: a Samsung QN75Q8F, YouTube TV multiview with 4 games (2x2), and a Galaxy S21 on a stand facing the TV doing everything (listening, watching, pressing the TV's buttons). College football Saturdays, NFL Sundays.
 
@@ -78,7 +78,8 @@ The camera can make it quicker still: see "gone" in section 5.
 **What counts as the game being played:** that game's own teams and a score at or near ESPN's current one (your TV runs behind ESPN, so up to 8 points lower or 3 higher counts as near). Any of: ESPN's exact score with a team or the clock; a team, a near score and the clock or quarter (or both teams); both teams with the clock or quarter; a team with down and distance. A team name alone (a promo for the game) isn't enough, and the score bug's own HALF or FINAL isn't play.
 - Read in the last 10 s: that game is on.
 - **Gone:** on a box where it reads the bug nearly every time (60%+ of reads), missing it 8 s or more, enough reads in a row that it isn't a misread, while it still reads the other boxes. A cut to commercial looks like that. Some replays drop the bug too, so it only backs up the sound: an ad-leaning sound becomes a commercial and an ad-sounding one a sure one (section 6), a few seconds sooner than the sound alone.
-- Nothing for 45 s on a box it normally reads well (4+ reads in the minute before), while it still reads the other boxes: commercial. 45 s is longer than replays and close-ups.
+- Nothing for 45 s on a box it normally reads well (4+ reads in the minute before it went), while it still reads the other boxes: commercial, for as long as the break lasts. 45 s is longer than replays and close-ups.
+- **At halftime** the score bug is off for much of the studio show, so it being gone means nothing there; commercial text still counts.
 
 **The ticker:** some networks (ESPN's BottomLine) run other games' scores and headlines along the bottom, sometimes over commercials too, so a ticker says nothing about the box: not the game, not a commercial, not a show. Each line comes with where it sits, and ticker lines never count toward the game: a league name like NCAAF, two of your games in one line, another game's score, "final" or a headline along the very bottom, or anything in the band where the text keeps changing read after read (it scrolls or flips). The score bug never makes that band: lines with the game's own teams, and its clock, quarter and down and distance, are left out, one change (a "review" banner) isn't enough, and the game's own teams staying put still count even inside a band.
 
@@ -99,14 +100,14 @@ The camera can make it quicker still: see "gone" in section 5.
 
 The Live screen and your phone page show what the camera sees on each box ("score bug, yard lines", "score bug gone 12 s") and how the last call paired up ("Sound: commercial (72% ad) · Camera: score bug → the game (camera sees it)").
 
-**Other games:** the camera's word ("on" with the score bug, yard lines, green or a proven score bar; "commercial" with commercial text or the bug long gone) makes a box a good place to go, marks your game as back, or rules a box out.
+**Other games:** the camera's word ("on" with the score bug, yard lines, green or a proven score bar; "commercial" with commercial text or the bug long gone) makes a box a good place to go, marks your game as back, or rules a box out. While ESPN says a game is at halftime or between quarters, only its live score bug read off the screen counts (the band on the field at halftime isn't the game), and that beats ESPN's status, which lags your TV by 30-90 s.
 
 ## 6. When it switches (the game you're hearing)
 
 Checked in this order:
 1. Switched in the last 6 seconds: wait.
 2. Commercial (sound and camera paired, section 5):
-   - Bounced twice in 75 seconds (every game in commercial): sit on this one for 45 s, but jump as soon as ESPN shows any game back on.
+   - Bounced twice in 75 seconds (every game in commercial): sit on this one for 45 s, even when it's sure this one is a commercial, but jump as soon as any game is known to be back on (the camera, its clock, a fresh play).
    - ESPN warned of a break your TV hasn't reached yet: wait.
    - A commercial it's sure of (fingerprint, or the camera backs it up): go now.
    - ESPN guard (play just happened, clock running): stay.
@@ -124,7 +125,7 @@ Checked in this order:
 ## 7. Going back to your game
 
 When it leaves your game for a commercial, it remembers it (not the stops along the way). It goes back once it's been at least 15 s since the last switch and:
-- the camera reads your game's score bug again (fastest), or
+- the camera reads your game's score bug again (fastest; at halftime or between quarters, only that counts, not the field), or
 - ESPN shows a play since the break that your TV has had time to show, or
 - the break has gone on longer than normal (2.5-8 minutes; halftime 20).
 
@@ -179,3 +180,17 @@ Both phones need the same Wi-Fi, and the app open on the camera phone. Only a de
 | Camera: the TV moved in the picture. Lined it up again. | The minute check or a bump moved the grid |
 | Camera was right/wrong: the sound moved to box N. | Your answer to the outline question |
 | Camera: you moved the sound to box N. Going with it. | Followed your TV remote (outline proven) |
+
+## 12. Debug pass (v1.0.85)
+
+A full read-through of the logic, with every fix covered by a test that failed before it.
+
+**Fixed:**
+1. **Halftime never left for a live game.** ESPN's halftime status and its end-of-half play kept re-arming each other every second, so the "go once your TV gets there" kept getting pushed back. It only left when a commercial sounded. Now it goes to a live game at halftime, or stays for the show if none.
+2. **The band at halftime counted as the game.** Yard lines and green from the halftime show made your game look "back" (and the halftime box look "live"). Now, while ESPN says halftime or between quarters, only the live score bug counts, and it counts ahead of ESPN's lagging status.
+3. **The halftime show could be called a commercial.** The score bug off during the studio show read as "gone". At halftime that no longer counts; commercial text still does.
+4. **A long commercial stopped counting after 2 minutes.** The score bug's read history only went back 2 minutes, so the camera's "commercial" ran out partway through a break. Fixed (introduced in v1.0.83).
+5. **Bouncing through four commercials.** Camera-confirmed commercials skipped the "commercials everywhere" pause. They don't now.
+6. Coming back to your game could "switch" to the box it was already on; box reads kept going for a few seconds after the phone was turned; Go after opening YouTube TV said box 1 without assuming it.
+
+**Simpler:** the switching logic takes the camera's word from one place (what it sees per box); the score bug's read history is one small tested piece instead of three lists in the engine; the no-live-data "go back to box 1" fallback (which fought where you put the sound) and unused leftovers (athlete-name collection, read strength, old helpers) are gone.
