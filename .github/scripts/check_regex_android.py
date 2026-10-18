@@ -133,8 +133,9 @@ def patterns(root):
 def main():
     root = sys.argv[1] if len(sys.argv) > 1 else "."
     uregex_open, uregex_close, lib = load_icu()
+    ci = os.environ.get("GITHUB_ACTIONS") == "true"
     if uregex_open is None:
-        print("ICU not found: skipping the Android regex check")
+        print(("::warning::" if ci else "") + "ICU not found: skipping the Android regex check")
         return 0
     uregex_open.restype = ctypes.c_void_p
     uregex_close.argtypes = [ctypes.c_void_p]
@@ -149,10 +150,10 @@ def main():
         r = uregex_open(buf, ctypes.c_int32(len(data) // 2), ctypes.c_uint32(0), perr, ctypes.byref(status))
         if status.value > 0:
             bad += 1
-            print(f"Android can't compile the pattern at {where} (ICU error {status.value}): {pat}")
+            print(("::error::" if ci else "") + f"Android can't compile the pattern at {where} (ICU error {status.value}): {pat}")
         if r:
             uregex_close(r)
-    print(f"Checked {count} patterns with {os.path.basename(lib)}: {bad} Android would refuse")
+    print(("::notice::" if ci else "") + f"Checked {count} patterns with {os.path.basename(lib)}: {bad} Android would refuse")
     return 1 if bad else 0
 
 
