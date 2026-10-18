@@ -186,9 +186,12 @@ class ScreenWatcher(private val layout: Int, private val w: Int = 384, private v
         val recent = ArrayDeque<Double>()
         var showing: Boolean? = null
         var lastMaskFrame = 0
+        var goneFrames = 0
     }
 
     private val bugs = HashMap<Int, Bug>()
+    /** Frames (about 4 a second) the bug has to stay gone before it counts as a commercial. */
+    var GONE_FRAMES = 100
     private val EDGE = 10f
 
     /** The box's picture at half resolution (averaged, which also smooths camera noise), clear of the outline. */
@@ -253,10 +256,12 @@ class ScreenWatcher(private val layout: Int, private val w: Int = 384, private v
         while (b.recent.size > 10) b.recent.removeFirst()
         val avg = b.recent.average()
         // Random edges line up with the bug about a fifth of the time; the real bug, nearly always.
-        // Hysteresis over ~2.5 s, so a replay wipe or a flash doesn't flip it.
+        // The bug back means the game, right away. The bug gone isn't enough on its own: broadcasts drop
+        // it for replays, scores and close-ups. Only a long absence (~25 s) reads as a commercial.
+        if (b.recent.size >= 6 && avg <= 0.35) b.goneFrames++ else if (avg >= 0.45) b.goneFrames = 0
         b.showing = when {
             b.recent.size >= 6 && avg >= 0.55 -> true
-            b.recent.size >= 6 && avg <= 0.35 -> false
+            b.goneFrames >= GONE_FRAMES -> false
             else -> b.showing
         }
         return b.showing to (avg * 100).toInt()

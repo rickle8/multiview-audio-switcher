@@ -65,16 +65,19 @@ class ScreenTest {
         assertTrue("all games: ${v!!.scoreBar}", v.showingGame.values.all { it == true })
         // It found the bug near the bottom of each box.
         assertTrue(v.bugArea[1]!![1] > 0.6)
-        // Box 3 cuts to a commercial.
-        for (t in 120 until 140) v = sw.frame(grid(t, null, setOf(3), rnd))
+        // Box 3 drops its bug for a 10-second replay: still the game.
+        for (t in 120 until 160) v = sw.frame(grid(t, null, setOf(3), rnd))
+        assertEquals("replay ${v!!.scoreBar}", true, v.showingGame[3])
+        // Box 3 cuts to a commercial (gone for good).
+        for (t in 160 until 240) v = sw.frame(grid(t, null, setOf(3), rnd))
         assertEquals("bars ${v!!.scoreBar} area ${v.bugArea[3]?.toList()}", false, v.showingGame[3])
         assertEquals(true, v.showingGame[2])
         // The room gets darker (or the camera changes exposure): still reads the games right.
-        for (t in 140 until 160) v = sw.frame(grid(t, null, setOf(3), rnd, gain = 0.7f))
+        for (t in 240 until 260) v = sw.frame(grid(t, null, setOf(3), rnd, gain = 0.7f))
         assertEquals("dark bars ${v!!.scoreBar}", true, v.showingGame[1])
         assertEquals("dark bars ${v.scoreBar}", false, v.showingGame[3])
         // Box 3 back from commercial.
-        for (t in 160 until 180) v = sw.frame(grid(t, null, emptySet(), rnd))
+        for (t in 260 until 280) v = sw.frame(grid(t, null, emptySet(), rnd))
         assertEquals("back bars ${v!!.scoreBar}", true, v.showingGame[3])
     }
 
