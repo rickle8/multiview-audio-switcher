@@ -36,6 +36,10 @@ data class Settings(
     val micSensitivity: Float = 0.5f,
     val proactive: Boolean = true,
     val hopping: Hopping = Hopping.OFF,
+    /** This phone's camera watches the TV (a spare phone on a stand). */
+    val useCamera: Boolean = false,
+    /** The multiview grid's corners in the camera picture, as fractions: TL x,y, TR, BR, BL. */
+    val gridCorners: List<Double> = listOf(0.1, 0.2, 0.9, 0.2, 0.9, 0.8, 0.1, 0.8),
     /** Go back to the game you were watching when its commercial ends. */
     val returnToGame: Boolean = true,
     val breakSecs: Int = 150,
@@ -69,7 +73,8 @@ data class Settings(
         .put("tvType", tvType.name).put("tvHost", tvHost).put("samsungToken", samsungToken ?: "")
         .put("layout", layout).put("homing2", homing).put("homePresses", homePresses)
         .put("useMic", useMic).put("micSensitivity", micSensitivity.toDouble())
-        .put("proactive", proactive).put("hopping2", hopping.name).put("returnToGame", returnToGame).put("breakSecs", breakSecs)
+        .put("proactive", proactive).put("hopping2", hopping.name).put("returnToGame", returnToGame)
+        .put("useCamera", useCamera).put("gridCorners", org.json.JSONArray(gridCorners)).put("breakSecs", breakSecs)
         .put("league", league)
         .put("githubToken", githubToken)
         .put("openYouTubeTv", openYouTubeTv)
@@ -119,6 +124,9 @@ data class Settings(
                 micSensitivity = j.optDouble("micSensitivity", d.micSensitivity.toDouble()).toFloat(),
                 proactive = j.optBoolean("proactive", d.proactive),
                 returnToGame = j.optBoolean("returnToGame", true),
+                useCamera = j.optBoolean("useCamera", false),
+                gridCorners = j.optJSONArray("gridCorners")?.let { a -> (0 until a.length()).map { a.optDouble(it) } }
+                    ?.takeIf { it.size == 8 && it.all { v -> !v.isNaN() } } ?: d.gridCorners,
                 hopping = runCatching { Hopping.valueOf(j.optString("hopping2")) }.getOrDefault(d.hopping),
                 breakSecs = j.optInt("breakSecs", d.breakSecs),
                 league = j.optString("league", d.league),

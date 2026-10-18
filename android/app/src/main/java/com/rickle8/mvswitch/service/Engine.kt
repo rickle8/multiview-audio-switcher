@@ -104,6 +104,14 @@ data class EngineState(
     val feedError: String? = null,
     /** Holding off on switching for a bit because you're using the remote. */
     val held: Boolean = false,
+    /** The camera is watching the TV (frames are arriving). */
+    val cameraLive: Boolean = false,
+    /** The box the camera sees highlighted. */
+    val cameraBox: Int? = null,
+    /** Per box: game (true) / commercial (false) / not sure (null), as the camera sees it. */
+    val cameraGame: Map<Int, Boolean?> = emptyMap(),
+    /** Per box: how much of the learned score bar is on screen, 0..100. */
+    val cameraBars: Map<Int, Int?> = emptyMap(),
     /** Samsung: whether the TV connection is up right now (null for other TVs). */
     val tvLinked: Boolean? = null,
     /** While connecting: what it's waiting for ("Press Allow on the TV"). */
@@ -465,6 +473,10 @@ object Engine {
             remoteMsg = remoteMsg,
             feedError = f?.lastError,
             held = running && n < holdUntil,
+            cameraLive = n - cameraAt < 5,
+            cameraBox = cameraView?.highlighted?.takeIf { n - cameraAt < 5 },
+            cameraGame = cameraView?.showingGame?.takeIf { n - cameraAt < 5 }.orEmpty(),
+            cameraBars = cameraView?.scoreBar?.takeIf { n - cameraAt < 5 }.orEmpty(),
             tvLinked = (tv as? SamsungRemote)?.linked,
             tvWaiting = tvWaiting,
             tvKeyboard = tvKeyboard,
@@ -854,6 +866,64 @@ object Engine {
             log("Got it, game audio. Learning this sound.")
         }
         publish()
+    }
+
+    // ---------------------------------------------------------------- camera
+    /** The latest camera frame, for lining up the grid on the setup screen. */
+    @Volatile var cameraFrame: com.rickle8.mvswitch.core.GrayFrame? = null
+        private set
+    @Volatile private var cameraView: com.rickle8.mvswitch.core.CameraView? = null
+    @Volatile private var cameraAt = -1e9
+    private var watcher: com.rickle8.mvswitch.core.ScreenWatcher? = null
+    private var watcherKey: String? = null
+    private var camMismatchSince = -1e9
+
+    /** A frame from the camera watching the TV (about 2 a second). */
+    fun onCameraFrame(frame: com.rickle8.mvswitch.core.GrayFrame) {
+        cameraFrame = frame
+        val s = _settings.value
+        if (!s.useCamera) return
+        val n = now()
+        val key = "${s.layout}:${s.gridCorners}"
+        if (watcher == null || watcherKey != key) { watcher = com.rickle8.mvswitch.core.ScreenWatcher(s.layout); watcherKey = key }
+        val corners = s.gridCorners.chunked(2).map { it[0] to it[1] }
+        val img = runCatching { com.rickle8.mvswitch.core.warpGrid(frame, corners) }.getOrNull() ?: return
+        val c = ctrl
+        val cur = nav?.current
+        // Score bars are only learned from boxes known to be showing the game.
+        val gameLikely = (1..boxCount(s)).filter { b ->
+            (b == cur && lastResult?.heard == Heard.GAME) ||
+                (c != null && c.outlook(b, n).first == com.rickle8.mvswitch.core.Controller.Outlook.LIVE &&
+                    c.outlook(b, n).second != "camera sees the game")
+        }.toSet()
+        val v = watcher!!.frame(img, gameLikely)
+        cameraView = v
+        cameraAt = n
+        c?.camera = n to v.showingGame
+        // Where's the sound really? The highlight outline says.
+        val seen = v.highlighted
+        val running = job?.isActive == true && !paused && !autoPaused && !waitingForMultiview && lockedBox == null
+        if (seen != null && cur != null && seen != cur && running && c != null && n - c.lastSwitch > 4) {
+            if (camMismatchSince < 0) camMismatchSince = n
+            if (n - camMismatchSince >= 2) {
+                synchronized(lock) {
+                    nav?.current = seen
+                    c.lastSwitch = n
+                }
+                synchronized(detector) { detector.onSwitch() }
+                log("Camera: the sound is on box $seen, not box $cur. Fixed.")
+                camMismatchSince = -1e9
+            }
+        } else camMismatchSince = -1e9
+    }
+
+    private var cameraErrorLogged: String? = null
+    fun cameraError(msg: String) {
+        if (cameraErrorLogged != msg) { cameraErrorLogged = msg; log("Camera problem: $msg") }
+    }
+
+    fun setGridCorners(corners: List<Double>) {
+        update { it.copy(gridCorners = corners) }
     }
 
     fun resetLearning() {
@@ -1261,6 +1331,7 @@ object Engine {
             ctrl?.returnTo = null
         }
         synchronized(detector) { detector.onSwitch() }
+        watcher?.setHighlighted(box)
         log("Got it: the audio is on box $box.")
         publish()
     }

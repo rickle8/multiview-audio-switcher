@@ -1,0 +1,133 @@
+package com.rickle8.mvswitch.ui
+
+import android.graphics.Bitmap
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.DialogProperties
+import com.rickle8.mvswitch.core.GrayFrame
+import com.rickle8.mvswitch.core.boxRects
+import com.rickle8.mvswitch.core.Homography
+import com.rickle8.mvswitch.data.Settings
+import com.rickle8.mvswitch.service.Engine
+import com.rickle8.mvswitch.service.EngineState
+import kotlinx.coroutines.delay
+
+private fun GrayFrame.toBitmap(): Bitmap {
+    val px = IntArray(width * height) { i -> val g = pixels[i].toInt() and 0xFF; (0xFF shl 24) or (g shl 16) or (g shl 8) or g }
+    return Bitmap.createBitmap(px, width, height, Bitmap.Config.ARGB_8888)
+}
+
+/** Drag the four corners onto the multiview grid in the camera picture. */
+@Composable
+fun CameraSetup(state: EngineState, settings: Settings, onDismiss: () -> Unit) {
+    var frame by remember { mutableStateOf(Engine.cameraFrame) }
+    LaunchedEffect(Unit) { while (true) { frame = Engine.cameraFrame; delay(400) } }
+    val corners = remember { mutableStateListOf(*settings.gridCorners.toTypedArray()) }
+    var dragging by remember { mutableStateOf(-1) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false),
+        modifier = Modifier.padding(10.dp),
+        containerColor = C.surface2,
+        title = { Text("Line up the camera") },
+        text = {
+            Column(Modifier.verticalScroll(rememberScrollState())) {
+                Text("Put this phone on a stand facing the TV, plugged in. Open multiview, then drag the four " +
+                    "dots onto the outer corners of the four-game grid.", color = C.muted, fontSize = 13.sp)
+                Spacer(Modifier.height(10.dp))
+                val f = frame
+                if (f == null) {
+                    Text("Waiting for the camera…", color = C.muted)
+                } else {
+                    val bmp = remember(f) { f.toBitmap().asImageBitmap() }
+                    Canvas(
+                        Modifier.fillMaxWidth().aspectRatio(f.width.toFloat() / f.height)
+                            .pointerInput(Unit) {
+                                detectDragGestures(
+                                    onDragStart = { p ->
+                                        dragging = (0 until 4).minByOrNull { i ->
+                                            val dx = corners[2 * i] * size.width - p.x
+                                            val dy = corners[2 * i + 1] * size.height - p.y
+                                            dx * dx + dy * dy
+                                        } ?: -1
+                                    },
+                                    onDragEnd = { dragging = -1; Engine.setGridCorners(corners.toList()) },
+                                ) { change, drag ->
+                                    change.consume()
+                                    val i = dragging
+                                    if (i >= 0) {
+                                        corners[2 * i] = (corners[2 * i] + drag.x / size.width).coerceIn(0.0, 1.0)
+                                        corners[2 * i + 1] = (corners[2 * i + 1] + drag.y / size.height).coerceIn(0.0, 1.0)
+                                    }
+                                }
+                            },
+                    ) {
+                        drawImage(bmp, dstSize = IntSize(size.width.toInt(), size.height.toInt()), dstOffset = IntOffset.Zero)
+                        val pts = (0 until 4).map { Offset((corners[2 * it] * size.width).toFloat(), (corners[2 * it + 1] * size.height).toFloat()) }
+                        // The boxes as the app will read them.
+                        val hom = Homography((0 until 4).map { corners[2 * it] * size.width to corners[2 * it + 1] * size.height })
+                        for ((box, r) in boxRects(settings.layout)) {
+                            val quad = listOf(r[0] to r[1], r[2] to r[1], r[2] to r[3], r[0] to r[3]).map { (x, y) ->
+                                val (u, v) = hom.map(x, y); Offset(u.toFloat(), v.toFloat())
+                            }
+                            val path = Path().apply { moveTo(quad[0].x, quad[0].y); quad.drop(1).forEach { lineTo(it.x, it.y) }; close() }
+                            val color = when {
+                                state.cameraBox == box -> Color(0xFF2BD9A0)
+                                state.cameraGame[box] == false -> Color(0xFFF5A524)
+                                else -> Color(0xAAFFFFFF)
+                            }
+                            drawPath(path, color, style = Stroke(width = if (state.cameraBox == box) 6f else 3f))
+                        }
+                        pts.forEach { drawCircle(Color(0xFF6CB4FF), radius = 16f, center = it) }
+                    }
+                }
+                Spacer(Modifier.height(10.dp))
+                Text(
+                    if (!state.cameraLive) "Not watching yet: the camera runs while the app is open with camera mode on."
+                    else "Sound on box: ${state.cameraBox ?: "not sure yet"}\n" +
+                        boxRects(settings.layout).keys.joinToString("   ") { b ->
+                            val g = state.cameraGame[b]
+                            "Box $b: " + when (g) { true -> "game"; false -> "commercial"; null -> "learning" } +
+                                (state.cameraBars[b]?.let { " ($it%)" } ?: "")
+                        },
+                    color = C.text, fontSize = 13.sp,
+                )
+                Text("Green outline: the box it sees has the sound. Orange: it sees a commercial. It learns each " +
+                    "game's score bar in the first minute or two of play.", color = C.muted, fontSize = 12.sp,
+                    modifier = Modifier.padding(top = 6.dp))
+            }
+        },
+        confirmButton = { TextButton(onClick = { Engine.setGridCorners(corners.toList()); onDismiss() }) { Text("Done") } },
+    )
+}

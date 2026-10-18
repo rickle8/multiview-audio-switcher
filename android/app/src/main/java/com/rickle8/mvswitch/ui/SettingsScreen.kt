@@ -192,6 +192,22 @@ fun SettingsScreen(state: EngineState, settings: Settings, update: UpdateState, 
         }
 
 
+        // ------------------------------------------------------------ Camera
+        SectionLabel("Camera")
+        Panel {
+            var setup by remember { mutableStateOf(false) }
+            ToggleRow("Watch the TV with this phone's camera",
+                "For a spare phone on a stand facing the TV. It sees which box has the sound (the highlight) and " +
+                    "which games are in commercial (their score bar disappears). Keeps the screen on while open.",
+                settings.useCamera) { v -> Engine.update { it.copy(useCamera = v) } }
+            if (settings.useCamera) {
+                Spacer(Modifier.height(10.dp))
+                Button(onClick = { setup = true }, modifier = Modifier.fillMaxWidth().height(48.dp),
+                    shape = RoundedCornerShape(14.dp)) { Text("Line up the camera") }
+            }
+            if (setup) CameraSetup(state, settings) { setup = false }
+        }
+
         // ------------------------------------------------------------ Detection
         SectionLabel("Detecting commercials")
         Panel {

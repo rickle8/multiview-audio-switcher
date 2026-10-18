@@ -306,6 +306,12 @@ private fun HearingRow(state: EngineState) {
                 Text(state.why, color = C.text, fontSize = 13.sp,
                     maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
+            if (state.cameraLive) {
+                val ads = state.cameraGame.filterValues { it == false }.keys.sorted()
+                Text("Camera: sound on box ${state.cameraBox ?: "?"}" +
+                    (if (ads.isNotEmpty()) " · commercial on ${ads.joinToString()}" else ""),
+                    color = C.blue, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
             if (state.micOn && state.topSounds.isNotEmpty()) {
                 Text(state.topSounds.joinToString(" · "), color = C.muted, fontSize = 12.sp,
                     maxLines = 1, overflow = TextOverflow.Ellipsis)

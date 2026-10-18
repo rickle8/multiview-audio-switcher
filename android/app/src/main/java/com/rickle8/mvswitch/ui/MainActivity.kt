@@ -30,6 +30,31 @@ import com.rickle8.mvswitch.service.SwitcherService
 import com.rickle8.mvswitch.service.Updater
 
 class MainActivity : ComponentActivity() {
+    private var eye: com.rickle8.mvswitch.camera.CameraEye? = null
+
+    private val cameraPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { ok ->
+        if (ok) startCamera()
+    }
+
+    /** Camera mode: watch the TV while the app is open, and keep the screen on. */
+    private fun syncCamera(want: Boolean) {
+        if (want) {
+            window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+            if (eye != null) return
+            if (checkSelfPermission(Manifest.permission.CAMERA) == android.content.pm.PackageManager.PERMISSION_GRANTED) startCamera()
+            else cameraPermission.launch(Manifest.permission.CAMERA)
+        } else {
+            window.clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+            eye?.stop(); eye = null
+        }
+    }
+
+    private fun startCamera() {
+        if (eye != null) return
+        eye = com.rickle8.mvswitch.camera.CameraEye(this, Engine::onCameraFrame) { msg -> Engine.cameraError(msg) }
+            .also { it.start(this) }
+    }
+
     /** True while the Remote tab is showing: phone volume buttons then control the TV. */
     @Volatile private var remoteTabOpen = false
 
@@ -92,6 +117,7 @@ class MainActivity : ComponentActivity() {
                 val state by Engine.state.collectAsState()
                 val settings by Engine.settings.collectAsState()
                 val update by Updater.state.collectAsState()
+                androidx.compose.runtime.LaunchedEffect(settings.useCamera) { syncCamera(settings.useCamera) }
                 var tab by rememberSaveable { mutableIntStateOf(if (settings.slots.isEmpty()) 1 else 0) }
                 androidx.compose.runtime.SideEffect { remoteTabOpen = tab == 3 }
                 Scaffold(

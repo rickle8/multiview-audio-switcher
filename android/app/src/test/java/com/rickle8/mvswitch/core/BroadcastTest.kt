@@ -401,4 +401,22 @@ class BroadcastTest {
         assertTrue(c.step(Heard.AD))
         assertEquals(4, nav.current)
     }
+
+    // ------------------------------------------------------------ camera
+    @Test fun cameraDecidesWhereToGoAndOverrulesTheSound() {
+        var now = 100.0
+        val logs = mutableListOf<String>()
+        val nav = Navigator(quiet, LAYOUTS.getValue(4), home = false, sleep = {})
+        val f = GameFeed(emptyMap(), { JSONObject() }, { now }, pollSecs = 1e9)
+        val c = Controller(nav, listOf(1, 2, 3, 4), f, clock = { now }, log = { logs += it })
+        // The camera sees the game on box 1: a commercial-sounding moment isn't one.
+        c.camera = now to mapOf(1 to true, 2 to false, 3 to false, 4 to true)
+        assertFalse(c.step(Heard.AD))
+        assertTrue(logs.last().contains("camera sees the game"))
+        // Now the camera sees box 1's score bar gone: go, and skip the boxes it sees in commercial.
+        now = 120.0
+        c.camera = now to mapOf(1 to false, 2 to false, 3 to false, 4 to true)
+        assertTrue(c.step(Heard.UNSURE))
+        assertEquals(4, nav.current)
+    }
 }

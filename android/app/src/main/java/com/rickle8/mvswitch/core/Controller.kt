@@ -165,6 +165,12 @@ class Controller(
 
     enum class Outlook { LIVE, BREAK, SOON, UNKNOWN }
 
+    /** What the camera sees: per box, showing the game (true) or a commercial (false), and when. */
+    @Volatile var camera: Pair<Double, Map<Int, Boolean?>>? = null
+
+    /** The camera's word on a box, if it's watching and sure. */
+    fun cameraSays(box: Int, now: Double): Boolean? = camera?.takeIf { now - it.first < 4 }?.second?.get(box)
+
     /**
      * What a game you're not hearing is showing on the TV right now, from ESPN alone:
      * the game clock running or a fresh ordinary play means it's on; a score, timeout,
@@ -173,6 +179,12 @@ class Controller(
      */
     fun outlook(box: Int, now: Double, status: Map<Int, GameStatus> = feedStatus()): Pair<Outlook, String> {
         if (status[box] == GameStatus.BREAK) return Outlook.BREAK to (info(box)?.detail?.ifBlank { null } ?: "break")
+        // The camera sees the box itself: nothing beats that.
+        when (cameraSays(box, now)) {
+            true -> return Outlook.LIVE to "camera sees the game"
+            false -> return Outlook.BREAK to "camera sees a commercial"
+            null -> Unit
+        }
         val f = feed ?: return Outlook.UNKNOWN to ""
         val plays = f.plays(box)
         val p = plays.lastOrNull()
@@ -210,9 +222,9 @@ class Controller(
         val open = boxes.filter { box ->
             box != exclude &&
                 status[box] != GameStatus.FINAL && status[box] != GameStatus.PREGAME &&
-                !inBreak(box, now, status)
+                (cameraSays(box, now) == true || !inBreak(box, now, status))
         }
-        if (feed == null) return open
+        if (feed == null && camera == null) return open
         val look = open.associateWith { outlook(it, now, status).first }
         val usable = open.filter { look[it] == Outlook.LIVE || look[it] == Outlook.UNKNOWN }
         return usable.sortedWith(compareByDescending<Int> { look[it] == Outlook.LIVE }.thenByDescending { score(it) })
@@ -307,6 +319,7 @@ class Controller(
 
     /** The game is back on the TV: a play since its break that the TV has shown, or ESPN says it's live. */
     private fun isBack(box: Int, now: Double, status: Map<Int, GameStatus>): Boolean {
+        cameraSays(box, now)?.let { return it }
         if (status[box] == GameStatus.BREAK) return false
         val started = breakStarted[box]
         if (feed != null && started != null && feed.pbpFresh(box, now)) {
@@ -393,9 +406,25 @@ class Controller(
         if (d in 4.0..120.0) timing?.delay?.addSync(d)
     }
 
-    fun step(heard: Heard, strongAd: Boolean = false, strongWhy: String? = null): Boolean {
+    private var cameraLogged = -1e9
+
+    fun step(heard: Heard, strongAd: Boolean = false, strongWhy: String? = null): Boolean =
+        stepWith(heard, strongAd, strongWhy)
+
+    private fun stepWith(heard0: Heard, strongAd0: Boolean, strongWhy0: String?): Boolean {
         val now = clock()
         val cur = nav.current ?: return false
+        var heard = heard0; var strongAd = strongAd0; var strongWhy = strongWhy0
+        // The camera on the box you're hearing: the score bar gone means commercial (unless the
+        // sound clearly says game); the score bar up means it's the game, whatever the sound thinks.
+        when (cameraSays(cur, now)) {
+            false -> if (heard != Heard.GAME) { heard = Heard.AD; strongAd = true; strongWhy = "Camera sees a commercial" }
+            true -> if (heard == Heard.AD && !strongAd) {
+                if (now - cameraLogged > 60) { cameraLogged = now; log("Sounded like an ad, but the camera sees the game on box $cur. Staying.") }
+                heard = Heard.UNSURE
+            }
+            null -> Unit
+        }
         if (heard == Heard.GAME && lastHeard[cur] == Heard.AD && now - lastSwitch > 15) returnedAt[cur] = now - 4
         // The sound settles on "commercial" about 8 s after it starts.
         if (heard == Heard.AD && lastHeard[cur] != Heard.AD && !strongAd && now - lastSwitch > 20) syncAdStart(cur, now - 8)
