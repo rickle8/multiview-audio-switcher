@@ -912,6 +912,7 @@ object Engine {
         val cur = nav?.current
         synchronized(detector) { detector.label(isAd, now(), cur) }
         if (isAd) {
+            if (cur != null) { adTapAt[cur] = now(); gameSaidAt.remove(cur) }
             log("Got it, commercial. Learning this sound.")
             scope.launch(Dispatchers.IO) {
                 synchronized(lock) {
@@ -999,6 +1000,57 @@ object Engine {
     private val outline = com.rickle8.mvswitch.core.OutlineTrust()
     /** Football's green field in each box (proven against the score text and the sound before it counts). */
     private val field = com.rickle8.mvswitch.core.FieldWatch()
+    /** Each box's share of field green, as last measured. */
+    @Volatile private var greenShares: Map<Int, Double> = emptyMap()
+    /** What the game and commercials look like on your TV, learned (see VisualLook). */
+    private var visual: com.rickle8.mvswitch.core.VisualLook? = null
+    private var visualSavedAt = 0.0
+    /** When you tapped "It's an ad", and on which box: that box is a commercial for the next 30 s. */
+    private val adTapAt = java.util.concurrent.ConcurrentHashMap<Int, Double>()
+
+    private fun visualFor(layout: Int): com.rickle8.mvswitch.core.VisualLook {
+        visual?.takeIf { it.layoutIs(layout) }?.let { return it }
+        val v = com.rickle8.mvswitch.core.VisualLook(layout)
+        runCatching {
+            java.io.File(app.filesDir, "visual_look.bin").takeIf { it.exists() }?.inputStream()?.use { v.load(it) }
+            java.io.File(app.filesDir, "visual_checks.txt").takeIf { it.exists() }?.readText()?.let { v.loadChecks(it) }
+        }
+        visual = v
+        return v
+    }
+
+    private fun saveVisual(n: Double, force: Boolean = false) {
+        val v = visual ?: return
+        if (!force && n - visualSavedAt < 60) return
+        visualSavedAt = n
+        scope.launch(Dispatchers.IO) {
+            runCatching {
+                val tmp = java.io.File(app.filesDir, "visual_look.bin.tmp")
+                tmp.outputStream().use { v.save(it) }
+                tmp.renameTo(java.io.File(app.filesDir, "visual_look.bin"))
+                java.io.File(app.filesDir, "visual_checks.txt").writeText(v.checksText())
+            }
+        }
+    }
+
+    /**
+     * Teaches the camera's picture model from what's surely the game or surely a commercial on each
+     * box right now. Never from the picture model itself, ESPN's timing guesses, or halftime shows.
+     */
+    private fun teachVisual(v: com.rickle8.mvswitch.core.VisualLook, cur: Int?, n: Double, boxes: Int) {
+        val r = lastResult
+        val f = feed ?: previewFeed
+        for (b in 1..boxes) {
+            if (f?.info?.get(b)?.statusName.let { it == "STATUS_HALFTIME" || it == "STATUS_END_PERIOD" }) continue
+            val bugNow = bugReads.readWithin(b, n, 3.0)
+            val game = bugNow || gameSaidAt[b]?.let { n - it < 30 } == true
+            val soundAd = b == cur && r != null && r.heard == Heard.AD && (r.strongAd || (r.adPct ?: 0) >= 78) &&
+                !bugReads.readWithin(b, n, 6.0)
+            val ad = adTextNow(b, n) || adTapAt[b]?.let { n - it < 30 } == true || soundAd
+            if (game == ad) continue
+            v.label(b, ad, n)
+        }
+    }
     /** Yard lines in each box (proven against the score text and the sound before they count). */
     private val lineWatch = com.rickle8.mvswitch.core.LineWatch()
     /** Keeps the TV's whites (the score bug's lettering, the yard lines) from blowing out. */
@@ -1023,6 +1075,7 @@ object Engine {
     fun onCameraField(shares: Map<Int, Double>) {
         val n = now()
         shares.forEach { (b, g) -> field.add(b, g, n) }
+        greenShares = shares
     }
 
     /** Yard lines found in one box (each box gets a look about every 2 s). */
@@ -1158,6 +1211,7 @@ object Engine {
             grass = field.trusted(box) && field.fieldNow(box, n),
             adText = adTextNow(box, n),
             bugShape = if (bugTrusted(box)) v.showingGame[box] else null,
+            look = runCatching { visual?.adChance(box, n) }.getOrNull(),
         )
 
     /** When each contradiction started (it has to last a few seconds: the look lags the text by a moment). */
@@ -1275,6 +1329,7 @@ object Engine {
         val key = "${s.layout}:${s.gridCorners.map { kotlin.math.round(it * 100).toInt() }}"
         if (watcher == null || watcherKey != key) {
             watcher = com.rickle8.mvswitch.core.ScreenWatcher(s.layout); watcherKey = key
+            visual?.clearLooks()
             forgetBugChecks()
             field.clear()
             lineWatch.clear()
@@ -1303,6 +1358,13 @@ object Engine {
         }.toSet() - gameLikely
         val v = watcher!!.frame(img, gameLikely, adLikely)
         cameraView = v
+        // The picture model: measure every box, learn from what's sure, save now and then.
+        runCatching {
+            val look = visualFor(s.layout)
+            look.frame(img, n, greenShares)
+            teachVisual(look, cur, n, boxCount(s))
+            saveVisual(n)
+        }
         cameraAt = n
         checkBugs(v, cur, job?.isActive == true, n, boxCount(s))
         checkField(cur, job?.isActive == true, n, boxCount(s))
@@ -1981,6 +2043,8 @@ object Engine {
                 (if (tracker.lastLookAt > 0) ", last look ${(n - tracker.lastLookAt).toInt()} s ago" else ""))
             sb.appendLine("  Outline checks on the app's own moves: right ${outline.right}, wrong ${outline.wrong}, " +
                 "not seen ${outline.missed}; " + (if (outline.trusted) "follows TV-remote moves" else "asks"))
+            sb.appendLine("  Picture model: " + (visual?.describe() ?: "not started") + "; per box " +
+                (1..boxCount(s)).joinToString { b -> "$b " + (cameraSights[b]?.look?.let { "${(it * 100).toInt()}% ad" } ?: "-") })
             sb.appendLine("  Field green proven per box: " + (1..boxCount(s)).joinToString { b ->
                 val (u, g) = field.counts(b); "$b ${if (field.trusted(b)) "yes" else "$u/3 up, $g/1 gone"}" })
             sb.appendLine("  Outline last flashed on " + (lastOutline?.let { (b, t) -> "box $b, ${(n - t).toInt()} s ago" } ?: "no box yet"))

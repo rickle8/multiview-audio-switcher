@@ -234,6 +234,7 @@ class Controller(
             val sight = sightOf(box, now)
             if (cameraSays(box, now) == true) return Outlook.LIVE to "camera sees the game"
             if (sight?.adText == true) return Outlook.BREAK to "camera sees a commercial"
+            if (sight?.looksAd == true) return Outlook.BREAK to "looks like a commercial"
         }
         val f = feed ?: return Outlook.UNKNOWN to ""
         val plays = f.plays(box)
@@ -389,7 +390,7 @@ class Controller(
         if (status[box] == GameStatus.BREAK) return sightOf(box, now)?.bug == true
         // The camera reading the game there is the fastest sign it's back; its silence proves nothing.
         if (cameraSays(box, now) == true) return true
-        if (sightOf(box, now)?.adText == true) return false
+        if (sightOf(box, now)?.let { it.adText || it.looksAd } == true) return false
         val started = breakStarted[box]
         if (feed != null && started != null && feed.pbpFresh(box, now)) {
             if (resumedPlay(box, started, now) != null) return true

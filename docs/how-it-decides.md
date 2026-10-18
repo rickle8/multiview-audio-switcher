@@ -1,4 +1,4 @@
-# Multiview Audio: how it decides (v1.0.87)
+# Multiview Audio: how it decides (v1.0.88)
 
 Built for one setup: a Samsung QN75Q8F, YouTube TV multiview with 4 games (2x2), and a Galaxy S21 on a stand facing the TV doing everything (listening, watching, pressing the TV's buttons). College football Saturdays, NFL Sundays.
 
@@ -91,6 +91,11 @@ The camera can make it quicker still: see "gone" in section 5.
 **The field's green:** every frame it measures how much of each box is football-field green. A wide shot of the field in the last 8 s leans toward the game (never the other way round: close-ups and replays go long stretches without it). It counts on a box once proven there: field with the game 3 times, none in a commercial once.
 
 **Yard lines:** in each close look it searches the green for thin, straight, bright lines that run a good part of the way across the box (yard lines, sidelines, a row of hash marks), leaving out the box's edges and the bottom fifth where the score bar and a ticker run. Two or more long ones in the last 5 s are as strong a sign of the game as its score bug. Lawn stripes (too wide), a golf flag (just one), busy texture like leaves, and lines off the green don't count. A box proves them first: lines with the game twice, none in a commercial once. Lines in a commercial it's sure of start that over.
+
+**The picture, learned.** Besides the signs above, it learns what the game and commercials look like on your TV from the whole picture of each box, about 4 times a second: how often it cuts (ads cut every couple of seconds, a broadcast holds its shots), how much it moves, a strip along the bottom that stays put while play moves (the score bar, whatever its design or logos), black bars top and bottom, brightness, contrast, edges and the field's green, over the last 8 s.
+- **It learns only from what's sure:** the score bug read off the screen and your "It's the game" (game); commercial text, your "It's an ad" (that box, for 30 s) and clearly ad-sounding audio with no score bug (commercial). Never from its own guesses, ESPN's timing guesses, or halftime and between-quarter shows. All four boxes teach it at once, so it learns from games you aren't listening to as well.
+- **It has to prove itself.** It needs 40 looks of each, then checks itself on every new labeled look before learning from it. It's used only while it's been right on 85%+ of the last 20 of each kind. Diagnostics show "Picture model: learned N game, N ad looks; right on game X%, ads Y%; in use", and the box lines say "looks like a commercial (92%)". What it learned, and its record, survive restarts.
+- **What it does:** 90%+ sure it's a commercial rules a box out as a place to go, keeps you from going back to it too early, and makes unsure sound a commercial. 90%+ sure it's the game makes a box a good place to go, marks your game as back, and makes unsure sound the game. It never holds an ad-sounding moment.
 
 **Sound and camera, paired.** Each second, the sound's call on the box you're hearing is paired with what the camera sees there. The camera adds up its evidence: score bug read (strong game), yard lines (strong game), field green (leans game), score bug look (proven) up or gone, commercial text (strong commercial), score bug gone 8-45 s (leans commercial) or 45 s+ (strong commercial). Yard lines or green with the dependable score bug missing count for little: that's a promo or an ad shot on a field.
 **The sound decides when to leave, exactly as without the camera.** The camera never holds an ad-sounding moment.
@@ -212,3 +217,7 @@ From the first NFL Sunday with the camera on: it held the sound on commercials a
 
 1. **It waited on its own guess.** After ESPN's "break coming" it wouldn't switch until the time it figured the TV would get there, from an assumed 40 s delay. When the TV ran ahead of that, the commercial played and nothing happened. Now it goes the moment the sound turns, and the warning makes it quicker (3 s of commercial sound, about 6 s from the cut).
 2. **The camera never holds the sound now.** The score bug stays readable for a few seconds after the cut, so holding on it only made switches late. The camera still speeds switches up, rules out boxes showing commercial text, and spots your game coming back.
+
+## 15. The camera learns the picture (v1.0.88)
+
+The camera's hand-made signs (score bug text, yard lines, green) miss too much on your TV. Now it also learns what the game and commercials look like there, from the whole picture of all four boxes, taught by the sure signs and your taps, and it only counts once it has proven itself (section 5, "The picture, learned").

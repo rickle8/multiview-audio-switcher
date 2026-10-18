@@ -14,7 +14,14 @@ data class Sight(
     val adText: Boolean = false,
     /** The score bug's learned look (proven on this box): up, gone, or not known. */
     val bugShape: Boolean? = null,
+    /** How commercial-like the whole picture looks, 0..1, from what it learned on your TV (once proven). */
+    val look: Double? = null,
 ) {
+    /** The learned picture is sure it's a commercial. */
+    val looksAd: Boolean get() = (look ?: 0.0) >= 0.9
+    /** The learned picture is sure it's the game. */
+    val looksGame: Boolean get() = look?.let { it <= 0.1 } == true
+
     /**
      * The camera's evidence in points: + for a commercial, - for the game. Its own score bug read
      * and yard lines are the strongest signs of the game; the field's green alone counts a bit less
@@ -29,6 +36,7 @@ data class Sight(
         if (grass && !lines) p -= if (gone) 0.5 else 2.0
         when (bugShape) { true -> p -= 1.5; false -> p += 2.0; null -> Unit }
         if (adText) p += 3.0
+        look?.let { l -> p += when { l >= 0.9 -> 2.5; l >= 0.75 -> 1.5; l <= 0.1 -> -2.5; l <= 0.25 -> -1.0; else -> 0.0 } }
         bugGoneSecs?.let { p += if (it >= 45) 2.5 else 1.5 }
         return p.coerceIn(-5.0, 5.0)
     }
@@ -45,6 +53,7 @@ data class Sight(
         if (adText) parts += "ad text"
         bugGoneSecs?.let { parts += "score bug gone ${it.toInt()} s" }
         if (bugShape != null && !bug && bugGoneSecs == null) parts += if (bugShape) "score bar" else "no score bar"
+        look?.let { l -> if (l >= 0.75) parts += "looks like a commercial (${(l * 100).toInt()}%)" else if (l <= 0.25) parts += "looks like the game (${((1 - l) * 100).toInt()}%)" }
         return parts.joinToString(", ").ifEmpty { "not sure" }
     }
 }
@@ -92,12 +101,13 @@ object Pairing {
             pts <= -SURE -> when {
                 heard == Heard.AD -> call(heard, strongAd, why, false, if (strongAd) "commercial (recognized it)" else "commercial (sound)")
                 heard == Heard.UNSURE && sight.bug -> call(Heard.GAME, false, null, false, "the game (camera reads the score bug)")
+                heard == Heard.UNSURE && sight.looksGame -> call(Heard.GAME, false, null, false, "the game (looks like it)")
                 else -> call(heard, strongAd, why, false, soundVerdict(heard))
             }
             pts >= SURE -> when (heard) {
                 Heard.AD -> call(Heard.AD, true, why.takeIf { strongAd } ?: "Sounds like a commercial and the camera agrees ($seen)", false, "commercial (both agree)")
                 // Unsure sound: the camera tips it only with commercial text, or sound already leaning ad.
-                Heard.UNSURE -> if (sight.adText || pct >= 50) call(Heard.AD, false, why ?: "The camera sees a commercial ($seen)", false, "commercial (camera sure)")
+                Heard.UNSURE -> if (sight.adText || sight.looksAd || pct >= 50) call(Heard.AD, false, why ?: "The camera sees a commercial ($seen)", false, "commercial (camera sure)")
                     else call(heard, strongAd, why, false, soundVerdict(heard))
                 Heard.GAME -> if (sight.adText && sight.bugGoneSecs != null && pct >= 30)
                     call(Heard.AD, false, "The camera sees a commercial ($seen)", false, "commercial (camera sure)")

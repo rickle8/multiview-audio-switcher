@@ -519,6 +519,18 @@ class BroadcastTest {
         assertEquals(3, nav.current)
     }
 
+    @Test fun theLearnedPictureRulesOutACommercialAndFindsTheGame() {
+        val now = 100.0
+        val nav = Navigator(quiet, LAYOUTS.getValue(4), home = false, sleep = {})
+        val f = GameFeed(emptyMap(), { JSONObject() }, { now }, pollSecs = 1e9)
+        val c = Controller(nav, listOf(1, 2, 3, 4), f, clock = { now })
+        // Box 2 looks like a commercial, box 4 like the game (no score bug read anywhere).
+        c.see(now, 1 to Sight(), 2 to Sight(look = 0.96), 3 to Sight(look = 0.6), 4 to Sight(look = 0.04))
+        assertTrue(c.step(Heard.AD, adPct = 75))
+        assertEquals(4, nav.current)
+        assertEquals(Controller.Outlook.BREAK, c.outlook(2, now).first)
+    }
+
     @Test fun yourAdTapAlwaysMovesYou() {
         val now = 100.0
         val logs = mutableListOf<String>()
