@@ -366,7 +366,7 @@ class Controller(
     fun bias(box: Int?, now: Double): Bias {
         if (box == null || feed == null) return Bias.NORMAL
         val end = lastBreakEnd[box] ?: -1e9
-        if (armed[box] != null) return Bias.LIKELY
+        if (armed[box] != null) return Bias.EXPECTED
         if (clockRunning(box, now)) return Bias.CLOCK
         val likely = feed.plays(box).lastOrNull {
             LIKELY_BREAK.containsMatchIn(it.text) && !NULLIFIED.containsMatchIn(it.text) && it.seen > end && now - it.seen < 180 && now - it.t < 300
@@ -561,12 +561,13 @@ class Controller(
                     log("Commercials everywhere. Staying on box $cur for a bit.")
                     return false
                 }
-                // ESPN said a break is coming but the TV hasn't got there yet (replays, celebration): wait.
-                val waiting = armed[cur]
-                if (!strongAd && waiting != null && now < waiting.due) return false
-                // ESPN said a break was coming and now it sounds like one: go.
-                if (arm != null) return goToBreak(cur, now, status,
-                    "Commercial started on box $cur after \u201c${arm.text.take(40)}\u201d")
+                // ESPN said a break was coming and now it sounds like one: go, right away. (Its guess of when
+                // the TV gets there rests on the TV's delay, which can be off by a lot: never wait on it.)
+                val expected = armed[cur]
+                // Only not in the first 10 s after ESPN posted it: the TV can't be ahead of ESPN.
+                if (!strongAd && expected != null && now < expected.due && now - expected.at < 10) return false
+                if (expected != null) return goToBreak(cur, now, status,
+                    "Commercial started on box $cur after \u201c${expected.text.take(40)}\u201d")
                 if (strongAd) return goToBreak(cur, now, status,
                     (strongWhy ?: "Recognized a commercial") + " on box $cur")
                 val play = recentPlay(cur, now)

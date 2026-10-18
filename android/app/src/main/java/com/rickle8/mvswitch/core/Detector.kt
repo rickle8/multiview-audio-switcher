@@ -190,7 +190,7 @@ class Detector(private val dir: File? = null) {
         transitions.update(audio, now)
         val recentTransition = now - transitions.lastTransition < 20
         val effBias = when {
-            !recentTransition -> bias
+            !recentTransition || bias == Bias.EXPECTED -> bias
             bias == Bias.UNLIKELY || bias == Bias.CLOCK -> Bias.TRANSITION_BUT_UNLIKELY
             else -> Bias.TRANSITION
         }

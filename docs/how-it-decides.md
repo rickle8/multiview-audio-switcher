@@ -1,4 +1,4 @@
-# Multiview Audio: how it decides (v1.0.86)
+# Multiview Audio: how it decides (v1.0.87)
 
 Built for one setup: a Samsung QN75Q8F, YouTube TV multiview with 4 games (2x2), and a Galaxy S21 on a stand facing the TV doing everything (listening, watching, pressing the TV's buttons). College football Saturdays, NFL Sundays.
 
@@ -37,7 +37,8 @@ YouTube TV never tells the app which box has the sound, so the app keeps count i
 | Situation | Needs | From the cut | Why |
 |---|---|---|---|
 | Normal | 6 s | about 10 s | |
-| A break-likely play just happened (score, timeout, turnover, quarter end) | 5 s | about 8 s | Break expected |
+| ESPN warned a break is coming (TD, field goal, timeout, 2-minute warning, quarter end) | 3 s, a bit less ad-like | about 6 s | Break expected |
+| A break-likely play just happened (turnover, punt) | 5 s | about 8 s | |
 | Sound changed suddenly (the cut to commercial) | 4 s | about 7 s | |
 | Just switched to this game | 3 s | | If it's also in commercial, leave fast |
 | Game clock running | 16 s, and more ad-like | | TV breaks only come with the clock stopped |
@@ -65,7 +66,7 @@ The camera can make it quicker still: see "gone" in section 5.
 
 **On the game you're hearing it does two things:**
 - **Guards:** if a play just happened (35 s, TV time) or the clock is running, an ad-sounding moment doesn't move you ("Sounded like an ad, but...").
-- **Warns:** after a TD, field goal, official timeout, 2-minute warning or quarter end it logs "break coming" and waits for the commercial sound, then goes right away. No commercial within 2.5-4 minutes, it lets it go. At halftime it goes once your TV gets there, commercial or not (the studio show isn't the game).
+- **Warns:** after a TD, field goal, official timeout, 2-minute warning or quarter end it logs "break coming", gets quicker on the sound, and goes the moment it sounds like a commercial, past the ESPN guards. It doesn't wait for its own guess of when the TV gets there (that guess rests on the TV's delay, which can be off by a lot), only for the first 10 s after ESPN posts it. No commercial within 2.5-4 minutes, it lets it go. At halftime it goes once your TV gets there, commercial or not (the studio show isn't the game).
 
 ## 5. What the camera tells it
 
@@ -92,9 +93,8 @@ The camera can make it quicker still: see "gone" in section 5.
 **Yard lines:** in each close look it searches the green for thin, straight, bright lines that run a good part of the way across the box (yard lines, sidelines, a row of hash marks), leaving out the box's edges and the bottom fifth where the score bar and a ticker run. Two or more long ones in the last 5 s are as strong a sign of the game as its score bug. Lawn stripes (too wide), a golf flag (just one), busy texture like leaves, and lines off the green don't count. A box proves them first: lines with the game twice, none in a commercial once. Lines in a commercial it's sure of start that over.
 
 **Sound and camera, paired.** Each second, the sound's call on the box you're hearing is paired with what the camera sees there. The camera adds up its evidence: score bug read (strong game), yard lines (strong game), field green (leans game), score bug look (proven) up or gone, commercial text (strong commercial), score bug gone 8-45 s (leans commercial) or 45 s+ (strong commercial). Yard lines or green with the dependable score bug missing count for little: that's a promo or an ad shot on a field.
-**The sound leads; the camera only helps.**
-- **The score bug read off the screen right now:** an ad-sounding moment under 80% ad-like doesn't switch, and unsure sound counts as the game. A recognized commercial, or 80%+ ad-like sound, still switches.
-- **Yard lines and green never hold the sound.** They show up in close-ups, promos and ads shot on a field.
+**The sound decides when to leave, exactly as without the camera.** The camera never holds an ad-sounding moment.
+- **The score bug read off the screen right now:** unsure sound counts as the game (so it comes back from a commercial sooner).
 - **Camera sure it's a commercial**: an ad-sounding moment is a sure one (beats ESPN's guards). Unsure sound becomes a commercial only with commercial text read there, or the sound already 50%+ ad-like. Game-like sound is a commercial only when commercial text and a long-gone score bug agree and the sound is shaky (30%+).
 - **Leaning commercial** (score bug just gone): ad-leaning sound (50%+) is a commercial, ad-sounding is a sure one.
 - Your "It's the game" keeps the camera from calling that game a commercial.
@@ -109,7 +109,7 @@ Checked in this order:
 1. Switched in the last 6 seconds: wait.
 2. Commercial (sound and camera paired, section 5):
    - Bounced twice in 75 seconds (every game in commercial): sit on this one for 45 s, even when it's sure this one is a commercial, but jump as soon as any game is known to be back on (the camera, its clock, a fresh play).
-   - ESPN warned of a break your TV hasn't reached yet: wait.
+   - ESPN warned of a break: go now (only not in the first 10 s after ESPN posted it).
    - A commercial it's sure of (fingerprint, or the camera backs it up): go now.
    - ESPN guard (play just happened, clock running): stay.
    - Otherwise go.
@@ -207,3 +207,8 @@ From the first NFL Sunday with the camera on: it held the sound on commercials a
 5. **"Score bug gone" lasted 20 minutes.** Capped at 5, and it no longer turns unsure sound into a commercial by itself.
 6. **Your "It's an ad" tap always moves you** unless every other box shows commercial text.
 7. **The grid slid around** on the minute checks and mixed up which game was where. It needs two looks agreeing now, unless the phone was bumped.
+
+## 14. Faster on the warned break (v1.0.87)
+
+1. **It waited on its own guess.** After ESPN's "break coming" it wouldn't switch until the time it figured the TV would get there, from an assumed 40 s delay. When the TV ran ahead of that, the commercial played and nothing happened. Now it goes the moment the sound turns, and the warning makes it quicker (3 s of commercial sound, about 6 s from the cut).
+2. **The camera never holds the sound now.** The score bug stays readable for a few seconds after the cut, so holding on it only made switches late. The camera still speeds switches up, rules out boxes showing commercial text, and spots your game coming back.

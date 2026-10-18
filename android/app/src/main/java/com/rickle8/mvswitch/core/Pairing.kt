@@ -53,8 +53,8 @@ data class Sight(
  * The sound and the camera, paired into one call on the box you're hearing: commercial or the game.
  * The sound leads (it hears the cut to commercial first) and the camera confirms or holds it:
  *
- * - The game's score bug read right off the screen: an ad-sounding moment under 80% ad doesn't
- *   switch, and unsure sound counts as the game. Yard lines and green never hold the sound.
+ * - The camera never holds an ad-sounding moment. The game's score bug read right off the screen
+ *   makes unsure sound count as the game.
  * - Sure it's a commercial (commercial text, the score bug long gone): an ad-sounding moment is a
  *   sure commercial; unsure sound is one with commercial text or 50%+ ad-like sound.
  * - Leaning commercial (the score bug just went away): 50%+ ad-like sound is a commercial, an
@@ -65,8 +65,6 @@ data class Sight(
 object Pairing {
     const val SURE = 2.5
     const val LEAN_AD = 1.0
-    /** Above this much ad-like sound, even the score bug on screen doesn't hold it (a sponsor spot over the field). */
-    const val HOLD_MAX_PCT = 80
 
     data class Call(
         val heard: Heard,
@@ -87,14 +85,11 @@ object Pairing {
         val pct = adPct ?: 0
         fun call(h: Heard, strong: Boolean, w: String?, held: Boolean, verdict: String) =
             Call(h, strong, w, held, "Sound: $sound · Camera: $seen → $verdict")
-        // The sound leads. The camera holds an ad-sounding moment only when it reads the game's own
-        // score bug right now and the sound isn't sure (yard lines and green also show up in promos and
-        // close-ups, so they never hold the sound back). Everything else the camera sees only speeds a
-        // switch up or helps come back.
+        // The sound decides when to leave, exactly as without the camera: the camera never holds it back
+        // (the score bug lingers a few seconds past the cut, which only made it late). What the camera sees
+        // only speeds a switch up, or tells unsure sound it's the game (to come back sooner).
         return when {
             pts <= -SURE -> when {
-                heard == Heard.AD && sight.bug && !strongAd && pct < HOLD_MAX_PCT ->
-                    call(Heard.UNSURE, false, null, true, "the game (camera reads the score bug)")
                 heard == Heard.AD -> call(heard, strongAd, why, false, if (strongAd) "commercial (recognized it)" else "commercial (sound)")
                 heard == Heard.UNSURE && sight.bug -> call(Heard.GAME, false, null, false, "the game (camera reads the score bug)")
                 else -> call(heard, strongAd, why, false, soundVerdict(heard))

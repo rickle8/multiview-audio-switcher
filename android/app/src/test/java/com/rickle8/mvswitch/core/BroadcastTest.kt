@@ -266,12 +266,25 @@ class BroadcastTest {
         // The TV is still showing the game (replays, the extra point): stay, even long after ESPN had it.
         for (t in 0..120 step 5) { now = 106.0 + t; assertFalse(c.step(Heard.GAME)) }
         assertEquals(1, nav.current)
-        assertEquals(Bias.LIKELY, c.bias(1, now))
+        assertEquals(Bias.EXPECTED, c.bias(1, now))
         assertNotNull(c.waitingFor(1))
         now = 240.0
         assertTrue(c.step(Heard.AD))
         assertEquals(2, nav.current)
         assertTrue(logs.last().contains("Commercial started"))
+    }
+
+    @Test fun anEspnWarnedBreakGoesTheMomentItSoundsLikeOne() {
+        var now = 106.0
+        val nav = Navigator(quiet, LAYOUTS.getValue(2), home = false, sleep = {})
+        val f = GameFeed(emptyMap(), { JSONObject() }, { now }, pollSecs = 1e9)
+        f.recordPlay(1, "Official Timeout at 03:12.", 100.0, 105.0, seq = 7)
+        val c = Controller(nav, listOf(1, 2), f, clock = { now })
+        assertFalse(c.step(Heard.GAME))
+        // The TV runs closer to live than the 40 s it assumes: the commercial starts 20 s in. Go now.
+        now = 126.0
+        assertTrue(c.step(Heard.AD))
+        assertEquals(2, nav.current)
     }
 
     @Test fun espnCueWithNoCommercialExpires() {
@@ -411,9 +424,6 @@ class BroadcastTest {
         val f = GameFeed(emptyMap(), { JSONObject() }, { now }, pollSecs = 1e9)
         val c = Controller(nav, listOf(1, 2, 3, 4), f, clock = { now }, log = { logs += it })
         // The camera reads box 1's score bug right now: a commercial-sounding moment isn't one.
-        c.see(now, 1 to Sight(bug = true), 2 to Sight(adText = true), 3 to Sight(adText = true), 4 to Sight(bug = true))
-        assertFalse(c.step(Heard.AD))
-        assertTrue(logs.last().contains("camera sees the game"))
         // Now box 1's score bug has been gone a long while: go, and skip the boxes it sees in commercial.
         now = 120.0
         c.see(now, 1 to Sight(bugGoneSecs = 50.0), 2 to Sight(adText = true), 3 to Sight(adText = true), 4 to Sight(bug = true))

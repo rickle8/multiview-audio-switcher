@@ -14,16 +14,12 @@ class PairingTest {
         assertEquals(Heard.AD, c.heard); assertFalse(c.strong)
     }
 
-    @Test fun onlyTheScoreBugHoldsTheSound() {
-        // The game's score bug read off the screen holds an ad-sounding moment, unless the sound is sure.
-        val held = call(Heard.AD, 72, Sight(bug = true))
-        assertEquals(Heard.UNSURE, held.heard); assertTrue(held.held)
-        assertEquals(Heard.AD, call(Heard.AD, 85, Sight(bug = true)).heard)
+    @Test fun theCameraNeverHoldsTheSound() {
+        // Whatever the camera sees, an ad-sounding moment is a commercial: the sound decides when to leave.
+        for (sight in listOf(Sight(bug = true), Sight(lines = true), Sight(grass = true), Sight(bug = true, lines = true)))
+            assertEquals(Heard.AD, call(Heard.AD, 65, sight).heard)
+        // The score bug read right now makes unsure sound the game (to come back sooner).
         assertEquals(Heard.GAME, call(Heard.UNSURE, 50, Sight(bug = true)).heard)
-        assertEquals(Heard.AD, call(Heard.AD, 70, Sight(bug = true), strongAd = true).heard)
-        // Yard lines and green show up in promos and close-ups too: they never hold the sound back.
-        assertEquals(Heard.AD, call(Heard.AD, 65, Sight(lines = true)).heard)
-        assertEquals(Heard.AD, call(Heard.AD, 65, Sight(grass = true)).heard)
         assertEquals(Heard.UNSURE, call(Heard.UNSURE, 50, Sight(lines = true)).heard)
     }
 
@@ -52,7 +48,7 @@ class PairingTest {
         assertEquals("score bug, yard lines", Sight(bug = true, lines = true).describe())
         assertEquals("ad text, score bug gone 12 s", Sight(adText = true, bugGoneSecs = 12.4).describe())
         val c = call(Heard.AD, 72, Sight(bug = true))
-        assertEquals("Sound: commercial (72% ad) · Camera: score bug → the game (camera reads the score bug)", c.summary)
+        assertEquals("Sound: commercial (72% ad) · Camera: score bug → commercial (sound)", c.summary)
         assertEquals(true, Sight(grass = true).word)
         assertEquals(null, Sight(bugGoneSecs = 10.0).word)
         assertEquals(false, Sight(bugGoneSecs = 50.0).word)
