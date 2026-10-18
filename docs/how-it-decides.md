@@ -1,4 +1,4 @@
-# Multiview Audio: how it decides (v1.0.92)
+# Multiview Audio: how it decides (v1.0.93)
 
 Built for one setup: a Samsung QN75Q8F, YouTube TV multiview with 4 games (2x2), and a Galaxy S21 on a stand facing the TV doing everything (listening, watching, pressing the TV's buttons). College football Saturdays, NFL Sundays.
 
@@ -126,7 +126,7 @@ Checked in this order:
 4. **Halftime on your game:** once your TV reaches it, it goes to a game being played. If none is, it stays for the halftime show.
 5. **Parked on a halftime show** because nothing was being played: it leaves for a live game as soon as there is one. A commercial during the show is handled like any other.
 6. Game heard: if the game you were watching is back, go back to it.
-7. Jumping to a more exciting game mid-play ("hopping"): off.
+7. Jumping to a more exciting game mid-play ("hopping"): a setting (Never, Calm, Normal, Eager). The log says what made the game better.
 
 ## 7. Going back to your game
 
@@ -248,7 +248,7 @@ tools/review.py lays a recording out: each switch with the sound before and afte
 ## 17. From the first recording (Oct 18, 41 min, v1.0.92)
 
 18 switches, 3 "too slow", 2 "wrong", and a note asking what made a game "better".
-1. **"Better game" jumps.** Three switches left live games because hopping was set to Calm in the app's settings. It's off for good now, whatever the setting says.
+1. **"Better game" jumps.** Three switches left live games because hopping was set to Calm. It stays a setting (v1.0.93: on the phone page's Settings tab too, Never / Calm / Normal / Eager), and the log now says why: "Better game than box 4: closer, red zone (box 1 17-14, 4th 2:10; box 4 24-3, 3rd 0:39; 1.42 vs 0.71)".
 2. **Slow after ESPN's warning.** The sound score is an average over a few seconds, so it rose slowly after the cut. With a break expected it now needs only 2 s of commercial sound over a 2.5 s window (about 3-4 s sooner).
 3. **Slow on landing in another commercial.** Just after a switch, "a break is likely on this game" set the pace (5 s) instead of "just switched, check fast" (3 s). Landing comes first now (only a running game clock outranks it).
 4. **Wrong leave right after landing.** Right after switching, leftover or band music read 60-70% ad while the picture model said the game (80%). For 20 s after a switch, the score bug or the picture model at 75%+ game holds a sound under 80% ad-like.

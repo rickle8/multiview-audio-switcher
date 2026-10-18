@@ -142,8 +142,7 @@ data class Settings(
                     ?.takeIf { it.size == 8 && it.all { v -> !v.isNaN() } } ?: d.gridCorners,
                 foundCorners = j.optJSONArray("foundCorners")?.let { a -> (0 until a.length()).map { a.optDouble(it) } }
                     ?.takeIf { it.size == 8 && it.all { v -> !v.isNaN() } } ?: emptyList(),
-                // Jumping to a "better game" mid-play was removed at your request: always off.
-                hopping = Hopping.OFF,
+                hopping = runCatching { Hopping.valueOf(j.optString("hopping2")) }.getOrDefault(d.hopping),
                 breakSecs = j.optInt("breakSecs", d.breakSecs),
                 league = j.optString("league", d.league),
                 githubToken = j.optString("githubToken", ""),

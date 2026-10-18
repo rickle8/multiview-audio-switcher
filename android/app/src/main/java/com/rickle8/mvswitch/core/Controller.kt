@@ -416,6 +416,25 @@ class Controller(
 
     private var landedLogged = -1e9
 
+    /** For the log: what makes [best] the better game than [cur] ("closer: 17-14 vs 24-3, 4th 2:10, red zone"). */
+    private fun whyBetter(best: Int, cur: Int): String {
+        fun line(b: Int): String {
+            val i = info(b) ?: return "no ESPN data"
+            val sc = i.scores.values.toList()
+            return listOfNotNull(sc.takeIf { it.size == 2 }?.joinToString("-"), i.detail.ifBlank { null }).joinToString(", ")
+        }
+        val bi = info(best); val ci = info(cur)
+        fun margin(i: GameInfo?) = i?.scores?.values?.toList()?.takeIf { it.size == 2 }?.let { kotlin.math.abs(it[0] - it[1]) }
+        val reasons = ArrayList<String>()
+        val mb = margin(bi); val mc = margin(ci)
+        if (mb != null && mc != null && mb < mc) reasons += "closer"
+        if (bi != null && ci != null && bi.period > ci.period) reasons += "later"
+        if (bi?.redZone == true) reasons += "red zone"
+        if ((games[best]?.importance ?: 1.0) > (games[cur]?.importance ?: 1.0)) reasons += "you rated it higher"
+        val score = String.format(java.util.Locale.US, "%.2f vs %.2f", score(best), score(cur))
+        return (reasons.ifEmpty { listOf("more exciting") }.joinToString(", ")) + " (box $best ${line(best)}; box $cur ${line(cur)}; $score)"
+    }
+
     /** When it left a game for a commercial, recently. */
     private val adSwitches = ArrayDeque<Double>()
     /** Every game seems to be in commercials: stop bouncing between them until this time. */
@@ -637,7 +656,7 @@ class Controller(
         // Hopping (off unless chosen in Settings): a clearly more exciting game, after a while on this one.
         if (now - lastSwitch < minDwellSecs || !hasData()) return false
         val best = ranked(now, status, exclude = cur).firstOrNull() ?: return false
-        if (score(best) - score(cur) >= upgradeMargin) return switchTo(best, now, "Better game than box $cur")
+        if (score(best) - score(cur) >= upgradeMargin) return switchTo(best, now, "Better game than box $cur: ${whyBetter(best, cur)}")
         return false
     }
 }

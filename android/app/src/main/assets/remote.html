@@ -173,6 +173,9 @@ select,input[type=search],input[type=text]{width:100%;background:var(--surface2)
       <label class="sw"><input type="checkbox" data-set="proactive"><span></span></label></div>
     <div class="set"><div class="lab">Go back to my game after its commercial</div>
       <label class="sw"><input type="checkbox" data-set="returnToGame"><span></span></label></div>
+    <div class="set" style="display:block"><div class="lab">Jump to a better game mid-play
+      <div class="small muted">Moves to a closer, later or red-zone game even when yours isn't in commercial</div></div>
+      <div class="seg" id="hopSeg"><button class="btn" data-hop="OFF">Never</button><button class="btn" data-hop="CALM">Calm</button><button class="btn" data-hop="NORMAL">Normal</button><button class="btn" data-hop="EAGER">Eager</button></div></div>
     <div class="set"><div class="lab">Use the camera</div>
       <label class="sw"><input type="checkbox" data-set="useCamera"><span></span></label></div>
     <div class="set" style="display:block"><div class="lab">Typical commercial break <span id="breakVal" class="muted"></span></div>
@@ -414,6 +417,7 @@ function renderConfig() {
   $('sensVal').textContent = Math.round(C.micSensitivity * 100) + '%';
   $('breakVal').textContent = Math.floor(C.breakSecs / 60) + ':' + String(C.breakSecs % 60).padStart(2, '0');
   document.querySelectorAll('#layoutSeg .btn').forEach(b => b.classList.toggle('on', +b.dataset.layout === C.layout));
+  document.querySelectorAll('#hopSeg .btn').forEach(b => b.classList.toggle('on', b.dataset.hop === C.hopping));
   $('soundLearned').textContent = C.soundLearned;
   $('pictureLearned').textContent = C.pictureLearned;
   if (document.activeElement !== $('zoom')) $('zoom').value = C.cameraZoom;
@@ -437,6 +441,7 @@ document.querySelectorAll('[data-set]').forEach(el => {
     if (name === 'breakSecs') $('breakVal').textContent = Math.floor(el.value / 60) + ':' + String(el.value % 60).padStart(2, '0');
   });
 });
+document.querySelectorAll('#hopSeg .btn').forEach(b => b.onclick = () => setting('hopping', b.dataset.hop, b.dataset.hop === 'OFF' ? 'It only moves for commercials now.' : 'Saved.'));
 document.querySelectorAll('#layoutSeg .btn').forEach(b => b.onclick = () => setting('layout', b.dataset.layout, 'Layout set. Check the games for each box.'));
 $('forgetSound').onclick = () => { if (confirm('Forget what it learned about the sound? It goes back to the built-in rules.')) act('forgetSound'); };
 $('forgetPicture').onclick = () => { if (confirm('Forget what the camera learned about the picture?')) act('forgetPicture'); setTimeout(loadConfig, 500); };
