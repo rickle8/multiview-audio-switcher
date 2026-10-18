@@ -244,14 +244,29 @@ class LogicTest {
         assertEquals(1, ctrl.returnTo)
     }
 
-    @Test fun theNetworksTickerMeansItsNotACommercial() {
+    @Test fun theScoreBugGoingAwayGetsItOffACommercialSooner() {
         val info = (1..4).associateWith { nfl(14, 10, 3, 400.0) }
-        val (ctrl, _, c) = setup(info, plays = mutableMapOf(2 to ("Timeout #1 by BBB at 04:12." to 95.0)))
-        c.t = 150.0
-        assertEquals(Controller.Outlook.BREAK, ctrl.outlook(2, c.t).first)
-        // The camera reads the network's ticker on box 2 (no score bug): its show, not a commercial.
-        ctrl.camera = c.t to emptyMap(); ctrl.cameraShowing = setOf(2)
-        assertEquals(Controller.Outlook.SHOW, ctrl.outlook(2, c.t).first)
+        // Box 1 just had a play: on the sound alone, an ad-sounding moment doesn't move it.
+        val (ctrl, nav, c) = setup(info, plays = mutableMapOf(1 to ("Pass short right for 9 yards" to 80.0)))
+        c.t = 100.0; ctrl.camera = c.t to emptyMap()
+        assertFalse(ctrl.step(Heard.AD))
+        // The camera reads box 1's score bug dependably and it just went away: a commercial.
+        ctrl.cameraBugGone = setOf(1)
+        assertTrue(ctrl.step(Heard.AD))
+        assertNotEquals(1, nav.current)
+    }
+
+    @Test fun aGoneScoreBugOnlyTipsAnAdLeaningMoment() {
+        val info = (1..4).associateWith { nfl(14, 10, 3, 400.0) }
+        val (ctrl, nav, c) = setup(info)
+        c.t = 100.0; ctrl.camera = c.t to emptyMap(); ctrl.cameraBugGone = setOf(1)
+        // Leaning game (a replay without the bug): stays. The camera never turns game audio into a commercial.
+        assertFalse(ctrl.step(Heard.UNSURE, adPct = 30))
+        assertFalse(ctrl.step(Heard.GAME, adPct = 10))
+        assertEquals(1, nav.current)
+        // Leaning commercial: goes.
+        assertTrue(ctrl.step(Heard.UNSURE, adPct = 50))
+        assertNotEquals(1, nav.current)
     }
 
     @Test fun returnsToImportantGameAfterBreak() {

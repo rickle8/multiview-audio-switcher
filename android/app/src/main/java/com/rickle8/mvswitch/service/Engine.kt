@@ -112,8 +112,6 @@ data class EngineState(
     val cameraBugs: Map<Int, DoubleArray?> = emptyMap(),
     /** Per box: game (true) / commercial (false) / not sure (null), as the camera sees it. */
     val cameraGame: Map<Int, Boolean?> = emptyMap(),
-    /** Boxes where the camera sees the network's show (its ticker) but not the game: halftime, the studio. */
-    val cameraShow: Set<Int> = emptySet(),
     /** Per box: what the phone read in it (score bug text), for the setup screen. */
     val cameraText: Map<Int, String> = emptyMap(),
     /** Per box: how much of the learned score bar is on screen, 0..100. */
@@ -502,7 +500,6 @@ object Engine {
             cameraBox = lastOutline?.takeIf { n - it.second < 30 }?.first,
             cameraBugs = cameraView?.bugArea?.takeIf { n - cameraAt < 5 }.orEmpty(),
             cameraGame = cameraMerged.takeIf { n - cameraAt < 5 }.orEmpty(),
-            cameraShow = cameraShow.takeIf { n - cameraAt < 5 }.orEmpty(),
             cameraText = tileRead.mapValues { (_, r) -> r.first.summary.ifBlank { "(no text)" } }.takeIf { n - cameraAt < 5 }.orEmpty(),
             cameraBars = cameraView?.scoreBar?.takeIf { n - cameraAt < 5 }.orEmpty(),
             outlineAsk = outlineAsk?.takeIf { running && n - it.second < 25 && it.first != nav?.current }?.first,
@@ -800,7 +797,8 @@ object Engine {
                             val from = nav?.current
                             val started = now()
                             if (c.step(heard, strongAd = result?.strongAd == true,
-                                    strongWhy = if (result?.strongAd == true) result.why else null)) {
+                                    strongWhy = if (result?.strongAd == true) result.why else null,
+                                    adPct = result?.adPct ?: lastResult?.adPct)) {
                                 m?.drain()
                                 noteAppMove(from, nav?.current, started)
                                 synchronized(detector) { detector.onSwitch() }
@@ -968,7 +966,6 @@ object Engine {
     @Volatile var wantCameraColor = false
     @Volatile private var cameraView: com.rickle8.mvswitch.core.CameraView? = null
     @Volatile private var cameraMerged: Map<Int, Boolean?> = emptyMap()
-    @Volatile private var cameraShow: Set<Int> = emptySet()
     @Volatile private var cameraAt = -1e9
     @Volatile private var cameraRotation = -1
     /** When the phone last turned (a re-find waits for it to stay put). */
@@ -1034,15 +1031,14 @@ object Engine {
     private val tileGameAt = java.util.concurrent.ConcurrentHashMap<Int, Double>()
     /** Per box: when it last read commercial text there (a web address, fine print) with no score bug. */
     private val tileAdAt = java.util.concurrent.ConcurrentHashMap<Int, Double>()
-    /** Per box: when it last read the network's scores ticker there (its programming is on, not a commercial). */
+    /** Per box: when it last read a scores ticker there (other games: says nothing about this one). */
     private val tileTickerAt = java.util.concurrent.ConcurrentHashMap<Int, Double>()
-
-    /** The network's own programming without the game being played: its ticker, but no score bug, lately. */
-    private fun textShowsNetwork(box: Int, n: Double): Boolean =
-        tileTickerAt[box]?.let { n - it < 10 } == true && tileGameAt[box]?.let { n - it < 10 } != true &&
-            tileAdAt[box]?.let { n - it < 10 } != true
+    /** Where each box's ticker scrolls, so even one of your games going by on it isn't read as this box's game. */
+    private val tickers = com.rickle8.mvswitch.core.TickerBands()
     /** Per box: when it read a score bug, over the last couple of minutes (how dependable reading that box is). */
     private val tileGameTimes = java.util.concurrent.ConcurrentHashMap<Int, ArrayDeque<Double>>()
+    /** Per box: every read in the last couple of minutes (when, score bug read, its graphics said halftime or final). */
+    private val tileReads = java.util.concurrent.ConcurrentHashMap<Int, ArrayDeque<Triple<Double, Boolean, Boolean>>>()
     private val tileMismatchLogged = java.util.Collections.synchronizedSet(HashSet<String>())
 
     /** Where the grid is and the layout, for the text reader (null when the camera isn't set up). */
@@ -1060,8 +1056,14 @@ object Engine {
         val f = feed ?: previewFeed
         val teams = f?.teamWords().orEmpty()
         val scores = f?.info?.mapValues { it.value.scores.values.toList() }.orEmpty()
-        val r = com.rickle8.mvswitch.core.TileText.read(lines, teams, scores, own = box)
+        val sides = f?.teamSides().orEmpty()
+        tickers.update(box, lines, n, ownWords = sides[box].orEmpty().flatten().flatMap { it.split(' ') }.toSet())
+        val r = com.rickle8.mvswitch.core.TileText.read(lines, teams, scores, own = box, sides = sides,
+            tickerBand = tickers.band(box, n), steady = { tickers.steady(box, it) })
         tileRead[box] = r to n
+        tileReads.getOrPut(box) { ArrayDeque() }.let { q ->
+            synchronized(q) { q.addLast(Triple(n, r.game, r.notLive)); while (q.isNotEmpty() && n - q.first().first > 120) q.removeFirst() }
+        }
         if (r.ad) tileAdAt[box] = n
         if (r.ticker) tileTickerAt[box] = n
         if (r.game) {
@@ -1111,6 +1113,23 @@ object Engine {
     }
 
     /**
+     * This game's score bug just went away: it read it on nearly every read of this box (60%+ of
+     * the 40 s before), then missed it enough reads in a row, 8 s or more, that it isn't a misread,
+     * while it still reads the other boxes. A cut to commercial looks like that (so do some replays,
+     * which is why it only backs up the sound). Halftime or final in its graphics isn't gone.
+     */
+    private fun bugJustGone(box: Int, n: Double, boxes: Int): Boolean {
+        val at = tileGameAt[box] ?: return false
+        if (n - at !in 8.0..45.0) return false
+        val q = tileReads[box] ?: return false
+        val (before, since) = synchronized(q) { q.filter { it.first in (at - 40)..at } to q.filter { it.first > at } }
+        if (before.size < 8 || since.size < 3 || since.any { it.third } || n - since.last().first > 6) return false
+        val hit = before.count { it.second }.toDouble() / before.size
+        if (hit < 0.6 || Math.pow(1 - hit, since.size.toDouble()) > 0.01) return false
+        return (1..boxes).any { it != box && tileGameAt[it]?.let { t -> n - t < 20 } == true }
+    }
+
+    /**
      * What the text on a box says: the game (its score bug read in the last 10 s), a commercial
      * (it reads this box's score bug normally but nothing for 45 s, longer than replays and
      * close-ups, while it still reads other boxes, so the camera can see), or not sure.
@@ -1121,8 +1140,6 @@ object Engine {
         if (adAt != null && n - adAt < 10 && (tileGameAt[box] ?: -1e9) < adAt) return false
         val at = tileGameAt[box] ?: return null
         if (n - at < 10) return true
-        // The network's ticker is up: not a commercial, whatever else.
-        if (tileTickerAt[box]?.let { n - it < 15 } == true) return null
         val read = tileRead[box]
         val seesTv = (1..boxes).any { it != box && tileGameAt[it]?.let { t -> n - t < 45 } == true }
         // Only where reading this box's score bug is dependable: read 4+ times in the minute before it went.
@@ -1286,9 +1303,8 @@ object Engine {
         cameraMerged = (1..boxCount(s)).associateWith { cameraVerdict(it, v.showingGame[it], n, boxCount(s)) }
         // Sure enough to overrule an ad-sounding moment on the box you're hearing: its score read just now.
         c?.cameraReading = (1..boxCount(s)).filter { b -> tileGameAt[b]?.let { n - it < 6 } == true }.toSet()
-        // Showing the network (halftime, the studio): better than a commercial, not the game.
-        cameraShow = (1..boxCount(s)).filter { b -> cameraMerged[b] == null && textShowsNetwork(b, n) }.toSet()
-        c?.cameraShowing = cameraShow
+        // Its own score bug, read dependably, gone for a few seconds: what a cut to commercial looks like.
+        c?.cameraBugGone = (1..boxCount(s)).filter { b -> bugJustGone(b, n, boxCount(s)) }.toSet()
         c?.camera = n to cameraMerged
         // YouTube TV flashes an outline on the box the sound moves to. Every move the app makes
         // checks it; once it has proven it reads the outline right, a flash the app didn't cause
@@ -1857,8 +1873,7 @@ object Engine {
             .put("name", b.slot?.name?.ifBlank { null } ?: b.slot?.team ?: "")
             .put("chip", chip(b))
             .put("detail", b.info?.detail ?: "")
-            .put("camera", when (st.cameraGame[b.box]) {
-                true -> "game"; false -> "commercial"; null -> if (b.box in st.cameraShow) "show" else "" })
+            .put("camera", when (st.cameraGame[b.box]) { true -> "game"; false -> "commercial"; null -> "" })
             .put("reads", st.cameraText[b.box] ?: ""))
         j.put("boxes", boxes)
         return j.toString()

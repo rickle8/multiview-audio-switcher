@@ -42,27 +42,27 @@ data class Bias(
     val why: String? = null,
 ) {
     companion object {
-        val NORMAL = Bias(10.0, 8.0)
+        val NORMAL = Bias(8.0, 6.0)
         /** Sound dipped and then changed character: a break may have just started. */
-        val TRANSITION = Bias(5.0, 5.0, 0.0, "sound changed suddenly")
+        val TRANSITION = Bias(5.0, 4.0, 0.0, "sound changed suddenly")
         /** A play that usually leads to a break just happened. */
-        val LIKELY = Bias(8.0, 7.0, 0.0, "break likely after that play")
+        val LIKELY = Bias(6.0, 5.0, 0.0, "break likely after that play")
         /** The game just came back from a break with nothing since that causes another. */
         val UNLIKELY = Bias(10.0, 16.0, 0.08, "just back from a break")
         val TRANSITION_BUT_UNLIKELY = Bias(5.0, 5.0, 0.0, "sound changed suddenly")
         /** The game clock is running: commercials only air when it's stopped. */
         val CLOCK = Bias(10.0, 16.0, 0.12, "game clock is running")
         /** Just switched games: if this one is also in a break, notice fast and move on. */
-        val LANDED = Bias(5.0, 4.0, 0.0, "checking the game it just switched to")
+        val LANDED = Bias(5.0, 3.0, 0.0, "checking the game it just switched to")
     }
 }
 
 /** Rolling window + hysteresis: game audio or commercial? */
 class Verdict(
-    var windowSecs: Double = 10.0,
+    var windowSecs: Double = 8.0,
     var adThreshold: Double = 0.6,
     var gameThreshold: Double = 0.4,
-    var minAdSecs: Double = 8.0,
+    var minAdSecs: Double = 6.0,
     var silenceDb: Double = -55.0,
 ) {
     private val frames = ArrayDeque<Frame>()

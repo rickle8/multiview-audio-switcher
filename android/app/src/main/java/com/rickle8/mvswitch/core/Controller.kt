@@ -180,13 +180,10 @@ class Controller(
      */
     @Volatile var cameraReading: Set<Int> = emptySet()
     /**
-     * Boxes where the camera sees the network's own programming (a scores ticker) but not the game
-     * being played: halftime, the studio, a long replay. Not a commercial.
+     * Boxes whose own score bug the camera reads dependably and that just went away (the cut to a
+     * commercial takes it off the screen, along with the game).
      */
-    @Volatile var cameraShowing: Set<Int> = emptySet()
-
-    private fun cameraShows(box: Int, now: Double): Boolean =
-        camera?.let { now - it.first < 4 } == true && box in cameraShowing
+    @Volatile var cameraBugGone: Set<Int> = emptySet()
 
     private fun halftime(box: Int) = info(box)?.statusName == "STATUS_HALFTIME"
 
@@ -235,7 +232,7 @@ class Controller(
             false -> return Outlook.BREAK to "camera sees a commercial"
             null -> Unit
         }
-        val f = feed ?: return if (!ignoreCamera && cameraShows(box, now)) Outlook.SHOW to "camera sees the network's show" else Outlook.UNKNOWN to ""
+        val f = feed ?: return Outlook.UNKNOWN to ""
         val plays = f.plays(box)
         val p = plays.lastOrNull()
         val ago = p?.let { now - tvTime(it) }
@@ -251,19 +248,14 @@ class Controller(
         // The game clock running on the TV is the surest sign the game is on (TV breaks only come with it stopped).
         val moved = f.clockMovedAt(box)
         if (moved != null && now - (moved + dataLead()) < 40) return Outlook.LIVE to "clock running"
-        // The camera seeing the network's ticker means it's not in commercial, whatever ESPN's timing guesses.
-        val show = !ignoreCamera && cameraShows(box, now)
         if (p != null && ago != null) {
             if (breaky) {
                 val afterScore = plays.takeLast(4).any { SCORE_PLAY.containsMatchIn(it.text) && now - tvTime(it) < 400 }
-                if (ago in 0.0..(breakLength(box, afterScore) + 40)) {
-                    return if (show) Outlook.SHOW to "camera sees the network, not a commercial" else Outlook.BREAK to p.text
-                }
+                if (ago in 0.0..(breakLength(box, afterScore) + 40)) return Outlook.BREAK to p.text
             } else if (ago in -90.0..30.0) {
                 return Outlook.LIVE to p.text
             }
         }
-        if (show) return Outlook.SHOW to "camera sees the network's show, not the game"
         // Nothing happening for a while. College play-by-play can arrive in bursts minutes late, so only
         // call it a break when the clock agrees (stopped a good while) or, with no clock, after a long quiet.
         val clockStoppedLong = moved != null && now - (moved + dataLead()) > 75
@@ -285,11 +277,11 @@ class Controller(
         return usable.sortedWith(compareByDescending<Int> { look[it] == Outlook.LIVE }.thenByDescending { score(it) })
     }
 
-    /** No game being played anywhere else: boxes showing a show (halftime, the studio), the camera's first. */
+    /** No game being played anywhere else: boxes showing a halftime show, the closest game first. */
     private fun shows(now: Double, status: Map<Int, GameStatus>, exclude: Int): List<Int> =
         boxes.filter { it != exclude && status[it] != GameStatus.FINAL && status[it] != GameStatus.PREGAME }
             .filter { outlook(it, now, status).first == Outlook.SHOW }
-            .sortedWith(compareByDescending<Int> { cameraShows(it, now) }.thenByDescending { score(it) })
+            .sortedByDescending { score(it) }
 
     /** Every other game is in commercial too: the one whose break started first should be back first. */
     private fun backSoonest(now: Double, status: Map<Int, GameStatus>, exclude: Int): Int? =
@@ -304,8 +296,6 @@ class Controller(
 
     /** The show it went to (or stayed on) because no game was being played anywhere. */
     private var chosenShow: Int? = null
-    /** When the camera started seeing only the network's show on a box. */
-    private val showSince = HashMap<Int, Double>()
 
     private fun switchTo(box: Int, now: Double, why: String): Boolean {
         chosenShow = null
@@ -492,10 +482,11 @@ class Controller(
 
     private var cameraLogged = -1e9
 
-    fun step(heard: Heard, strongAd: Boolean = false, strongWhy: String? = null): Boolean =
-        stepWith(heard, strongAd, strongWhy)
+    /** [adPct]: how commercial-like the last few seconds sounded (0..100), when known. */
+    fun step(heard: Heard, strongAd: Boolean = false, strongWhy: String? = null, adPct: Int? = null): Boolean =
+        stepWith(heard, strongAd, strongWhy, adPct)
 
-    private fun stepWith(heard0: Heard, strongAd0: Boolean, strongWhy0: String?): Boolean {
+    private fun stepWith(heard0: Heard, strongAd0: Boolean, strongWhy0: String?, adPct: Int?): Boolean {
         val now = clock()
         val cur = nav.current ?: return false
         var heard = heard0; var strongAd = strongAd0; var strongWhy = strongWhy0
@@ -515,6 +506,15 @@ class Controller(
             }
             null -> Unit
         }
+        // The camera reads this game's score bug dependably and it just went away (the cut to a
+        // commercial takes it off): an ad-leaning moment is a commercial, a sure one sooner.
+        if (cur in cameraBugGone && camera?.let { now - it.first < 4 } == true && !userSaidGame(cur, now)) {
+            when (heard) {
+                Heard.AD -> if (!strongAd) { strongAd = true; strongWhy = "Sounds like a commercial and the score bug is gone" }
+                Heard.UNSURE -> if ((adPct ?: 0) >= 45) heard = Heard.AD
+                Heard.GAME -> Unit
+            }
+        }
         if (heard == Heard.GAME && lastHeard[cur] == Heard.AD && now - lastSwitch > 15) returnedAt[cur] = now - 4
         // The sound settles on "commercial" about 8 s after it starts.
         if (heard == Heard.AD && lastHeard[cur] != Heard.AD && !strongAd && now - lastSwitch > 20) syncAdStart(cur, now - 8)
@@ -531,12 +531,9 @@ class Controller(
         if (arm != null && (!micOn || arm.anyway)) {
             return goToBreak(cur, now, status, "Break coming on box $cur (${arm.text.take(50)})", stayOnShow = arm.anyway)
         }
-        // On a show (halftime, the studio) because no game was being played: you'd rather have a live
-        // game, so go to one as soon as there is one. Also when the camera has seen only the network's
-        // show here for a minute. (A commercial here is handled below like any other.)
-        if (cameraShows(cur, now)) showSince.putIfAbsent(cur, now) else showSince.remove(cur)
-        val onShow = outlook(cur, now, status).first == Outlook.SHOW &&
-            (cur == chosenShow || showSince[cur]?.let { now - it >= 60 } == true)
+        // On a halftime show because no game was being played: you'd rather have a live game, so go
+        // to one as soon as there is one. (A commercial during the show is handled below like any other.)
+        val onShow = cur == chosenShow && outlook(cur, now, status).first == Outlook.SHOW
         if (heard != Heard.AD && onShow && now - lastSwitch >= 15) {
             val live = ranked(now, status, exclude = cur).firstOrNull { outlook(it, now, status).first == Outlook.LIVE }
             if (live != null) {

@@ -134,7 +134,10 @@ class DetectionTest {
         val eager = secondsUntilAd(Bias.TRANSITION)
         val strict = secondsUntilAd(Bias.UNLIKELY)
         assertTrue("eager $eager normal $normal strict $strict", eager < normal && normal < strict)
-        assertTrue("eager $eager", eager <= 9)
+        assertTrue("eager $eager", eager <= 8)
+        // Off commercials a bit faster than it used to be (about 14 s from the cut).
+        assertTrue("normal $normal", normal <= 11)
+        println("seconds from the cut to commercial: eager $eager, likely ${secondsUntilAd(Bias.LIKELY)}, normal $normal, strict $strict")
     }
 
     // ------------------------------------------------------------ live data

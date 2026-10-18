@@ -301,6 +301,8 @@ class GameFeed(
     private val lagSamples = ArrayDeque<Double>()
     private val names = java.util.concurrent.ConcurrentHashMap<Int, Set<String>>()
     private val teams = java.util.concurrent.ConcurrentHashMap<Int, Set<String>>()
+    /** Per box, each team's words on its own (abbreviation, name, place), to tell one team from both. */
+    private val sides = java.util.concurrent.ConcurrentHashMap<Int, List<Set<String>>>()
 
     private val namesAt = HashMap<Int, Double>()
 
@@ -373,6 +375,7 @@ class GameFeed(
             rawStatus[box] = gi.status
             info[box] = gi
             if (gi.status == GameStatus.LIVE || gi.status == GameStatus.BREAK) noteClock(box, "board", gi.period, gi.clock, now)
+            teamSides(event).takeIf { it.size == 2 }?.let { sides[box] = it }
             teamNames(event).takeIf { it.isNotEmpty() }?.let { t ->
                 val cur = names[box].orEmpty()
                 if (!cur.containsAll(t)) { teams[box] = t; names[box] = t + cur }
@@ -468,6 +471,9 @@ class GameFeed(
         teams[box].orEmpty() + info[box]?.scores?.keys.orEmpty().map { it.lowercase() }.filter { it.length >= 2 }
     }
 
+    /** Each game's two teams, each as its own words (lowercase). */
+    fun teamSides(): Map<Int, List<Set<String>>> = HashMap(sides)
+
     /** Player and team names for every game, lowercase (for the announcers' words). */
     fun names(): Set<String> = names.values.flatten().toSet()
 
@@ -506,6 +512,17 @@ fun athleteNames(j: Any?, out: MutableSet<String>, depth: Int) {
             for (k in j.keys()) athleteNames(j.opt(k), out, depth + 1)
         }
         is org.json.JSONArray -> for (i in 0 until j.length()) athleteNames(j.opt(i), out, depth + 1)
+    }
+}
+
+/** Each competitor's words from a scoreboard event: abbreviation, nickname, place, short name (lowercase). */
+fun teamSides(event: JSONObject): List<Set<String>> {
+    val comps = event.optJSONArray("competitions")?.optJSONObject(0)?.optJSONArray("competitors") ?: return emptyList()
+    return (0 until comps.length()).mapNotNull { i ->
+        val t = comps.optJSONObject(i)?.optJSONObject("team") ?: return@mapNotNull null
+        listOf("abbreviation", "name", "location", "shortDisplayName", "displayName")
+            .map { t.optString(it).lowercase().replace(Regex("[^a-z0-9' ]"), " ").replace(Regex("\\s+"), " ").trim() }
+            .filter { it.length >= 2 }.toSet().takeIf { it.isNotEmpty() }
     }
 }
 

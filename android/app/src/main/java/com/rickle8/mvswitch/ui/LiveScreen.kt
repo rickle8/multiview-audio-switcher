@@ -322,9 +322,7 @@ private fun HearingRow(state: EngineState) {
             if (state.cameraLive) {
                 val ads = state.cameraGame.filterValues { it == false }.keys.sorted()
                 val games = state.cameraGame.filterValues { it == true }.keys.sorted()
-                val shows = state.cameraShow.sorted()
                 Text("Camera: " + (if (games.isNotEmpty()) "game on ${games.joinToString()}" else "no score bugs read yet") +
-                    (if (shows.isNotEmpty()) " · show on ${shows.joinToString()}" else "") +
                     (if (ads.isNotEmpty()) " · commercial on ${ads.joinToString()}" else ""),
                     color = C.blue, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
