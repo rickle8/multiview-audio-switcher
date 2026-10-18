@@ -106,8 +106,10 @@ data class EngineState(
     val held: Boolean = false,
     /** The camera is watching the TV (frames are arriving). */
     val cameraLive: Boolean = false,
-    /** The box the camera sees highlighted. */
+    /** The box YouTube TV last flashed its outline on (where the sound went), in the last half minute. */
     val cameraBox: Int? = null,
+    /** Per box: where the camera found the score bug (fractions of the box). */
+    val cameraBugs: Map<Int, DoubleArray?> = emptyMap(),
     /** Per box: game (true) / commercial (false) / not sure (null), as the camera sees it. */
     val cameraGame: Map<Int, Boolean?> = emptyMap(),
     /** Per box: how much of the learned score bar is on screen, 0..100. */
@@ -476,7 +478,8 @@ object Engine {
             feedError = f?.lastError,
             held = running && n < holdUntil,
             cameraLive = n - cameraAt < 5,
-            cameraBox = cameraView?.highlighted?.takeIf { n - cameraAt < 5 },
+            cameraBox = lastOutline?.takeIf { n - it.second < 30 }?.first,
+            cameraBugs = cameraView?.bugArea?.takeIf { n - cameraAt < 5 }.orEmpty(),
             cameraGame = cameraView?.showingGame?.takeIf { n - cameraAt < 5 }.orEmpty(),
             cameraBars = cameraView?.scoreBar?.takeIf { n - cameraAt < 5 }.orEmpty(),
             cameraFind = findStatus,
@@ -766,10 +769,13 @@ object Engine {
                 synchronized(lock) {
                     if (lockedBox == null) {
                         try {
+                            val before = nav?.current
+                            val started = now()
                             if (c.step(heard, strongAd = result?.strongAd == true,
                                     strongWhy = if (result?.strongAd == true) result.why else null)) {
                                 m?.drain()
-                                appMovedAt = now(); moveRetried = false
+                                appMoveStart = started; appMovedAt = now(); moveRetried = false
+                                verifyTarget = nav?.current?.takeIf { it != before }
                                 synchronized(detector) { detector.onSwitch() }
                                 lastResult = null
                             }
@@ -898,6 +904,11 @@ object Engine {
     @Volatile private var appMovedAt = -1e9
     @Volatile private var moveRetried = false
     @Volatile private var fixingMove = false
+    /** The last box YouTube TV flashed its outline on, and when. */
+    @Volatile private var lastOutline: Pair<Int, Double>? = null
+    /** When the app started its last move, and the box it should check the sound landed on. */
+    @Volatile private var appMoveStart = -1e9
+    @Volatile private var verifyTarget: Int? = null
     private val finder = com.rickle8.mvswitch.core.GridFinder()
     @Volatile private var finding = false
     @Volatile private var findSkip = 0
@@ -968,46 +979,72 @@ object Engine {
             (b == cur && lastResult?.heard == Heard.GAME) ||
                 (c != null && c.outlook(b, n, ignoreCamera = true).first == com.rickle8.mvswitch.core.Controller.Outlook.LIVE)
         }.toSet()
-        val v = watcher!!.frame(img, gameLikely)
+        // ...and never from one known to be in commercial.
+        val adLikely = (1..boxCount(s)).filter { b ->
+            (b == cur && lastResult?.heard == Heard.AD) ||
+                (c != null && c.outlook(b, n, ignoreCamera = true).first == com.rickle8.mvswitch.core.Controller.Outlook.BREAK)
+        }.toSet() - gameLikely
+        val v = watcher!!.frame(img, gameLikely, adLikely)
         cameraView = v
         cameraAt = n
         c?.camera = n to v.showingGame
-        // Where's the sound really? The highlight outline says.
-        val seen = v.highlighted
+        // Where did the sound just go? YouTube TV flashes an outline on the box it moved to.
+        if (v.outlineAppeared != null) lastOutline = v.outlineAppeared to n
         val running = job?.isActive == true && !paused && !autoPaused && !waitingForMultiview && lockedBox == null
-        if (seen != null && cur != null && seen != cur && running && c != null && n - c.lastSwitch > 4 && !fixingMove) {
-            if (camMismatchSince < 0) camMismatchSince = n
-            if (n - camMismatchSince >= 2) {
-                camMismatchSince = -1e9
-                if (n - appMovedAt < 14 && !moveRetried) {
-                    // The app just moved the sound and it didn't land: a key press got lost. Try again from where it is.
+        if (cur == null || c == null || !running || fixingMove) return
+        val last = lastOutline
+        val target = verifyTarget
+        if (target != null) {
+            // The app just moved the sound: once it's settled, check where the outline ended up
+            // (pressing two arrows flashes the box in between too; only the last flash counts).
+            if (n < appMovedAt + 1.5) return
+            val flash = last?.takeIf { it.second >= appMoveStart - 0.2 }
+            when {
+                flash == null -> if (n > appMovedAt + 4) verifyTarget = null // no flash seen: can't tell, carry on
+                flash.first == target -> verifyTarget = null // landed where it should
+                !moveRetried -> {
+                    // A key press got lost: try again from where the sound really is.
                     moveRetried = true
+                    verifyTarget = null
                     fixingMove = true
-                    log("Camera: the move to box $cur didn't land (sound is on box $seen). Trying again.")
+                    val from = flash.first
+                    log("Camera: the move to box $target didn't land (sound is on box $from). Trying again.")
                     scope.launch(Dispatchers.IO) {
                         try {
+                            appMoveStart = now()
                             synchronized(lock) {
-                                nav?.current = seen
-                                nav?.goTo(cur)
+                                nav?.current = from
+                                nav?.goTo(target)
                                 ctrl?.lastSwitch = now()
                             }
+                            appMovedAt = now()
+                            verifyTarget = target
                         } catch (e: Exception) {
                             log(e.message ?: "TV error")
                         } finally { fixingMove = false }
                     }
-                } else {
-                    // Nobody in the app moved it: you did, with the TV remote. Go with your pick.
-                    synchronized(lock) {
-                        nav?.current = seen
-                        c.lastSwitch = n
-                        c.returnTo = null
-                    }
+                }
+                else -> {
+                    // Tried twice: believe the camera.
+                    verifyTarget = null
+                    synchronized(lock) { nav?.current = flash.first; c.lastSwitch = n }
                     synchronized(detector) { detector.onSwitch() }
-                    log(if (n - appMovedAt < 14) "Camera: the sound is on box $seen, not box $cur. Fixed."
-                        else "Camera: you moved the sound to box $seen. Going with it.")
+                    log("Camera: the sound is on box ${flash.first}, not box $target. Fixed.")
                 }
             }
-        } else camMismatchSince = -1e9
+            return
+        }
+        // A flash nobody in the app caused: you moved the sound with the TV remote. Go with your pick.
+        if (last != null && n - last.second < 2 && last.first != cur && last.second > appMovedAt + 2) {
+            synchronized(lock) {
+                nav?.current = last.first
+                c.lastSwitch = n
+                c.returnTo = null
+            }
+            synchronized(detector) { detector.onSwitch() }
+            log("Camera: you moved the sound to box ${last.first}. Going with it.")
+            lastOutline = last.first to -1e9 // handled
+        }
     }
 
     /** Expose and focus on the TV, not the room. */
@@ -1099,7 +1136,7 @@ object Engine {
                 r.press(key)
                 // In multiview the arrows move the audio: keep track of where it went.
                 n.current = simulate(n.neighbors, n.current ?: 1, listOf(key))
-                appMovedAt = now(); moveRetried = false
+                appMoveStart = now() - 0.5; appMovedAt = now(); moveRetried = false; verifyTarget = n.current
                 ctrl?.lastSwitch = now()
                 ctrl?.returnTo = null
                 synchronized(detector) { detector.onSwitch() }
@@ -1419,8 +1456,9 @@ object Engine {
                 synchronized(this@Engine.lock) {
                     lockedBox = if (lock) box else null
                     holdUntil = 0.0
+                    val started = now()
                     nav?.goTo(box)
-                    appMovedAt = now(); moveRetried = false
+                    appMoveStart = started; appMovedAt = now(); moveRetried = false; verifyTarget = box
                     ctrl?.let { it.lastSwitch = now(); it.breakUntil.remove(box); it.returnTo = null }
                     synchronized(detector) { detector.onSwitch() }
                 }
@@ -1440,7 +1478,6 @@ object Engine {
             ctrl?.returnTo = null
         }
         synchronized(detector) { detector.onSwitch() }
-        watcher?.setHighlighted(box)
         log("Got it: the audio is on box $box.")
         publish()
     }

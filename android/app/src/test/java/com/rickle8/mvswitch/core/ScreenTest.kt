@@ -6,59 +6,87 @@ import org.junit.Test
 import java.util.Random
 
 class ScreenTest {
-    private val w = 192
-    private val h = 108
+    private val w = 384
+    private val h = 216
 
-    /** A fake multiview grid: moving picture in every box, a score bar on games, an outline on the sound box. */
-    private fun grid(t: Int, highlight: Int, inAds: Set<Int>, rnd: Random): FloatArray {
+    /**
+     * A fake multiview grid: moving picture in every box, a score bug (lettering-like blocks)
+     * on boxes showing a game, and the white outline on [outline] if given.
+     */
+    private fun grid(t: Int, outline: Int?, inAds: Set<Int>, rnd: Random, gain: Float = 1f): FloatArray {
         val img = FloatArray(w * h)
-        val rects = boxRects(4)
-        for ((box, r) in rects) {
+        for ((box, r) in boxRects(4)) {
             val x0 = (r[0] * w).toInt(); val x1 = (r[2] * w).toInt()
             val y0 = (r[1] * h).toInt(); val y1 = (r[3] * h).toInt()
             for (y in y0 until y1) for (x in x0 until x1) {
-                // Moving picture: drifting stripes plus noise.
-                img[y * w + x] = (90 + 40 * kotlin.math.sin((x + t * 3 + box * 7) / 5.0) + rnd.nextGaussian() * 12).toFloat()
+                img[y * w + x] = (90 + 40 * kotlin.math.sin((x + t * 5 + box * 7) / 6.0) * kotlin.math.cos((y - t * 3) / 9.0) +
+                    rnd.nextGaussian() * 6).toFloat()
             }
-            if (box !in inAds) {
-                // Score bar: a fixed strip along the bottom with text-like blocks.
-                for (y in y1 - 16 until y1 - 11) for (x in x0 + 14 until x1 - 14) {
-                    img[y * w + x] = if ((x / 4) % 2 == 0) 230f else 20f
+            if (box in inAds) {
+                // A commercial: different moving content, no bug (and a big moving bright logo, for spite).
+                for (y in y0 + 30 until y0 + 60) for (x in x0 + 20 + (t % 30) until x0 + 70 + (t % 30)) img[y * w + x] = 210f
+            } else {
+                // Score bug along the bottom: blocks like letters and numbers.
+                for (y in y1 - 26 until y1 - 14) for (x in x0 + 30 until x1 - 30) {
+                    img[y * w + x] = if (((x - x0) / 5) % 3 == 0 || (y - y1 + 26) < 2) 230f else 30f
                 }
             }
-            if (box == highlight) {
+            if (box == outline) {
                 for (d in 0..2) {
                     for (x in x0 until x1) { img[(y0 + d) * w + x] = 250f; img[(y1 - 1 - d) * w + x] = 250f }
                     for (y in y0 until y1) { img[y * w + x0 + d] = 250f; img[y * w + x1 - 1 - d] = 250f }
                 }
             }
         }
+        for (i in img.indices) img[i] *= gain
         return img
     }
 
-    @Test fun seesTheHighlightedBox() {
+    @Test fun seesTheOutlineAppearOnce() {
         val sw = ScreenWatcher(4)
         val rnd = Random(1)
-        var v: CameraView? = null
-        for (t in 0 until 5) v = sw.frame(grid(t, 2, emptySet(), rnd))
-        assertEquals(2, v!!.highlighted)
-        for (t in 5 until 10) v = sw.frame(grid(t, 4, emptySet(), rnd))
-        assertEquals(4, v!!.highlighted)
+        var onsets = mutableListOf<Int>()
+        for (t in 0 until 20) sw.frame(grid(t, null, emptySet(), rnd)).outlineAppeared?.let { onsets += it }
+        assertTrue("nothing yet: $onsets", onsets.isEmpty())
+        // The sound moves to box 3: its outline flashes for a few seconds, then fades.
+        for (t in 20 until 30) sw.frame(grid(t, 3, emptySet(), rnd)).outlineAppeared?.let { onsets += it }
+        for (t in 30 until 50) sw.frame(grid(t, null, emptySet(), rnd)).outlineAppeared?.let { onsets += it }
+        assertEquals(listOf(3), onsets)
+        // Then to box 2.
+        for (t in 50 until 58) sw.frame(grid(t, 2, emptySet(), rnd)).outlineAppeared?.let { onsets += it }
+        assertEquals(listOf(3, 2), onsets)
     }
 
-    @Test fun tellsGamesFromCommercialsByTheScoreBar() {
+    @Test fun learnsEachScoreBugAndSpotsCommercials() {
         val sw = ScreenWatcher(4)
         val rnd = Random(2)
         var v: CameraView? = null
-        for (t in 0 until 80) v = sw.frame(grid(t, 1, emptySet(), rnd))
+        for (t in 0 until 120) v = sw.frame(grid(t, null, emptySet(), rnd))
         assertTrue("all games: ${v!!.scoreBar}", v.showingGame.values.all { it == true })
-        // Box 3 cuts to a commercial: its score bar is gone.
-        for (t in 80 until 95) v = sw.frame(grid(t, 1, setOf(3), rnd))
-        assertEquals(false, v!!.showingGame[3])
+        // It found the bug near the bottom of each box.
+        assertTrue(v.bugArea[1]!![1] > 0.6)
+        // Box 3 cuts to a commercial.
+        for (t in 120 until 140) v = sw.frame(grid(t, null, setOf(3), rnd))
+        assertEquals("bars ${v!!.scoreBar} area ${v.bugArea[3]?.toList()}", false, v.showingGame[3])
         assertEquals(true, v.showingGame[2])
-        // And back.
-        for (t in 95 until 110) v = sw.frame(grid(t, 1, emptySet(), rnd))
-        assertEquals(true, v!!.showingGame[3])
+        // The room gets darker (or the camera changes exposure): still reads the games right.
+        for (t in 140 until 160) v = sw.frame(grid(t, null, setOf(3), rnd, gain = 0.7f))
+        assertEquals("dark bars ${v!!.scoreBar}", true, v.showingGame[1])
+        assertEquals("dark bars ${v.scoreBar}", false, v.showingGame[3])
+        // Box 3 back from commercial.
+        for (t in 160 until 180) v = sw.frame(grid(t, null, emptySet(), rnd))
+        assertEquals("back bars ${v!!.scoreBar}", true, v.showingGame[3])
+    }
+
+    @Test fun neverLearnsACommercialAsTheBug() {
+        val sw = ScreenWatcher(4)
+        val rnd = Random(3)
+        var v: CameraView? = null
+        // Box 4 starts in a commercial the app knows about: it learns nothing there.
+        for (t in 0 until 100) v = sw.frame(grid(t, null, setOf(4), rnd), adLikely = setOf(4))
+        assertEquals(null, v!!.showingGame[4])
+        for (t in 100 until 220) v = sw.frame(grid(t, null, emptySet(), rnd))
+        assertEquals(true, v!!.showingGame[4])
     }
 
     @Test fun straightensATiltedGrid() {

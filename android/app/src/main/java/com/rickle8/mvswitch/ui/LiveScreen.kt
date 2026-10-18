@@ -308,8 +308,9 @@ private fun HearingRow(state: EngineState) {
             }
             if (state.cameraLive) {
                 val ads = state.cameraGame.filterValues { it == false }.keys.sorted()
-                Text("Camera: sound on box ${state.cameraBox ?: "?"}" +
-                    (if (ads.isNotEmpty()) " · commercial on ${ads.joinToString()}" else ""),
+                val learning = state.cameraGame.filterValues { it == null }.size
+                Text("Camera: " + (if (ads.isNotEmpty()) "commercial on ${ads.joinToString()}" else "no commercials") +
+                    (if (learning > 0) " · learning $learning score bug${if (learning == 1) "" else "s"}" else ""),
                     color = C.blue, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
             if (state.micOn && state.topSounds.isNotEmpty()) {

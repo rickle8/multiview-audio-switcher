@@ -131,7 +131,7 @@ class CameraEye(
     private fun handle(img: ImageProxy) {
         try {
             val now = System.currentTimeMillis()
-            if (now - lastAt < 320) return
+            if (now - lastAt < 240) return
             lastAt = now
             val y = img.planes[0]
             val buf = y.buffer

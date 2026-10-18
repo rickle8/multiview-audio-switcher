@@ -50,15 +50,20 @@ class GrayFrame(val width: Int, val height: Int, val pixels: ByteArray) {
 }
 
 /** Straightens the multiview grid out of a camera frame into a small W x H picture. */
-fun warpGrid(frame: GrayFrame, corners: List<Pair<Double, Double>>, w: Int = 192, h: Int = 108): FloatArray {
+fun warpGrid(frame: GrayFrame, corners: List<Pair<Double, Double>>, w: Int = 384, h: Int = 216): FloatArray {
     // Corners are given as fractions of the frame.
     val hom = Homography(corners.map { (x, y) -> x * (frame.width - 1) to y * (frame.height - 1) })
     val out = FloatArray(w * h)
     for (j in 0 until h) for (i in 0 until w) {
         val (u, v) = hom.map((i + 0.5) / w, (j + 0.5) / h)
-        val x = u.toInt().coerceIn(0, frame.width - 1)
-        val y = v.toInt().coerceIn(0, frame.height - 1)
-        out[j * w + i] = frame.at(x, y).toFloat()
+        // Blend the four nearest camera pixels: smoother edges than picking one.
+        val x = u.coerceIn(0.0, frame.width - 1.001); val y = v.coerceIn(0.0, frame.height - 1.001)
+        val x0 = x.toInt(); val y0 = y.toInt()
+        val fx = (x - x0).toFloat(); val fy = (y - y0).toFloat()
+        val x1 = minOf(x0 + 1, frame.width - 1); val y1 = minOf(y0 + 1, frame.height - 1)
+        val top = frame.at(x0, y0) * (1 - fx) + frame.at(x1, y0) * fx
+        val bot = frame.at(x0, y1) * (1 - fx) + frame.at(x1, y1) * fx
+        out[j * w + i] = top * (1 - fy) + bot * fy
     }
     return out
 }
@@ -73,152 +78,226 @@ fun boxRects(layout: Int): Map<Int, DoubleArray> = when (layout) {
 }
 
 data class CameraView(
-    /** The box with the highlight outline (the one with sound), once clear. */
-    val highlighted: Int?,
-    /** Per box: true = showing the game (its score bar is up), false = looks like a commercial, null = not sure yet. */
+    /**
+     * A box whose white outline just appeared this moment: YouTube TV flashes it for a few
+     * seconds whenever the sound moves to a box, so this says where the sound just went.
+     */
+    val outlineAppeared: Int?,
+    /** Per box: true = its score bug is up (the game), false = gone (commercial), null = still learning it. */
     val showingGame: Map<Int, Boolean?>,
-    /** Per box, 0..100: how much of the learned score bar is on screen (for the setup screen). */
+    /** Per box, 0..100: how much of the learned score bug is on screen right now. */
     val scoreBar: Map<Int, Int?>,
+    /** Per box: where it found the score bug, as fractions of the box (left, top, right, bottom), once learned. */
+    val bugArea: Map<Int, DoubleArray?> = emptyMap(),
+    /** The box whose outline is showing right now (only for the few seconds it flashes). */
+    val outlineNow: Int? = null,
 )
 
 /**
- * Reads the straightened multiview grid, frame after frame (about 2 a second).
+ * Reads the straightened multiview grid, several times a second.
  *
- * Highlight: the box with sound has a bright outline; its edge is much brighter
- * than just inside it, unlike the other boxes.
+ * The outline: YouTube TV flashes a white outline around a box for a few seconds when
+ * the sound moves there, then it fades. So this looks for an outline *appearing*: a
+ * box's edge suddenly much brighter than it has been, while nothing like that happens
+ * on the other boxes. That's a moment, not a state: it says where the sound just went.
  *
- * Game vs commercial: during a game the network's score bar sits still on screen
- * while the picture moves. Each box learns where its score bar is (pixels that
- * stay the same while the rest changes, and have sharp edges) and checks whether
- * it's still there. A commercial doesn't have it.
+ * The score bug: every game broadcast keeps a score bug in the same spot while the
+ * picture moves; commercials don't have it. Each box learns its own bug from what
+ * stays put: the edges (lettering, borders, logos) that line up the same way frame
+ * after frame for minutes, while everything else changes. It compares edges, not
+ * brightness, so the room light or the camera's exposure changing doesn't matter. The
+ * game being on (ESPN or the sound) speeds the learning up; a known commercial is
+ * never learned from.
  */
-class ScreenWatcher(private val layout: Int, private val w: Int = 192, private val h: Int = 108) {
+class ScreenWatcher(private val layout: Int, private val w: Int = 384, private val h: Int = 216) {
     private val rects = boxRects(layout)
-    private var lastBest: Int? = null
-    private var bestRuns = 0
-    var highlighted: Int? = null
-        private set
 
-    private class BoxState(val bw: Int, val bh: Int) {
-        val n = bw * bh
-        var prev: FloatArray? = null
-        val slowMean = FloatArray(n)
-        val motion = FloatArray(n) { 30f }
-        var frames = 0
-        /** The learned score bar: which pixels, and what they look like. */
-        var mask: BooleanArray? = null
-        var template: FloatArray? = null
-        var sinceMask = 0
-        val recentScores = ArrayDeque<Double>()
-        var showing: Boolean? = null
-    }
+    // ------------------------------------------------------------ outline
+    private val ringHistory = HashMap<Int, ArrayDeque<Double>>()
+    private var candidate: Int? = null
+    private var candidateRuns = 0
+    private var lastOnsetFrame = -100
+    private var lastOnsetBox: Int? = null
+    private var frameNo = 0
+    private val outlineUntil = HashMap<Int, Int>()
 
-    private val boxes = HashMap<Int, BoxState>()
-
-    private fun crop(img: FloatArray, r: DoubleArray, inset: Int): Pair<FloatArray, IntArray> {
-        val x0 = (r[0] * w).toInt() + inset; val x1 = (r[2] * w).toInt() - inset
-        val y0 = (r[1] * h).toInt() + inset; val y1 = (r[3] * h).toInt() - inset
-        val bw = (x1 - x0).coerceAtLeast(1); val bh = (y1 - y0).coerceAtLeast(1)
-        val out = FloatArray(bw * bh)
-        for (y in 0 until bh) for (x in 0 until bw) out[y * bw + x] = img[(y0 + y) * w + (x0 + x)]
-        return out to intArrayOf(bw, bh)
-    }
-
-    /** Edge brightness minus inside brightness, for one box. */
-    private fun outlineContrast(img: FloatArray, r: DoubleArray): Double {
+    /** Brightest thin ring around the box edge (a few insets tried, since the outline's exact spot varies), minus inside. */
+    private fun ringContrast(img: FloatArray, r: DoubleArray): Double {
         val x0 = (r[0] * w).toInt(); val x1 = (r[2] * w).toInt() - 1
         val y0 = (r[1] * h).toInt(); val y1 = (r[3] * h).toInt() - 1
-        fun ring(a: Int, b: Int): Double {
+        fun ring(d: Int, t: Int): Double {
             var s = 0.0; var c = 0
-            for (d in a..b) {
-                for (x in x0 + d..x1 - d) { s += img[(y0 + d) * w + x] + img[(y1 - d) * w + x]; c += 2 }
-                for (y in y0 + d..y1 - d) { s += img[y * w + x0 + d] + img[y * w + x1 - d]; c += 2 }
+            for (k in d until d + t) {
+                if (x0 + k >= x1 - k || y0 + k >= y1 - k) break
+                var x = x0 + k
+                while (x <= x1 - k) { s += img[(y0 + k) * w + x] + img[(y1 - k) * w + x]; c += 2; x += 2 }
+                var y = y0 + k
+                while (y <= y1 - k) { s += img[y * w + x0 + k] + img[y * w + x1 - k]; c += 2; y += 2 }
             }
             return if (c == 0) 0.0 else s / c
         }
-        return ring(0, 3) - ring(5, 8)
+        val inside = ring(12, 6)
+        return (0..6 step 2).maxOf { ring(it, 3) } - inside
+    }
+
+    private fun detectOutline(img: FloatArray): Pair<Int?, Int?> {
+        val jumps = HashMap<Int, Double>()
+        for ((box, r) in rects) {
+            val c = ringContrast(img, r)
+            val hist = ringHistory.getOrPut(box) { ArrayDeque() }
+            if (hist.size >= 12) {
+                // Baseline: how this box's edge usually looks (leaving out the last second, in case it's rising).
+                val base = hist.toList().dropLast(4).sorted().let { it[it.size / 2] }
+                jumps[box] = c - base
+            }
+            hist.addLast(c)
+            while (hist.size > 50) hist.removeFirst()
+        }
+        frameNo++
+        if (jumps.size < rects.size) return null to null
+        val ranked = jumps.entries.sortedByDescending { it.value }
+        val top = ranked[0]
+        val second = ranked.getOrNull(1)?.value ?: 0.0
+        // A clear jump on one box only (a scene change brightens a whole picture, not just its rim).
+        val clear = top.value > 22 && top.value > 2.2 * maxOf(second, 4.0)
+        if (clear && candidate == top.key) candidateRuns++ else { candidate = if (clear) top.key else null; candidateRuns = if (clear) 1 else 0 }
+        if (clear) outlineUntil[top.key] = frameNo + 3
+        val now = outlineUntil.entries.firstOrNull { it.value >= frameNo }?.key
+        // (A different box can flash right after another: pressing two arrows passes through a box.)
+        if (candidateRuns >= 2 && (top.key != lastOnsetBox || frameNo - lastOnsetFrame > 10)) {
+            lastOnsetFrame = frameNo
+            lastOnsetBox = top.key
+            candidateRuns = 0
+            return top.key to now
+        }
+        return null to now
+    }
+
+    // ------------------------------------------------------------ score bug
+    private class Bug(val bw: Int, val bh: Int) {
+        val n = bw * bh
+        // Learned edges: average gradient where it's been steady, and how often it matched.
+        val tx = FloatArray(n); val ty = FloatArray(n)
+        val steady = FloatArray(n)
+        var frames = 0
+        var mask: BooleanArray? = null
+        var maskSize = 0
+        var area: DoubleArray? = null
+        val recent = ArrayDeque<Double>()
+        var showing: Boolean? = null
+        var lastMaskFrame = 0
+    }
+
+    private val bugs = HashMap<Int, Bug>()
+    private val EDGE = 10f
+
+    /** The box's picture at half resolution (averaged, which also smooths camera noise), clear of the outline. */
+    private fun boxPixels(img: FloatArray, r: DoubleArray): Triple<FloatArray, Int, Int> {
+        val pad = 8
+        val x0 = (r[0] * w).toInt() + pad; val x1 = (r[2] * w).toInt() - pad
+        val y0 = (r[1] * h).toInt() + pad; val y1 = (r[3] * h).toInt() - pad
+        val bw = maxOf(4, (x1 - x0) / 2); val bh = maxOf(4, (y1 - y0) / 2)
+        val out = FloatArray(bw * bh)
+        for (y in 0 until bh) for (x in 0 until bw) {
+            val sx = x0 + 2 * x; val sy = y0 + 2 * y
+            out[y * bw + x] = (img[sy * w + sx] + img[sy * w + sx + 1] + img[(sy + 1) * w + sx] + img[(sy + 1) * w + sx + 1]) / 4f
+        }
+        return Triple(out, bw, bh)
+    }
+
+    private fun readBug(box: Int, img: FloatArray, r: DoubleArray, learnFast: Boolean, noLearn: Boolean): Pair<Boolean?, Int?> {
+        val (px, bw, bh) = boxPixels(img, r)
+        val b = bugs.getOrPut(box) { Bug(bw, bh) }
+        if (b.n != px.size) { bugs.remove(box); return null to null }
+        // Current edges.
+        val gx = FloatArray(b.n); val gy = FloatArray(b.n)
+        for (y in 1 until bh - 1) for (x in 1 until bw - 1) {
+            val i = y * bw + x
+            gx[i] = px[i + 1] - px[i - 1]
+            gy[i] = px[i + bw] - px[i - bw]
+        }
+        // How much of the learned bug is on screen: its edges, pointing the same way.
+        var score: Double? = null
+        val mask = b.mask
+        if (mask != null && b.maskSize > 0) {
+            var hit = 0
+            for (i in 0 until b.n) if (mask[i]) {
+                val dot = gx[i] * b.tx[i] + gy[i] * b.ty[i]
+                val m1 = kotlin.math.sqrt(gx[i] * gx[i] + gy[i] * gy[i])
+                val m2 = kotlin.math.sqrt(b.tx[i] * b.tx[i] + b.ty[i] * b.ty[i])
+                if (m1 > EDGE * 0.6f && dot > 0.7f * m1 * m2) hit++
+            }
+            score = hit.toDouble() / b.maskSize
+        }
+        // Learn: never from a known commercial, and not while the bug is clearly missing.
+        val bugAbsent = score != null && score < 0.4
+        if (!noLearn && !bugAbsent) {
+            b.frames++
+            val a = when {
+                b.frames < 40 -> 1f / b.frames
+                learnFast -> 1f / 120
+                else -> 1f / 400
+            }
+            for (i in 0 until b.n) {
+                val m1 = kotlin.math.sqrt(gx[i] * gx[i] + gy[i] * gy[i])
+                val m2 = kotlin.math.sqrt(b.tx[i] * b.tx[i] + b.ty[i] * b.ty[i])
+                val match = m1 > EDGE && m2 > EDGE * 0.5f && (gx[i] * b.tx[i] + gy[i] * b.ty[i]) > 0.8f * m1 * m2
+                b.steady[i] += a * ((if (match) 1f else 0f) - b.steady[i])
+                b.tx[i] += a * (gx[i] - b.tx[i])
+                b.ty[i] += a * (gy[i] - b.ty[i])
+            }
+            if (b.frames >= 60 && b.frames - b.lastMaskFrame >= 30) relearnMask(b)
+        }
+        val s = score ?: return null to null
+        b.recent.addLast(s)
+        while (b.recent.size > 10) b.recent.removeFirst()
+        val avg = b.recent.average()
+        // Random edges line up with the bug about a fifth of the time; the real bug, nearly always.
+        // Hysteresis over ~2.5 s, so a replay wipe or a flash doesn't flip it.
+        b.showing = when {
+            b.recent.size >= 6 && avg >= 0.55 -> true
+            b.recent.size >= 6 && avg <= 0.35 -> false
+            else -> b.showing
+        }
+        return b.showing to (avg * 100).toInt()
+    }
+
+    private fun relearnMask(b: Bug) {
+        b.lastMaskFrame = b.frames
+        val m = BooleanArray(b.n)
+        var count = 0
+        var minX = b.bw; var maxX = 0; var minY = b.bh; var maxY = 0
+        for (y in 1 until b.bh - 1) for (x in 1 until b.bw - 1) {
+            val i = y * b.bw + x
+            val mag = kotlin.math.sqrt(b.tx[i] * b.tx[i] + b.ty[i] * b.ty[i])
+            if (b.steady[i] > 0.5f && mag > EDGE) {
+                m[i] = true; count++
+                if (x < minX) minX = x; if (x > maxX) maxX = x; if (y < minY) minY = y; if (y > maxY) maxY = y
+            }
+        }
+        val frac = count.toDouble() / b.n
+        // A score bug is a modest patch: too little is noise, too much is a frozen or empty picture.
+        if (frac in 0.004..0.2 && count >= 12) {
+            b.mask = m; b.maskSize = count
+            b.area = doubleArrayOf(minX.toDouble() / b.bw, minY.toDouble() / b.bh, (maxX + 1.0) / b.bw, (maxY + 1.0) / b.bh)
+        }
     }
 
     /**
-     * [gameLikely]: boxes known to be showing the game right now (from the sound or
-     * ESPN); the score bar is only learned from those, never from a commercial.
+     * [gameLikely]: boxes known to be showing the game (ESPN or the sound): learn their bugs faster.
+     * [adLikely]: boxes known to be in commercial: don't learn from them at all.
      */
-    fun frame(img: FloatArray, gameLikely: Set<Int> = rects.keys): CameraView {
-        // ---- highlight
-        val contrast = rects.mapValues { (_, r) -> outlineContrast(img, r) }
-        val ranked = contrast.entries.sortedByDescending { it.value }
-        val top = ranked.first()
-        val rest = ranked.drop(1).map { it.value }.sorted()
-        val restMid = if (rest.isEmpty()) 0.0 else rest[rest.size / 2]
-        val clear = top.value - restMid > 18 && top.value > 8
-        if (clear && top.key == lastBest) bestRuns++ else { bestRuns = if (clear) 1 else 0 }
-        lastBest = if (clear) top.key else null
-        if (bestRuns >= 3) highlighted = top.key
-
-        // ---- score bar per box
+    fun frame(img: FloatArray, gameLikely: Set<Int> = emptySet(), adLikely: Set<Int> = emptySet()): CameraView {
+        val (onset, outlineNow) = detectOutline(img)
         val showing = HashMap<Int, Boolean?>()
         val bars = HashMap<Int, Int?>()
+        val areas = HashMap<Int, DoubleArray?>()
         for ((box, r) in rects) {
-            val (px, size) = crop(img, r, 10) // stay clear of the outline
-            val s = boxes.getOrPut(box) { BoxState(size[0], size[1]) }
-            if (s.n != px.size) continue
-            val prev = s.prev
-            for (i in 0 until s.n) {
-                if (s.frames == 0) s.slowMean[i] = px[i]
-                s.slowMean[i] += 0.03f * (px[i] - s.slowMean[i])
-                if (prev != null) s.motion[i] += 0.05f * (abs(px[i] - prev[i]) - s.motion[i])
-            }
-            s.prev = px
-            s.frames++
-            s.sinceMask++
-            // Re-learn the score bar every ~minute: still pixels with sharp edges, while most of the picture moves.
-            if (s.frames >= 60 && box in gameLikely && (s.mask == null || s.sinceMask >= 120)) {
-                val moving = s.motion.count { it > 6f }.toDouble() / s.n
-                if (moving > 0.25) learnBar(s)
-            }
-            val mask = s.mask
-            val tmpl = s.template
-            if (mask != null && tmpl != null) {
-                var hit = 0; var tot = 0
-                for (i in 0 until s.n) if (mask[i]) { tot++; if (abs(px[i] - tmpl[i]) < 22f) hit++ }
-                val score = if (tot == 0) 0.0 else hit.toDouble() / tot
-                s.recentScores.addLast(score)
-                while (s.recentScores.size > 12) s.recentScores.removeFirst()
-                val avg = s.recentScores.average()
-                // Hysteresis over ~6 s so a replay wipe or a flash doesn't flip it.
-                s.showing = when {
-                    s.recentScores.size >= 6 && avg >= 0.6 -> true
-                    s.recentScores.size >= 6 && avg <= 0.3 -> false
-                    else -> s.showing
-                }
-                bars[box] = (avg * 100).toInt()
-            } else bars[box] = null
-            showing[box] = s.showing
+            val (sh, bar) = readBug(box, img, r, learnFast = box in gameLikely, noLearn = box in adLikely)
+            showing[box] = sh; bars[box] = bar; areas[box] = bugs[box]?.area
         }
-        return CameraView(highlighted, showing, bars)
+        return CameraView(onset, showing, bars, areas, outlineNow)
     }
-
-    private fun learnBar(s: BoxState) {
-        val m = BooleanArray(s.n)
-        var count = 0
-        for (y in 1 until s.bh - 1) for (x in 1 until s.bw - 1) {
-            val i = y * s.bw + x
-            if (s.motion[i] > 2.5f) continue
-            val edge = maxOf(abs(s.slowMean[i] - s.slowMean[i - 1]), abs(s.slowMean[i] - s.slowMean[i + 1]),
-                abs(s.slowMean[i] - s.slowMean[i - s.bw]), abs(s.slowMean[i] - s.slowMean[i + s.bw]))
-            if (edge > 18f) { m[i] = true; count++ }
-        }
-        // A score bar is a modest strip of the picture: too little is nothing, too much is a frozen picture.
-        val frac = count.toDouble() / s.n
-        if (frac in 0.01..0.25) {
-            s.mask = m
-            s.template = s.slowMean.copyOf()
-            s.sinceMask = 0
-        }
-    }
-
-    /** You said the sound is on this box: trust that until the picture says otherwise. */
-    fun setHighlighted(box: Int) { highlighted = box; bestRuns = 3; lastBest = box }
 }
 
 /**

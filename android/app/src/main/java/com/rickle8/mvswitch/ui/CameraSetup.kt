@@ -124,11 +124,23 @@ fun CameraSetup(state: EngineState, settings: Settings, onDismiss: () -> Unit) {
                             }
                             val path = Path().apply { moveTo(quad[0].x, quad[0].y); quad.drop(1).forEach { lineTo(it.x, it.y) }; close() }
                             val color = when {
-                                state.cameraBox == box -> Color(0xFF2BD9A0)
                                 state.cameraGame[box] == false -> Color(0xFFF5A524)
+                                state.cameraGame[box] == true -> Color(0xFF2BD9A0)
                                 else -> Color(0xAAFFFFFF)
                             }
-                            drawPath(path, color, style = Stroke(width = if (state.cameraBox == box) 6f else 3f))
+                            val hasSound = state.currentBox == box
+                            drawPath(path, color, style = Stroke(width = if (hasSound) 7f else 3f))
+                            // Where it found this game's score bug.
+                            state.cameraBugs[box]?.let { a ->
+                                fun at(fx: Double, fy: Double): Offset {
+                                    val (u, v) = hom.map(r[0] + (r[2] - r[0]) * fx, r[1] + (r[3] - r[1]) * fy)
+                                    return Offset(u.toFloat(), v.toFloat())
+                                }
+                                // (The bug was found inside the box's padded area; close enough to show.)
+                                val q = listOf(at(a[0], a[1]), at(a[2], a[1]), at(a[2], a[3]), at(a[0], a[3]))
+                                val bp = Path().apply { moveTo(q[0].x, q[0].y); q.drop(1).forEach { lineTo(it.x, it.y) }; close() }
+                                drawPath(bp, Color(0xFFFFE066), style = Stroke(width = 3f))
+                            }
                         }
                         pts.forEach { drawCircle(Color(0xFF6CB4FF), radius = 16f, center = it) }
                     }
@@ -140,16 +152,18 @@ fun CameraSetup(state: EngineState, settings: Settings, onDismiss: () -> Unit) {
                     onValueChangeFinished = { Engine.setCameraZoom(zoom) })
                 Text(
                     if (!state.cameraLive) "Not watching yet: the camera runs while the app is open with camera mode on."
-                    else "Sound on box: ${state.cameraBox ?: "not sure yet"}\n" +
+                    else "Sound on box ${state.currentBox ?: "?"}" +
+                        (state.cameraBox?.let { " (outline last flashed on box $it)" } ?: "") + "\n" +
                         boxRects(settings.layout).keys.joinToString("   ") { b ->
                             val g = state.cameraGame[b]
-                            "Box $b: " + when (g) { true -> "game"; false -> "commercial"; null -> "learning" } +
+                            "Box $b: " + when (g) { true -> "game"; false -> "commercial"; null -> "learning the score bug" } +
                                 (state.cameraBars[b]?.let { " ($it%)" } ?: "")
                         },
                     color = C.text, fontSize = 13.sp,
                 )
-                Text("Green outline: the box it sees has the sound. Orange: it sees a commercial. It learns each " +
-                    "game's score bar in the first minute or two of play.", color = C.muted, fontSize = 12.sp,
+                Text("Green: it sees the game (score bug up). Orange: commercial (score bug gone). Thick outline: the " +
+                    "box with the sound. Yellow: where it found each game's score bug, learned in the first couple of " +
+                    "minutes of play.", color = C.muted, fontSize = 12.sp,
                     modifier = Modifier.padding(top = 6.dp))
             }
         },
