@@ -14,9 +14,10 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
- * Reads the text in each multiview box (score bugs: teams, score, quarter, clock) with
- * the phone's built-in text recognition. Works offline, free. One box at a time, in
- * turn, so the phone keeps up.
+ * Looks closely at each multiview box, one at a time in turn so the phone keeps up: straightens it
+ * out of the full-resolution camera picture, looks for yard lines on the field ([FieldLines]), and
+ * reads its text (score bugs: teams, score, quarter, clock) with the phone's built-in text
+ * recognition. Works offline, free.
  *
  * It must never take the app down. A missing library or running out of memory turns it
  * off for this run; a read that fails now and then is just skipped (it stops after many
@@ -30,6 +31,8 @@ class TileOcr(
     private val version: String,
     private val onText: (box: Int, lines: List<com.rickle8.mvswitch.core.TileLine>) -> Unit,
     private val onError: (String) -> Unit,
+    /** Yard lines found in a box (looked for even when text reading is off). */
+    private val onLines: (box: Int, found: com.rickle8.mvswitch.core.FieldLines.Found) -> Unit = { _, _ -> },
 ) {
     private val trying = File(filesDir, "ocr_trying")
     private val disabled = File(filesDir, "ocr_off")
@@ -57,35 +60,56 @@ class TileOcr(
         }
     }
 
-    /** True if it's free to take another box right now. */
-    fun ready(): Boolean = !dead && !closed && !busy.get()
+    /** True if it's free to take another box right now (its last buffer is free to reuse). */
+    fun ready(): Boolean = !closed && !busy.get()
 
     /**
-     * Read the next box from this full-resolution camera buffer ([raw], turned [deg]),
-     * given the grid's corners (fractions of the upright picture) and the layout.
+     * Look at the next box in this full-resolution camera buffer ([raw], turned [deg]), given the
+     * grid's corners (fractions of the upright picture), the layout, and each box's field-green grid.
      */
-    fun submit(raw: GrayFrame, deg: Int, corners: List<Pair<Double, Double>>, layout: Int) {
-        if (dead || closed || !busy.compareAndSet(false, true)) return
+    fun submit(raw: GrayFrame, deg: Int, corners: List<Pair<Double, Double>>, layout: Int,
+               greens: Map<Int, BooleanArray>? = null) {
+        if (closed || !busy.compareAndSet(false, true)) return
         try {
-            executor.execute { readOne(raw, deg, corners, layout) }
+            executor.execute { readOne(raw, deg, corners, layout, greens) }
         } catch (t: Throwable) {
             busy.set(false)
         }
     }
 
-    private fun readOne(raw: GrayFrame, deg: Int, corners: List<Pair<Double, Double>>, layout: Int) {
+    private fun readOne(raw: GrayFrame, deg: Int, corners: List<Pair<Double, Double>>, layout: Int,
+                        greens: Map<Int, BooleanArray>?) {
         var read: Pair<Int, List<com.rickle8.mvswitch.core.TileLine>>? = null
+        var lines: Pair<Int, com.rickle8.mvswitch.core.FieldLines.Found>? = null
         try {
-            if (closed || dead) return
+            if (closed) return
             if (corners.size < 4) return
             val rects = boxRects(layout).toSortedMap()
             if (rects.isEmpty()) return
             val boxes = rects.keys.toList()
             val box = boxes[next % boxes.size]
             next++
-            // 960 x 540 per box: score bug lettering ends up big enough to read.
-            val w = 960; val h = 540
+            // 960 x 540 per box, 1280 x 720 from a 4K camera: score bug lettering big enough to read.
+            val big = maxOf(raw.width, raw.height) >= 3000
+            val w = if (big) 1280 else 960; val h = if (big) 720 else 540
             val px = warpBoxFromRaw(raw, deg, corners, rects.getValue(box), w, h)
+            greens?.get(box)?.let { g ->
+                runCatching { lines = box to com.rickle8.mvswitch.core.FieldLines.find(px, w, h, g) }
+            }
+            if (!dead) readText(box, px, w, h)?.let { read = it }
+        } catch (t: Throwable) {
+            runCatching { onError("box look: ${t.message ?: t.javaClass.simpleName}") }
+        } finally {
+            busy.set(false)
+        }
+        // What it means is decided elsewhere; a problem there isn't a reading problem.
+        lines?.let { (box, f) -> runCatching { onLines(box, f) } }
+        read?.let { (box, l) -> runCatching { onText(box, l) } }
+    }
+
+    /** The box's text, or null when this read failed (now and then is fine; many in a row turns it off). */
+    private fun readText(box: Int, px: ByteArray, w: Int, h: Int): Pair<Int, List<com.rickle8.mvswitch.core.TileLine>>? {
+        try {
             // As NV21: the gray picture plus neutral color.
             val nv21 = ByteArray(w * h * 3 / 2)
             System.arraycopy(px, 0, nv21, 0, w * h)
@@ -98,7 +122,7 @@ class TileOcr(
             if (!proven) { proven = true; runCatching { trying.delete() } }
             failsInARow = 0
             // Each line with where it sits in the box (a ticker runs along the very bottom).
-            read = box to result.textBlocks.flatMap { it.lines }.map { l ->
+            return box to result.textBlocks.flatMap { it.lines }.map { l ->
                 val r = l.boundingBox
                 com.rickle8.mvswitch.core.TileLine(l.text,
                     (r?.top ?: 0) / h.toDouble(), (r?.bottom ?: h / 2) / h.toDouble(),
@@ -112,11 +136,8 @@ class TileOcr(
                 dead = true
                 runCatching { onError("text reading stopped: ${t.message ?: t.javaClass.simpleName}") }
             }
-        } finally {
-            busy.set(false)
+            return null
         }
-        // What the text means is decided elsewhere; a problem there isn't a reading problem.
-        read?.let { (box, lines) -> runCatching { onText(box, lines) } }
     }
 
     fun close() {

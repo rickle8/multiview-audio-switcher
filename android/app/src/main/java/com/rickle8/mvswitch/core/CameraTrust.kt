@@ -93,36 +93,36 @@ class OutlineTrust {
 }
 
 /**
- * Football's green field. In a box showing the game, wide shots are mostly field; commercials
- * almost never are. "Field in the last 8 s" says the game is on (never the other way round:
- * close-ups and replays go long stretches without it). It only counts on a box once it has
- * matched surer signs there: field while the score text reads or the sound is the game (3
- * times), and none in a commercial (once). Field showing in a sure commercial resets it.
+ * A camera sign on a box (the field's green, its yard lines) that only counts once it has matched
+ * surer signs there both ways: present while the score text reads or the sound is the game
+ * ([upNeeded] times, 5 s apart), and absent in a commercial ([goneNeeded] times). Showing up in a
+ * commercial it's sure of (a recognized one, commercial text, your "It's an ad") starts it over.
  */
-class FieldWatch {
-    private val seen = HashMap<Int, ArrayDeque<Pair<Double, Double>>>()
+open class ProvenSign(private val windowSecs: Double, private val upNeeded: Int, private val goneNeeded: Int) {
+    private val seen = HashMap<Int, ArrayDeque<Pair<Double, Boolean>>>()
     private val up = HashMap<Int, Int>()
     private val gone = HashMap<Int, Int>()
     private val checkedAt = HashMap<Int, Double>()
 
-    /** Share of the box that's field green right now (0..1). */
     @Synchronized
-    fun add(box: Int, green: Double, t: Double) {
+    protected fun mark(box: Int, present: Boolean, t: Double) {
         val q = seen.getOrPut(box) { ArrayDeque() }
-        q.addLast(t to green)
-        while (q.isNotEmpty() && t - q.first().first > 10) q.removeFirst()
+        q.addLast(t to present)
+        while (q.isNotEmpty() && t - q.first().first > windowSecs + 5) q.removeFirst()
     }
 
-    /** A wide shot of the field in the last 8 s. */
+    /** Seen in the last [windowSecs]. */
     @Synchronized
-    fun fieldNow(box: Int, now: Double): Boolean =
-        seen[box]?.any { (t, g) -> now - t <= 8 && g >= FIELD_SHARE } == true
+    fun present(box: Int, now: Double): Boolean = seen[box]?.any { (t, p) -> p && now - t <= windowSecs } == true
 
     @Synchronized
-    fun trusted(box: Int): Boolean = (up[box] ?: 0) >= 3 && (gone[box] ?: 0) >= 1
+    fun trusted(box: Int): Boolean = (up[box] ?: 0) >= upNeeded && (gone[box] ?: 0) >= goneNeeded
 
     @Synchronized
     fun counts(box: Int): Pair<Int, Int> = (up[box] ?: 0) to (gone[box] ?: 0)
+
+    /** What [counts] has to reach. */
+    val needed: Pair<Int, Int> get() = upNeeded to goneNeeded
 
     /**
      * Checks a box against surer signs. [game]: its score text read just now, or its sound is the
@@ -130,17 +130,31 @@ class FieldWatch {
      */
     @Synchronized
     fun check(box: Int, now: Double, game: Boolean, commercial: Boolean, sureAd: Boolean) {
-        val field = fieldNow(box, now)
-        if (field && sureAd) { up.remove(box); gone.remove(box); return }
+        val here = present(box, now)
+        if (here && sureAd) { up.remove(box); gone.remove(box); return }
         if (now - (checkedAt[box] ?: -1e9) < 5) return
         when {
-            field && game -> { checkedAt[box] = now; up[box] = (up[box] ?: 0) + 1 }
-            !field && commercial -> { checkedAt[box] = now; gone[box] = (gone[box] ?: 0) + 1 }
+            here && game -> { checkedAt[box] = now; up[box] = (up[box] ?: 0) + 1 }
+            !here && commercial -> { checkedAt[box] = now; gone[box] = (gone[box] ?: 0) + 1 }
         }
     }
 
     @Synchronized
-    fun clear() { seen.clear(); up.clear(); gone.clear(); checkedAt.clear() }
+    open fun clear() { seen.clear(); up.clear(); gone.clear(); checkedAt.clear() }
+}
+
+/**
+ * Football's green field. In a box showing the game, wide shots are mostly field; commercials
+ * mostly aren't (though a lawn or a golf course can be). "Field in the last 8 s" says the game is
+ * on (never the other way round: close-ups and replays go long stretches without it). It counts
+ * on a box once proven there: field with the game 3 times, none in a commercial once.
+ */
+class FieldWatch : ProvenSign(8.0, 3, 1) {
+    /** Share of the box that's field green right now (0..1). */
+    fun add(box: Int, green: Double, t: Double) = mark(box, green >= FIELD_SHARE, t)
+
+    /** A wide shot of the field in the last 8 s. */
+    fun fieldNow(box: Int, now: Double): Boolean = present(box, now)
 
     companion object {
         /** Share of a box that has to be field for a wide shot. */
@@ -161,4 +175,28 @@ class FieldWatch {
             return hue in 75.0..165.0
         }
     }
+}
+
+/**
+ * Yard lines on the field (see [FieldLines]): two or more long ones in a look in the last 5 s.
+ * Lines on green are hard to fake, but a box still has to prove them: lines with the game twice,
+ * none in a commercial once (so the edge of a box, or anything else that never goes away, can't
+ * pass for them).
+ */
+class LineWatch : ProvenSign(5.0, 2, 1) {
+    private val last = HashMap<Int, Pair<FieldLines.Found, Double>>()
+
+    fun add(box: Int, found: FieldLines.Found, t: Double) {
+        synchronized(this) { last[box] = found to t }
+        mark(box, found.lines >= 2, t)
+    }
+
+    fun linesNow(box: Int, now: Double): Boolean = present(box, now)
+
+    /** The last look at a box, and when. */
+    @Synchronized
+    fun lastLook(box: Int): Pair<FieldLines.Found, Double>? = last[box]
+
+    @Synchronized
+    override fun clear() { super.clear(); last.clear() }
 }

@@ -4,6 +4,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -410,14 +411,12 @@ class BroadcastTest {
         val f = GameFeed(emptyMap(), { JSONObject() }, { now }, pollSecs = 1e9)
         val c = Controller(nav, listOf(1, 2, 3, 4), f, clock = { now }, log = { logs += it })
         // The camera reads box 1's score bug right now: a commercial-sounding moment isn't one.
-        c.camera = now to mapOf(1 to true, 2 to false, 3 to false, 4 to true)
-        c.cameraReading = setOf(1)
+        c.see(now, 1 to Sight(bug = true), 2 to Sight(adText = true), 3 to Sight(adText = true), 4 to Sight(bug = true))
         assertFalse(c.step(Heard.AD))
         assertTrue(logs.last().contains("camera sees the game"))
-        // Now the camera sees box 1's score bar gone: go, and skip the boxes it sees in commercial.
+        // Now box 1's score bug has been gone a long while: go, and skip the boxes it sees in commercial.
         now = 120.0
-        c.camera = now to mapOf(1 to false, 2 to false, 3 to false, 4 to true)
-        c.cameraReading = emptySet()
+        c.see(now, 1 to Sight(bugGoneSecs = 50.0), 2 to Sight(adText = true), 3 to Sight(adText = true), 4 to Sight(bug = true))
         assertTrue(c.step(Heard.UNSURE))
         assertEquals(4, nav.current)
     }
@@ -428,7 +427,7 @@ class BroadcastTest {
         val f = GameFeed(emptyMap(), { JSONObject() }, { now }, pollSecs = 1e9)
         val c = Controller(nav, listOf(1, 2, 3, 4), f, clock = { now })
         // The look says "game" on box 1 but nothing's been read there: the commercial sound wins.
-        c.camera = now to mapOf(1 to true, 2 to true, 3 to false, 4 to false)
+        c.see(now, 1 to Sight(bugShape = true), 2 to Sight(bug = true), 3 to Sight(adText = true), 4 to Sight(adText = true))
         assertTrue(c.step(Heard.AD))
         assertEquals(2, nav.current)
     }
@@ -439,11 +438,56 @@ class BroadcastTest {
         val f = GameFeed(emptyMap(), { JSONObject() }, { now }, pollSecs = 1e9)
         val c = Controller(nav, listOf(1, 2, 3, 4), f, clock = { now })
         // The camera thinks box 1 is in commercial, but it sounds like the game: stay.
-        c.camera = now to mapOf(1 to false, 2 to true, 3 to true, 4 to true)
-        assertFalse(c.step(Heard.GAME))
-        now = 110.0; c.camera = now to mapOf(1 to false, 2 to true, 3 to true, 4 to true)
-        assertFalse(c.step(Heard.GAME))
+        val live = Sight(bug = true)
+        c.see(now, 1 to Sight(bugGoneSecs = 50.0), 2 to live, 3 to live, 4 to live)
+        assertFalse(c.step(Heard.GAME, adPct = 35))
+        now = 110.0; c.see(now, 1 to Sight(adText = true), 2 to live, 3 to live, 4 to live)
+        assertFalse(c.step(Heard.GAME, adPct = 35))
         assertEquals(1, nav.current)
+    }
+
+    @Test fun twoCameraSignsOutweighShakyGameSound() {
+        var now = 100.0
+        val nav = Navigator(quiet, LAYOUTS.getValue(4), home = false, sleep = {})
+        val f = GameFeed(emptyMap(), { JSONObject() }, { now }, pollSecs = 1e9)
+        val c = Controller(nav, listOf(1, 2, 3, 4), f, clock = { now })
+        val live = Sight(bug = true)
+        // Commercial text and the score bug long gone, while the sound only barely says game (a
+        // commercial with a crowd in it): a commercial.
+        c.see(now, 1 to Sight(adText = true, bugGoneSecs = 50.0), 2 to live, 3 to live, 4 to live)
+        assertTrue(c.step(Heard.GAME, adPct = 38))
+        assertNotEquals(1, nav.current)
+        // Sound that's clearly the game is never overruled.
+        now = 200.0; val at = nav.current!!
+        c.see(now, at to Sight(adText = true, bugGoneSecs = 50.0))
+        assertFalse(c.step(Heard.GAME, adPct = 12))
+    }
+
+    @Test fun yardLinesHoldAnAdSoundingMoment() {
+        var now = 100.0
+        val nav = Navigator(quiet, LAYOUTS.getValue(4), home = false, sleep = {})
+        val f = GameFeed(emptyMap(), { JSONObject() }, { now }, pollSecs = 1e9)
+        val c = Controller(nav, listOf(1, 2, 3, 4), f, clock = { now })
+        // The band plays during a stoppage (music) while the camera sees the field and its yard lines.
+        c.see(now, 1 to Sight(lines = true), 2 to Sight(bug = true))
+        assertFalse(c.step(Heard.AD, adPct = 80))
+        assertEquals("the game (camera sees it)", c.lastCall!!.summary.substringAfter("→ "))
+        // The field's green alone holds it unless the sound is very sure.
+        now = 110.0; c.see(now, 1 to Sight(grass = true), 2 to Sight(bug = true))
+        assertFalse(c.step(Heard.AD, adPct = 65))
+        now = 120.0; c.see(now, 1 to Sight(grass = true), 2 to Sight(bug = true))
+        assertTrue(c.step(Heard.AD, adPct = 90))
+    }
+
+    @Test fun aFieldWithTheScoreBugGoneIsAPromo() {
+        val now = 100.0
+        val nav = Navigator(quiet, LAYOUTS.getValue(4), home = false, sleep = {})
+        val f = GameFeed(emptyMap(), { JSONObject() }, { now }, pollSecs = 1e9)
+        val c = Controller(nav, listOf(1, 2, 3, 4), f, clock = { now })
+        // Yard lines, but the score bug it reads dependably has been gone 12 s: a promo shot on a field.
+        c.see(now, 1 to Sight(lines = true, bugGoneSecs = 12.0), 2 to Sight(bug = true))
+        assertTrue(c.step(Heard.AD, adPct = 80))
+        assertEquals(2, nav.current)
     }
 
     @Test fun cameraBacksUpAnAdSoundOverAStalePlay() {
@@ -454,9 +498,9 @@ class BroadcastTest {
         val c = Controller(nav, listOf(1, 2, 3, 4), f, clock = { now })
         // ESPN just had a play on box 1, so an ad-sounding moment alone stays...
         assertFalse(c.step(Heard.AD))
-        // ...but with the camera seeing no score bug there, it's a commercial.
+        // ...but with the camera seeing its score bug gone, it's a commercial.
         now = 108.0
-        c.camera = now to mapOf(1 to false, 2 to false, 3 to true, 4 to null)
+        c.see(now, 1 to Sight(bugGoneSecs = 10.0), 2 to Sight(adText = true), 3 to Sight(bug = true), 4 to Sight())
         assertTrue(c.step(Heard.AD))
         assertEquals(3, nav.current)
     }
@@ -468,17 +512,18 @@ class BroadcastTest {
         val f = GameFeed(emptyMap(), { JSONObject() }, { now }, pollSecs = 1e9)
         val c = Controller(nav, listOf(1, 2, 3, 4), f, clock = { now }, log = { logs += it })
         nav.current = 2
-        c.camera = now to mapOf(1 to true, 2 to false, 3 to false, 4 to false)
+        val ad = Sight(adText = true)
+        c.see(now, 1 to Sight(bug = true), 2 to ad, 3 to ad, 4 to ad)
         assertEquals(Controller.Outlook.BREAK, c.outlook(2, now).first)
         // You're watching box 2 and say it's the game: the camera's "commercial" doesn't count there.
         c.userSaysGame(2)
         assertEquals(Controller.Outlook.LIVE, c.outlook(2, now).first)
         assertFalse(c.looksOnBreak(2, now, emptyMap()))
-        now = 110.0; c.camera = now to mapOf(1 to true, 2 to false, 3 to false, 4 to false)
+        now = 110.0; c.see(now, 1 to Sight(bug = true), 2 to ad, 3 to ad, 4 to ad)
         assertFalse(c.step(Heard.UNSURE))
         assertEquals(2, nav.current)
         // A real commercial heard there still moves it, and then box 2 counts as in commercial again.
-        now = 130.0; c.camera = now to mapOf(1 to true, 2 to false, 3 to false, 4 to false)
+        now = 130.0; c.see(now, 1 to Sight(bug = true), 2 to ad, 3 to ad, 4 to ad)
         assertTrue(c.step(Heard.AD))
         assertEquals(1, nav.current)
         assertEquals(Controller.Outlook.BREAK, c.outlook(2, now).first)

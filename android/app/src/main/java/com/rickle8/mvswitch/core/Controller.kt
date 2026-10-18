@@ -173,17 +173,14 @@ class Controller(
 
     /** What the camera sees: per box, showing the game (true) or a commercial (false), and when. */
     @Volatile var camera: Pair<Double, Map<Int, Boolean?>>? = null
-    /**
-     * Boxes whose score bug the camera read off the screen just now (the clock, the quarter): sure
-     * enough to keep an ad-sounding moment on the box you're hearing from switching. The bug's look
-     * alone isn't: if it latched onto something that stays up in commercials, it would hold you there.
-     */
-    @Volatile var cameraReading: Set<Int> = emptySet()
-    /**
-     * Boxes whose own score bug the camera reads dependably and that just went away (the cut to a
-     * commercial takes it off the screen, along with the game).
-     */
-    @Volatile var cameraBugGone: Set<Int> = emptySet()
+    /** What the camera sees on each box (score bug, yard lines, field, commercial text), and when. */
+    @Volatile var sights: Pair<Double, Map<Int, Sight>>? = null
+
+    /** What the camera sees on a box, if it's watching. */
+    fun sightOf(box: Int, now: Double): Sight? = sights?.takeIf { now - it.first < 4 }?.second?.get(box)
+
+    /** The last call on the box you're hearing, sound and camera together (for the screens). */
+    @Volatile var lastCall: Pairing.Call? = null
 
     private fun halftime(box: Int) = info(box)?.statusName == "STATUS_HALFTIME"
 
@@ -489,31 +486,14 @@ class Controller(
     private fun stepWith(heard0: Heard, strongAd0: Boolean, strongWhy0: String?, adPct: Int?): Boolean {
         val now = clock()
         val cur = nav.current ?: return false
-        var heard = heard0; var strongAd = strongAd0; var strongWhy = strongWhy0
-        // The camera on the box you're hearing backs up the sound, it never overrules it: the score bug
-        // gone makes an ad-sounding moment a sure commercial (and an unsure one a likely one), but
-        // never turns game audio into a commercial. The score bug up keeps an ad-sounding moment from
-        // switching. Your "It's the game" outranks the camera.
-        when (cameraSays(cur, now)?.takeIf { !(it == false && userSaidGame(cur, now)) }) {
-            false -> when (heard) {
-                Heard.AD -> if (!strongAd) { strongAd = true; strongWhy = "Sounds like a commercial and the camera sees no score bug" }
-                Heard.UNSURE -> heard = Heard.AD
-                Heard.GAME -> Unit
-            }
-            true -> if (heard == Heard.AD && !strongAd && cur in cameraReading) {
-                if (now - cameraLogged > 60) { cameraLogged = now; log("Sounded like an ad, but the camera sees the game on box $cur. Staying.") }
-                heard = Heard.UNSURE
-            }
-            null -> Unit
-        }
-        // The camera reads this game's score bug dependably and it just went away (the cut to a
-        // commercial takes it off): an ad-leaning moment is a commercial, a sure one sooner.
-        if (cur in cameraBugGone && camera?.let { now - it.first < 4 } == true && !userSaidGame(cur, now)) {
-            when (heard) {
-                Heard.AD -> if (!strongAd) { strongAd = true; strongWhy = "Sounds like a commercial and the score bug is gone" }
-                Heard.UNSURE -> if ((adPct ?: 0) >= 45) heard = Heard.AD
-                Heard.GAME -> Unit
-            }
+        // The sound and the camera, paired into one call (see Pairing): the sound hears the cut to
+        // commercial first, the camera confirms it or holds it.
+        val call = Pairing.decide(heard0, adPct, strongAd0, strongWhy0, sightOf(cur, now), userSaidGame(cur, now))
+        lastCall = call
+        val heard = call.heard; val strongAd = call.strong; val strongWhy = call.why
+        if (call.held && now - cameraLogged > 60) {
+            cameraLogged = now
+            log("Sounded like an ad, but the camera sees the game on box $cur (${sightOf(cur, now)?.describe()}). Staying.")
         }
         if (heard == Heard.GAME && lastHeard[cur] == Heard.AD && now - lastSwitch > 15) returnedAt[cur] = now - 4
         // The sound settles on "commercial" about 8 s after it starts.

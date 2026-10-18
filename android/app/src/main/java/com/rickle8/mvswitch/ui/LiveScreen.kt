@@ -320,11 +320,13 @@ private fun HearingRow(state: EngineState) {
                     maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
             if (state.cameraLive) {
-                val ads = state.cameraGame.filterValues { it == false }.keys.sorted()
-                val games = state.cameraGame.filterValues { it == true }.keys.sorted()
-                Text("Camera: " + (if (games.isNotEmpty()) "game on ${games.joinToString()}" else "no score bugs read yet") +
-                    (if (ads.isNotEmpty()) " · commercial on ${ads.joinToString()}" else ""),
-                    color = C.blue, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                // What the camera sees on each box, and how it lined up with the sound on yours.
+                val sees = state.cameraSees.toSortedMap().entries.joinToString(" · ") { (b, s) -> "$b: $s" }
+                Text("Camera: " + sees.ifEmpty { "looking" }, color = C.blue, fontSize = 12.sp, maxLines = 2,
+                    overflow = TextOverflow.Ellipsis)
+                state.paired?.let {
+                    Text(it, color = C.text, fontSize = 12.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                }
             }
             if (state.micOn && state.topSounds.isNotEmpty()) {
                 Text(state.topSounds.joinToString(" · "), color = C.muted, fontSize = 12.sp,

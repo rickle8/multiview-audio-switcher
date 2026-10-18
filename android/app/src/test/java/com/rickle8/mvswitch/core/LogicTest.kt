@@ -248,10 +248,10 @@ class LogicTest {
         val info = (1..4).associateWith { nfl(14, 10, 3, 400.0) }
         // Box 1 just had a play: on the sound alone, an ad-sounding moment doesn't move it.
         val (ctrl, nav, c) = setup(info, plays = mutableMapOf(1 to ("Pass short right for 9 yards" to 80.0)))
-        c.t = 100.0; ctrl.camera = c.t to emptyMap()
+        c.t = 100.0; ctrl.see(c.t, 1 to Sight())
         assertFalse(ctrl.step(Heard.AD))
         // The camera reads box 1's score bug dependably and it just went away: a commercial.
-        ctrl.cameraBugGone = setOf(1)
+        ctrl.see(c.t, 1 to Sight(bugGoneSecs = 10.0))
         assertTrue(ctrl.step(Heard.AD))
         assertNotEquals(1, nav.current)
     }
@@ -259,7 +259,7 @@ class LogicTest {
     @Test fun aGoneScoreBugOnlyTipsAnAdLeaningMoment() {
         val info = (1..4).associateWith { nfl(14, 10, 3, 400.0) }
         val (ctrl, nav, c) = setup(info)
-        c.t = 100.0; ctrl.camera = c.t to emptyMap(); ctrl.cameraBugGone = setOf(1)
+        c.t = 100.0; ctrl.see(c.t, 1 to Sight(bugGoneSecs = 10.0))
         // Leaning game (a replay without the bug): stays. The camera never turns game audio into a commercial.
         assertFalse(ctrl.step(Heard.UNSURE, adPct = 30))
         assertFalse(ctrl.step(Heard.GAME, adPct = 10))

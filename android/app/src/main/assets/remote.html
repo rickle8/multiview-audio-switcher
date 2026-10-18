@@ -71,6 +71,7 @@ textarea{width:100%;height:160px;margin-top:10px;background:var(--surface2);colo
 <div class="panel">
   <div id="heard">Not listening</div>
   <div id="why" class="small muted"></div>
+  <div id="paired" class="small"></div>
   <div class="meter"><div id="meter"></div></div>
 </div>
 
@@ -158,7 +159,7 @@ function render() {
     d.querySelector('.name').textContent = b.name || 'No game set';
     d.querySelector('.detail').textContent = b.detail || '';
     const cam = d.querySelector('.cam');
-    if (b.camera) { cam.textContent = 'Camera: ' + b.camera; cam.classList.add(b.camera); }
+    if (b.sees || b.camera) { cam.textContent = 'Camera: ' + (b.sees || b.camera); if (b.camera) cam.classList.add(b.camera); }
     else if (b.reads) cam.textContent = 'Reads: ' + b.reads;
     d.onclick = () => openSheet(b);
     g.appendChild(d);
@@ -167,6 +168,7 @@ function render() {
   $('heard').textContent = heard + (s.running && s.mic && s.adPct >= 0 ? ' · commercial-like sound ' + s.adPct + '%' : '');
   $('heard').style.color = s.heard === 'commercial' && s.running ? 'var(--amber)' : (s.heard === 'game' && s.running ? 'var(--accent)' : 'var(--text)');
   $('why').textContent = s.why || s.error || s.remoteMsg || '';
+  $('paired').textContent = s.running ? (s.paired || '') : '';
   $('meter').style.width = (s.running && s.adPct >= 0 ? s.adPct : 0) + '%';
   $('meter').style.background = s.adPct >= 60 ? 'var(--amber)' : 'var(--accent)';
   $('pause').textContent = s.paused ? 'Resume' : 'Pause';

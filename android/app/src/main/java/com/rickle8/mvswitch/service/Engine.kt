@@ -112,6 +112,10 @@ data class EngineState(
     val cameraBugs: Map<Int, DoubleArray?> = emptyMap(),
     /** Per box: game (true) / commercial (false) / not sure (null), as the camera sees it. */
     val cameraGame: Map<Int, Boolean?> = emptyMap(),
+    /** Per box: what the camera sees, in a few words ("score bug, yard lines"). */
+    val cameraSees: Map<Int, String> = emptyMap(),
+    /** The box you're hearing: how the sound and the camera lined up on the last call. */
+    val paired: String? = null,
     /** Per box: what the phone read in it (score bug text), for the setup screen. */
     val cameraText: Map<Int, String> = emptyMap(),
     /** Per box: how much of the learned score bar is on screen, 0..100. */
@@ -500,6 +504,8 @@ object Engine {
             cameraBox = lastOutline?.takeIf { n - it.second < 30 }?.first,
             cameraBugs = cameraView?.bugArea?.takeIf { n - cameraAt < 5 }.orEmpty(),
             cameraGame = cameraMerged.takeIf { n - cameraAt < 5 }.orEmpty(),
+            cameraSees = cameraSights.mapValues { it.value.describe() }.takeIf { n - cameraAt < 5 }.orEmpty(),
+            paired = ctrl?.lastCall?.summary?.takeIf { running && n - cameraAt < 5 },
             cameraText = tileRead.mapValues { (_, r) -> r.first.summary.ifBlank { "(no text)" } }.takeIf { n - cameraAt < 5 }.orEmpty(),
             cameraBars = cameraView?.scoreBar?.takeIf { n - cameraAt < 5 }.orEmpty(),
             outlineAsk = outlineAsk?.takeIf { running && n - it.second < 25 && it.first != nav?.current }?.first,
@@ -952,7 +958,10 @@ object Engine {
     /** What the screen can ask of the camera on the phone (zoom, where to expose). */
     interface CameraControls {
         fun zoom(linear: Float)
-        fun meterOn(cx: Double, cy: Double)
+        /** Focus and expose on the TV: its center and size (fractions of the upright picture). */
+        fun meterOn(cx: Double, cy: Double, size: Double)
+        /** Exposure compensation, in stops. */
+        fun exposure(ev: Double)
     }
     @Volatile var cameraControls: CameraControls? = null
 
@@ -991,6 +1000,14 @@ object Engine {
     private val outline = com.rickle8.mvswitch.core.OutlineTrust()
     /** Football's green field in each box (proven against the score text and the sound before it counts). */
     private val field = com.rickle8.mvswitch.core.FieldWatch()
+    /** Yard lines in each box (proven against the score text and the sound before they count). */
+    private val lineWatch = com.rickle8.mvswitch.core.LineWatch()
+    /** Keeps the TV's whites (the score bug's lettering, the yard lines) from blowing out. */
+    private val exposure = com.rickle8.mvswitch.core.ExposureTuner()
+    /** What the camera sees on each box right now. */
+    @Volatile private var cameraSights: Map<Int, com.rickle8.mvswitch.core.Sight> = emptyMap()
+    /** When it last focused and metered on the TV. */
+    @Volatile private var meteredAt = -1e9
     @Volatile private var finding = false
     @Volatile private var findSkip = 0
     private var cameraPublished = -1e9
@@ -1007,6 +1024,11 @@ object Engine {
     fun onCameraField(shares: Map<Int, Double>) {
         val n = now()
         shares.forEach { (b, g) -> field.add(b, g, n) }
+    }
+
+    /** Yard lines found in one box (each box gets a look about every 2 s). */
+    fun onFieldLines(box: Int, found: com.rickle8.mvswitch.core.FieldLines.Found) {
+        lineWatch.add(box, found, now())
     }
 
     /**
@@ -1136,17 +1158,47 @@ object Engine {
      */
     private fun textSays(box: Int, n: Double, boxes: Int): Boolean? {
         // Commercial text read lately (and no score bug since): a commercial, no waiting.
-        val adAt = tileAdAt[box]
-        if (adAt != null && n - adAt < 10 && (tileGameAt[box] ?: -1e9) < adAt) return false
+        if (adTextNow(box, n)) return false
         val at = tileGameAt[box] ?: return null
         if (n - at < 10) return true
-        val read = tileRead[box]
-        val seesTv = (1..boxes).any { it != box && tileGameAt[it]?.let { t -> n - t < 45 } == true }
-        // Only where reading this box's score bug is dependable: read 4+ times in the minute before it went.
-        val dependable = tileGameTimes[box]?.let { q -> synchronized(q) { q.count { it in (at - 60)..at } } }?.let { it >= 4 } == true
-        if (n - at in 45.0..1200.0 && read != null && n - read.second < 10 && seesTv && dependable) return false
-        return null
+        return if ((bugGoneSecs(box, n, boxes) ?: 0.0) >= 45) false else null
     }
+
+    private fun adTextNow(box: Int, n: Double): Boolean {
+        val adAt = tileAdAt[box] ?: return false
+        return n - adAt < 10 && (tileGameAt[box] ?: -1e9) < adAt
+    }
+
+    /**
+     * How long this box's score bug has been missing, when that means something: 8 to 45 s on a box
+     * where it's read nearly every time ([bugJustGone]), or 45 s to 20 minutes on one where it was
+     * read 4+ times in the minute before it went (longer than replays and close-ups), while it still
+     * reads other boxes. Its graphics saying halftime or final in the last minute isn't gone.
+     */
+    private fun bugGoneSecs(box: Int, n: Double, boxes: Int): Double? {
+        val at = tileGameAt[box] ?: return null
+        val gone = n - at
+        if (gone < 8) return null
+        if (gone < 45) return if (bugJustGone(box, n, boxes)) gone else null
+        if (gone > 1200) return null
+        val read = tileRead[box] ?: return null
+        if (n - read.second > 10) return null
+        val notLive = tileReads[box]?.let { q -> synchronized(q) { q.any { it.third && n - it.first < 60 } } } == true
+        val seesTv = (1..boxes).any { it != box && tileGameAt[it]?.let { t -> n - t < 45 } == true }
+        val dependable = tileGameTimes[box]?.let { q -> synchronized(q) { q.count { it in (at - 60)..at } } }?.let { it >= 4 } == true
+        return if (!notLive && seesTv && dependable) gone else null
+    }
+
+    /** What the camera sees on a box right now, for pairing with the sound. */
+    private fun sightFor(box: Int, v: com.rickle8.mvswitch.core.CameraView, n: Double, boxes: Int) =
+        com.rickle8.mvswitch.core.Sight(
+            bug = tileGameAt[box]?.let { n - it < 6 } == true,
+            bugGoneSecs = bugGoneSecs(box, n, boxes),
+            lines = lineWatch.trusted(box) && lineWatch.linesNow(box, n),
+            grass = field.trusted(box) && field.fieldNow(box, n),
+            adText = adTextNow(box, n),
+            bugShape = if (bugTrusted(box)) v.showingGame[box] else null,
+        )
 
     /** When each contradiction started (it has to last a few seconds: the look lags the text by a moment). */
     private val doubtSince = java.util.concurrent.ConcurrentHashMap<String, Double>()
@@ -1183,19 +1235,6 @@ object Engine {
         }
     }
 
-    /**
-     * Game (true) / commercial (false) / not sure, as the camera sees a box. The score bug's text
-     * read off the screen is the surest (the clock, the quarter, down and distance); its look counts
-     * once it's proven on that box. Not sure changes nothing.
-     */
-    private fun cameraVerdict(box: Int, bug: Boolean?, n: Double, boxes: Int): Boolean? {
-        textSays(box, n, boxes)?.let { return it }
-        if (bugTrusted(box) && bug != null) return bug
-        // The field in view, once proven on this box: the game is on (it never says commercial).
-        if (field.trusted(box) && field.fieldNow(box, n)) return true
-        return null
-    }
-
     /** Checks each box's field green against what's read on screen and heard, every frame. */
     private fun checkField(cur: Int?, onSound: Boolean, n: Double, boxes: Int) {
         val r = lastResult
@@ -1205,8 +1244,10 @@ object Engine {
             val heard = if (here) r?.heard else null
             val sureAd = (here && r != null && r.heard == Heard.AD && r.strongAd) ||
                 (tileAdAt[b]?.let { n - it < 5 } == true)
-            field.check(b, n, game = textNow || heard == Heard.GAME,
-                commercial = textSays(b, n, boxes) == false || heard == Heard.AD, sureAd = sureAd)
+            val game = textNow || heard == Heard.GAME
+            val commercial = textSays(b, n, boxes) == false || heard == Heard.AD
+            field.check(b, n, game = game, commercial = commercial, sureAd = sureAd)
+            lineWatch.check(b, n, game = game, commercial = commercial, sureAd = sureAd)
         }
     }
 
@@ -1276,11 +1317,16 @@ object Engine {
             watcher = com.rickle8.mvswitch.core.ScreenWatcher(s.layout); watcherKey = key
             forgetBugChecks()
             field.clear()
+            lineWatch.clear()
             meterOnGrid(s.gridCorners)
         }
         while (true) { val b = bugForget.poll() ?: break; watcher?.forgetBug(b) }
         val corners = s.gridCorners.chunked(2).map { it[0] to it[1] }
         val img = runCatching { com.rickle8.mvswitch.core.warpGrid(frame, corners) }.getOrNull() ?: return
+        // Keep the TV's whites from blowing out (and its picture from going murky), and refocus now and then.
+        val (clipped, mean) = com.rickle8.mvswitch.core.ExposureTuner.measure(img)
+        exposure.update(clipped, mean, n)?.let { ev -> cameraControls?.exposure(ev) }
+        if (n - meteredAt > 600) meterOnGrid(s.gridCorners)
         val c = ctrl
         val cur = nav?.current
         val running = job?.isActive == true && !paused && !autoPaused && !waitingForMultiview && lockedBox == null
@@ -1300,11 +1346,12 @@ object Engine {
         cameraAt = n
         checkBugs(v, cur, job?.isActive == true, n, boxCount(s))
         checkField(cur, job?.isActive == true, n, boxCount(s))
-        cameraMerged = (1..boxCount(s)).associateWith { cameraVerdict(it, v.showingGame[it], n, boxCount(s)) }
-        // Sure enough to overrule an ad-sounding moment on the box you're hearing: its score read just now.
-        c?.cameraReading = (1..boxCount(s)).filter { b -> tileGameAt[b]?.let { n - it < 6 } == true }.toSet()
-        // Its own score bug, read dependably, gone for a few seconds: what a cut to commercial looks like.
-        c?.cameraBugGone = (1..boxCount(s)).filter { b -> bugJustGone(b, n, boxCount(s)) }.toSet()
+        // What the camera sees on each box: its score bug, yard lines, the field, commercial text. The
+        // switching logic pairs it with the sound on the box you're hearing, and uses its word on the others.
+        val sights = (1..boxCount(s)).associateWith { b -> sightFor(b, v, n, boxCount(s)) }
+        cameraSights = sights
+        cameraMerged = sights.mapValues { it.value.word }
+        c?.sights = n to sights
         c?.camera = n to cameraMerged
         // YouTube TV flashes an outline on the box the sound moves to. Every move the app makes
         // checks it; once it has proven it reads the outline right, a flash the app didn't cause
@@ -1333,9 +1380,10 @@ object Engine {
     /** Expose and focus on the TV, not the room. */
     private fun meterOnGrid(flat: List<Double>) {
         if (flat.size != 8) return
-        val cx = (flat[0] + flat[2] + flat[4] + flat[6]) / 4
-        val cy = (flat[1] + flat[3] + flat[5] + flat[7]) / 4
-        cameraControls?.meterOn(cx, cy)
+        meteredAt = now()
+        val xs = listOf(flat[0], flat[2], flat[4], flat[6]); val ys = listOf(flat[1], flat[3], flat[5], flat[7])
+        val size = (maxOf(xs.max() - xs.min(), ys.max() - ys.min()) * 0.9).coerceIn(0.15, 0.9)
+        cameraControls?.meterOn(xs.average(), ys.average(), size)
     }
 
     fun setCameraZoom(z: Float) {
@@ -1807,12 +1855,13 @@ object Engine {
     fun cameraJpeg(): ByteArray? {
         remoteColorUntil = now() + 5
         val f = cameraFrame ?: return null
-        val color = cameraColor?.takeIf { it.width == f.width && it.height == f.height && !it.isRecycled }
+        // The color picture is sharper than the gray one; it only has to be turned the same way.
+        val color = cameraColor?.takeIf { (it.width > it.height) == (f.width > f.height) && !it.isRecycled }
         val bmp = color ?: android.graphics.Bitmap.createBitmap(
             IntArray(f.width * f.height) { i -> val g = f.pixels[i].toInt() and 0xFF; (0xFF shl 24) or (g shl 16) or (g shl 8) or g },
             f.width, f.height, android.graphics.Bitmap.Config.ARGB_8888)
         val out = java.io.ByteArrayOutputStream()
-        bmp.compress(android.graphics.Bitmap.CompressFormat.JPEG, 72, out)
+        bmp.compress(android.graphics.Bitmap.CompressFormat.JPEG, 82, out)
         return out.toByteArray()
     }
 
@@ -1858,6 +1907,7 @@ object Engine {
             .put("heard", when (st.heard) { Heard.GAME -> "game"; Heard.AD -> "commercial"; Heard.UNSURE -> "unsure" })
             .put("adPct", st.adPct ?: -1)
             .put("why", st.why ?: "")
+            .put("paired", st.paired ?: "")
             .put("mic", st.micOn)
             .put("layout", s.layout)
             .put("ask", st.outlineAsk ?: 0)
@@ -1874,6 +1924,7 @@ object Engine {
             .put("chip", chip(b))
             .put("detail", b.info?.detail ?: "")
             .put("camera", when (st.cameraGame[b.box]) { true -> "game"; false -> "commercial"; null -> "" })
+            .put("sees", st.cameraSees[b.box] ?: "")
             .put("reads", st.cameraText[b.box] ?: ""))
         j.put("boxes", boxes)
         return j.toString()
@@ -1948,8 +1999,14 @@ object Engine {
                 ", phone turned $cameraRotation (lined up at ${s.gridRotation}), corners " +
                 s.gridCorners.joinToString(",") { String.format(Locale.US, "%.2f", it) })
             val v = cameraView
+            ctrl?.lastCall?.let { sb.appendLine("  Last call: ${it.summary}") }
+            sb.appendLine("  Exposure ${String.format(Locale.US, "%+.1f", exposure.ev)} stops, focused ${((n - meteredAt) / 60).toInt()} min ago")
             for (b in 1..boxCount(s)) {
                 val text = tileRead[b]
+                val look = lineWatch.lastLook(b)
+                sb.appendLine("  Box $b sees: ${cameraSights[b]?.describe() ?: "-"} (${String.format(Locale.US, "%+.1f", cameraSights[b]?.points ?: 0.0)})" +
+                    ", yard lines " + (look?.let { (f, t) -> "${f.lines} ${(n - t).toInt()} s ago" } ?: "not looked") +
+                    lineWatch.counts(b).let { (u, g) -> if (lineWatch.trusted(b)) " (proven)" else " (proving: $u/2 with the game, $g/1 none in a commercial)" })
                 sb.appendLine("  Box $b: says " + when (cameraMerged[b]) { true -> "game"; false -> "commercial"; null -> "not sure" } +
                     ", score bug look " + when (v?.showingGame?.get(b)) { true -> "up"; false -> "gone"; null -> "learning" } +
                     (v?.scoreBar?.get(b)?.let { " $it%" } ?: "") +

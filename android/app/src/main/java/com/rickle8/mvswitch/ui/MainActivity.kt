@@ -60,13 +60,15 @@ class MainActivity : ComponentActivity() {
             grid = { Engine.cameraGrid() },
             onText = Engine::onTileText,
             onBump = { Engine.cameraBumped() },
-            onField = Engine::onCameraField)
+            onField = Engine::onCameraField,
+            onLines = Engine::onFieldLines)
         eye = e
         e.start(this)
         e.setZoom(Engine.settings.value.cameraZoom)
         Engine.cameraControls = object : Engine.CameraControls {
             override fun zoom(linear: Float) = e.setZoom(linear)
-            override fun meterOn(cx: Double, cy: Double) = runOnUiThread { e.meterOn(cx, cy) }
+            override fun meterOn(cx: Double, cy: Double, size: Double) = runOnUiThread { e.meterOn(cx, cy, size) }
+            override fun exposure(ev: Double) = runOnUiThread { e.setExposure(ev) }
         }
     }
 

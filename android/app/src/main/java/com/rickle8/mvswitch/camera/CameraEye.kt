@@ -2,6 +2,8 @@ package com.rickle8.mvswitch.camera
 
 import android.content.Context
 import android.graphics.Bitmap
+import android.hardware.camera2.CameraCharacteristics
+import android.hardware.camera2.CaptureRequest
 import android.util.Size
 import android.view.OrientationEventListener
 import android.view.Surface
@@ -22,10 +24,15 @@ import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 
 /**
- * The back camera, pointed at the TV. About three frames a second, turned upright
+ * The back camera, pointed at the TV. About four frames a second, turned upright
  * by the phone's own sense of which way is up (so it works standing tall or on its
  * side, even with auto-rotate off), as a small grayscale picture for reading and,
- * when asked, a color picture for the setup screen.
+ * when asked, a color picture for the setup screen and the phone page.
+ *
+ * Set up for a sharp picture of a bright screen across a room: 4K when the phone allows it
+ * (each box gets about twice the detail of 1080p), at 15 frames a second (less heat over a
+ * long game, and longer exposures that don't band on the TV), the phone's best noise
+ * reduction and sharpening, focus and exposure on the TV, not the room.
  */
 class CameraEye(
     private val context: Context,
@@ -40,10 +47,15 @@ class CameraEye(
     private val onBump: () -> Unit = {},
     /** Per box, the share of the picture that's football-field green, every frame once the TV is lined up. */
     private val onField: (Map<Int, Double>) -> Unit = {},
+    /** Yard lines found in a box (each box gets a close look about every 2 s). */
+    private val onLines: (Int, com.rickle8.mvswitch.core.FieldLines.Found) -> Unit = { _, _ -> },
 ) {
     private val ocr = TileOcr(context.filesDir,
         runCatching { context.packageManager.getPackageInfo(context.packageName, 0).versionName }.getOrNull() ?: "?",
-        onText, onError)
+        onText, onError, onLines)
+    /** The full-resolution buffer handed to the box reader, reused once it's done with it. */
+    private var fullBuf: ByteArray? = null
+    private var lastColorAt = 0L
     private var lastOcrAt = 0L
     private val executor = Executors.newSingleThreadExecutor()
     private var provider: ProcessCameraProvider? = null
@@ -106,14 +118,15 @@ class CameraEye(
                 provider = p
                 val selector = ResolutionSelector.Builder()
                     .setAspectRatioStrategy(AspectRatioStrategy.RATIO_16_9_FALLBACK_AUTO_STRATEGY)
-                    .setResolutionStrategy(ResolutionStrategy(Size(1920, 1080),
-                        ResolutionStrategy.FALLBACK_RULE_CLOSEST_HIGHER_THEN_LOWER))
+                    .setResolutionStrategy(ResolutionStrategy(Size(3840, 2160),
+                        ResolutionStrategy.FALLBACK_RULE_CLOSEST_LOWER_THEN_HIGHER))
                     .build()
-                val a = ImageAnalysis.Builder()
+                val builder = ImageAnalysis.Builder()
                     .setResolutionSelector(selector)
                     .setTargetRotation(rotation)
                     .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
-                    .build()
+                sharpen(builder, p)
+                val a = builder.build()
                 a.setAnalyzer(executor) { img -> handle(img) }
                 analysis = a
                 p.unbindAll()
@@ -140,16 +153,51 @@ class CameraEye(
         provider = null; camera = null; analysis = null
     }
 
+    /**
+     * The phone's best noise reduction and sharpening (what makes small lettering readable), and
+     * 15 frames a second when it offers that. Anything the phone doesn't list is left as it is.
+     */
+    @android.annotation.SuppressLint("UnsafeOptInUsageError") // Camera2Interop: settled API, still marked experimental
+    private fun sharpen(builder: ImageAnalysis.Builder, p: ProcessCameraProvider) {
+        runCatching {
+            val info = CameraSelector.DEFAULT_BACK_CAMERA.filter(p.availableCameraInfos).firstOrNull() ?: return
+            val chars = androidx.camera.camera2.interop.Camera2CameraInfo.from(info)
+            val ext = androidx.camera.camera2.interop.Camera2Interop.Extender(builder)
+            val nr = chars.getCameraCharacteristic(CameraCharacteristics.NOISE_REDUCTION_AVAILABLE_NOISE_REDUCTION_MODES)
+            if (nr?.contains(CaptureRequest.NOISE_REDUCTION_MODE_HIGH_QUALITY) == true)
+                ext.setCaptureRequestOption(CaptureRequest.NOISE_REDUCTION_MODE, CaptureRequest.NOISE_REDUCTION_MODE_HIGH_QUALITY)
+            val edge = chars.getCameraCharacteristic(CameraCharacteristics.EDGE_AVAILABLE_EDGE_MODES)
+            if (edge?.contains(CaptureRequest.EDGE_MODE_HIGH_QUALITY) == true)
+                ext.setCaptureRequestOption(CaptureRequest.EDGE_MODE, CaptureRequest.EDGE_MODE_HIGH_QUALITY)
+            chars.getCameraCharacteristic(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES)
+                ?.filter { it.upper in 10..15 }
+                ?.maxWithOrNull(compareBy<android.util.Range<Int>>({ it.upper }, { it.lower }))
+                ?.let { ext.setCaptureRequestOption(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, it) }
+        }
+    }
+
     /** 0 = wide, 1 = fully zoomed in. */
     fun setZoom(linear: Float) {
         runCatching { camera?.cameraControl?.setLinearZoom(linear.coerceIn(0f, 1f)) }
     }
 
+    /** Exposure compensation in stops (the TV's whites shouldn't blow out). */
+    fun setExposure(ev: Double) {
+        val cam = camera ?: return
+        runCatching {
+            val st = cam.cameraInfo.exposureState
+            val step = st.exposureCompensationStep.toFloat()
+            if (!st.isExposureCompensationSupported || step <= 0f) return
+            val range = st.exposureCompensationRange
+            cam.cameraControl.setExposureCompensationIndex(Math.round(ev / step).toInt().coerceIn(range.lower, range.upper))
+        }
+    }
+
     /**
-     * Measure light and focus on the TV ([cx], [cy] = grid center as fractions of the
-     * upright picture), so the screen is exposed right however bright the room is.
+     * Measure light and focus on the TV ([cx], [cy] = its center, [size] = its size, as fractions
+     * of the upright picture), so the screen is sharp and exposed right however bright the room is.
      */
-    fun meterOn(cx: Double, cy: Double) {
+    fun meterOn(cx: Double, cy: Double, size: Double = 0.35) {
         val cam = camera ?: return
         val a = analysis ?: return
         if (bufW == 0) return
@@ -161,7 +209,8 @@ class CameraEye(
             else -> cx to cy
         }
         runCatching {
-            val point = SurfaceOrientedMeteringPointFactory(1f, 1f, a).createPoint(bx.toFloat(), by.toFloat(), 0.35f)
+            val point = SurfaceOrientedMeteringPointFactory(1f, 1f, a)
+                .createPoint(bx.toFloat(), by.toFloat(), size.coerceIn(0.1, 0.9).toFloat())
             cam.cameraControl.startFocusAndMetering(
                 FocusMeteringAction.Builder(point, FocusMeteringAction.FLAG_AE or FocusMeteringAction.FLAG_AF)
                     .setAutoCancelDuration(1, TimeUnit.DAYS).build())
@@ -192,24 +241,30 @@ class CameraEye(
             }
             val g = runCatching { grid() }.getOrNull()
             // The field's green in each box (from the color planes), before the frame is read.
-            if (g != null) runCatching { onField(fieldShares(img, rotDeg, g.first, g.second)) }
+            val greens = if (g != null) runCatching { fieldGreens(img, rotDeg, g.first, g.second) }.getOrNull() else null
+            if (greens != null) runCatching { onField(greens.mapValues { (_, cells) -> fieldShare(cells) }) }
             onFrame(upright(raw, w, h, rotDeg), rotDeg)
-            // Every half second, hand one box at full resolution to the text reader.
+            // Every half second, hand one box at full resolution to the box reader (yard lines, text).
             if (g != null && now - lastOcrAt >= 450 && ocr.ready()) try {
                 lastOcrAt = now
-                val full = ByteArray(srcW * srcH)
+                val full = fullBuf?.takeIf { it.size == srcW * srcH } ?: ByteArray(srcW * srcH).also { fullBuf = it }
                 if (pxStride == 1) {
                     for (yy in 0 until srcH) { buf.position(yy * rowStride); buf.get(full, yy * srcW, srcW) }
                     buf.rewind()
                 } else {
                     for (yy in 0 until srcH) for (x in 0 until srcW) full[yy * srcW + x] = buf.get(yy * rowStride + x * pxStride)
                 }
-                ocr.submit(GrayFrame(srcW, srcH, full), rotDeg, g.first, g.second)
+                ocr.submit(GrayFrame(srcW, srcH, full), rotDeg, g.first, g.second, greens)
             } catch (t: Throwable) {
                 buf.rewind()
                 onError("text reading: ${t.message ?: t.javaClass.simpleName}")
             }
-            if (wantColor()) onColor(colorBitmap(img, step, w, h, rotDeg))
+            // In color, twice the gray picture's detail, twice a second, while a screen is showing it.
+            if (wantColor() && now - lastColorAt >= 450) {
+                lastColorAt = now
+                val cs = maxOf(1, (maxOf(srcW, srcH) + 1279) / 1280)
+                onColor(colorBitmap(img, cs, srcW / cs, srcH / cs, rotDeg))
+            }
         } catch (e: Throwable) {
             onError(e.message ?: "camera frame failed")
         } finally {
@@ -218,32 +273,38 @@ class CameraEye(
     }
 
     /**
-     * Per box, the share of sampled points that are football-field green. Samples a 24 x 14 grid
-     * inside each box, clear of its edges (the outline) and its bottom fifth (the score bar).
+     * Per box, which cells of a [FieldLines.GW] x [FieldLines.GH] grid over it are football-field
+     * green (from the color planes). The box reader uses it to look for yard lines on the field.
      */
-    private fun fieldShares(img: ImageProxy, deg: Int, corners: List<Pair<Double, Double>>, layout: Int): Map<Int, Double> {
+    private fun fieldGreens(img: ImageProxy, deg: Int, corners: List<Pair<Double, Double>>, layout: Int): Map<Int, BooleanArray> {
         val yP = img.planes[0]; val uP = img.planes[1]; val vP = img.planes[2]
         val yb = yP.buffer; val ub = uP.buffer; val vb = vP.buffer
         val w = img.width; val h = img.height
         val hom = com.rickle8.mvswitch.core.Homography(corners)
-        val out = HashMap<Int, Double>()
+        val gw = com.rickle8.mvswitch.core.FieldLines.GW; val gh = com.rickle8.mvswitch.core.FieldLines.GH
+        val out = HashMap<Int, BooleanArray>()
         for ((box, r) in com.rickle8.mvswitch.core.boxRects(layout)) {
-            var green = 0; var n = 0
-            for (j in 0 until 14) for (i in 0 until 24) {
-                val gx = r[0] + (r[2] - r[0]) * (0.06 + 0.88 * (i + 0.5) / 24)
-                val gy = r[1] + (r[3] - r[1]) * (0.06 + 0.74 * (j + 0.5) / 14)
-                val (u, v) = hom.map(gx, gy)
+            out[box] = com.rickle8.mvswitch.core.FieldLines.greenGrid { i, j ->
+                val (u, v) = hom.map(r[0] + (r[2] - r[0]) * (i + 0.5) / gw, r[1] + (r[3] - r[1]) * (j + 0.5) / gh)
                 val (rx, ry) = com.rickle8.mvswitch.core.uprightToRaw(u, v, deg)
                 val x = (rx * w).toInt().coerceIn(0, w - 1); val y = (ry * h).toInt().coerceIn(0, h - 1)
                 val yy = yb.get(y * yP.rowStride + x * yP.pixelStride).toInt() and 0xFF
                 val uu = ub.get((y / 2) * uP.rowStride + (x / 2) * uP.pixelStride).toInt() and 0xFF
                 val vv = vb.get((y / 2) * vP.rowStride + (x / 2) * vP.pixelStride).toInt() and 0xFF
-                n++
-                if (com.rickle8.mvswitch.core.FieldWatch.isFieldGreen(yy, uu, vv)) green++
+                com.rickle8.mvswitch.core.FieldWatch.isFieldGreen(yy, uu, vv)
             }
-            out[box] = if (n == 0) 0.0 else green.toDouble() / n
         }
         return out
+    }
+
+    /** The share of a box that's field green, clear of its edges (the outline) and its bottom fifth (the score bar). */
+    private fun fieldShare(cells: BooleanArray): Double {
+        val gw = com.rickle8.mvswitch.core.FieldLines.GW; val gh = com.rickle8.mvswitch.core.FieldLines.GH
+        var green = 0; var n = 0
+        for (j in (gh * 0.06).toInt() until (gh * 0.8).toInt()) for (i in (gw * 0.06).toInt() until (gw * 0.94).toInt()) {
+            n++; if (cells[j * gw + i]) green++
+        }
+        return if (n == 0) 0.0 else green.toDouble() / n
     }
 
     private fun upright(raw: ByteArray, w: Int, h: Int, deg: Int): GrayFrame = when (deg) {
