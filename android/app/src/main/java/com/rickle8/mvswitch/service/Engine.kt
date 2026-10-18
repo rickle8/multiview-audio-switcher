@@ -441,6 +441,7 @@ object Engine {
             logLines.addFirst(LogLine(stamp(), text))
             while (logLines.size > 40) logLines.removeLast()
         }
+        runCatching { recorder?.event("log", JSONObject().put("text", text)) }
         publish()
     }
 
@@ -562,8 +563,10 @@ object Engine {
             }
             stopping = false
             try {
+                startRecording()
                 runLoop()
             } finally {
+                runCatching { recorder?.event("stop"); recorder?.stop() }
                 synchronized(detector) { detector.save() }
                 synchronized(lock) {
                     mic?.close(); mic = null
@@ -818,6 +821,7 @@ object Engine {
                         }
                     }
                 }
+                runCatching { recordSecond(n, cur, heard, result, c) }
                 publish()
               } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
@@ -911,6 +915,7 @@ object Engine {
     /** "It's the game" / "It's an ad": label the last 8 s and the next 12 s. */
     fun label(isAd: Boolean) {
         val cur = nav?.current
+        runCatching { recorder?.event("tap", JSONObject().put("what", if (isAd) "ad" else "game").put("box", cur ?: 0), mark = true) }
         synchronized(detector) { detector.label(isAd, now(), cur) }
         if (isAd) {
             if (cur != null) { adTapAt[cur] = now(); gameSaidAt.remove(cur); visualGameAt.remove(cur) }
@@ -1362,6 +1367,8 @@ object Engine {
         }.toSet() - gameLikely
         val v = watcher!!.frame(img, gameLikely, adLikely)
         cameraView = v
+        // The game recording: a small picture of the TV now and then (more often near a switch or a tap).
+        recorder?.let { rec -> if (rec.wantFrame(n)) runCatching { rec.frame(gridJpeg(img)) } }
         // The picture model: measure every box, learn from what's sure, save now and then.
         runCatching {
             val look = visualFor(s.layout)
@@ -1811,6 +1818,7 @@ object Engine {
 
     fun switchTo(box: Int, lock: Boolean = false) {
         if (job?.isActive != true) return
+        runCatching { recorder?.event("tap", JSONObject().put("what", if (lock) "lock" else "play").put("box", box), mark = true) }
         scope.launch(Dispatchers.IO) {
             try {
                 synchronized(this@Engine.lock) {
@@ -1997,6 +2005,113 @@ object Engine {
         }
     }
 
+    // ------------------------------------------------- recording games for review
+    /** Records each run for review afterwards (see Recorder). */
+    @Volatile private var recorder: com.rickle8.mvswitch.core.Recorder? = null
+    /** Per box, ESPN's last play already recorded. */
+    private val recordedPlay = java.util.concurrent.ConcurrentHashMap<Int, Long>()
+
+    private fun recorderOrNull(): com.rickle8.mvswitch.core.Recorder? {
+        if (!_settings.value.recordGames) return null
+        return recorder ?: com.rickle8.mvswitch.core.Recorder(java.io.File(app.filesDir, "recordings")).also { recorder = it }
+    }
+
+    private fun startRecording() {
+        val rec = recorderOrNull() ?: run { recorder?.stop(); return }
+        val s = _settings.value
+        val games = JSONObject().apply { s.slots.forEach { (b, g) -> put(b.toString(), JSONObject().put("name", g.name).put("team", g.team)
+            .put("league", g.league).put("eventId", g.eventId).put("kind", g.kind)) } }
+        val settings = s.toJson().apply { remove("githubToken"); remove("samsungToken"); remove("tvMac") }
+        rec.start(JSONObject().put("version", appVersion()).put("layout", s.layout).put("games", games).put("settings", settings)
+            .put("device", "${Build.MANUFACTURER} ${Build.MODEL}"))
+        recordedPlay.clear()
+    }
+
+    /** One second of what it heard, saw on each box, and decided. */
+    private fun recordSecond(n: Double, cur: Int?, heard: Heard, r: DetectResult?, c: Controller) {
+        val rec = recorder?.takeIf { it.recording } ?: return
+        val s = _settings.value
+        val f = feed
+        val boxes = org.json.JSONArray()
+        for (b in 1..boxCount(s)) {
+            val info = f?.info?.get(b)
+            val sight = cameraSights[b]
+            val (look, lookWhy) = runCatching { c.outlook(b, n) }.getOrDefault(Controller.Outlook.UNKNOWN to "")
+            boxes.put(JSONObject().put("box", b)
+                .put("espn", info?.statusName ?: "").put("detail", info?.detail ?: "")
+                .put("score", info?.scores?.values?.joinToString("-") ?: "")
+                .put("outlook", look.name).put("outlookWhy", lookWhy.take(60))
+                .put("sees", sight?.describe() ?: "").put("pts", sight?.points ?: 0.0)
+                .put("look", sight?.look ?: -1.0).put("bug", sight?.bug == true)
+                .put("reads", tileRead[b]?.first?.summary?.take(50) ?: ""))
+            // ESPN's new plays, once each.
+            val p = f?.plays(b)?.lastOrNull()
+            if (p != null && p.seq >= 0 && recordedPlay[b] != p.seq) {
+                recordedPlay[b] = p.seq
+                rec.event("play", JSONObject().put("box", b).put("text", p.text.take(160)).put("espnT", p.t).put("seenT", p.seen).put("t", n))
+            }
+        }
+        rec.second(JSONObject().put("t", n).put("box", cur ?: 0)
+            .put("heard", heard.name).put("adPct", r?.adPct ?: -1).put("strong", r?.strongAd == true)
+            .put("why", r?.why ?: "").put("top", org.json.JSONArray(r?.topSounds.orEmpty()))
+            .put("bias", runCatching { c.bias(cur, n).why }.getOrNull() ?: "")
+            .put("call", c.lastCall?.summary ?: "")
+            .put("paused", paused || autoPaused).put("locked", lockedBox ?: 0)
+            .put("delay", c.dataLeadForRecord())
+            .put("boxes", boxes))
+    }
+
+    /** The straightened TV grid as a small gray JPEG. */
+    private fun gridJpeg(img: FloatArray, w: Int = 384, h: Int = 216): ByteArray {
+        val px = IntArray(w * h) { i -> val g = img[i].toInt().coerceIn(0, 255); (0xFF shl 24) or (g shl 16) or (g shl 8) or g }
+        val bmp = android.graphics.Bitmap.createBitmap(px, w, h, android.graphics.Bitmap.Config.ARGB_8888)
+        val out = java.io.ByteArrayOutputStream()
+        bmp.compress(android.graphics.Bitmap.CompressFormat.JPEG, 70, out)
+        bmp.recycle()
+        return out.toByteArray()
+    }
+
+    /** The recordings kept, for the phone page. */
+    fun remoteRecordings(): String {
+        val rec = recorderOrNull() ?: recorder
+        val a = org.json.JSONArray()
+        rec?.sessions()?.forEach { (name, bytes, secs) ->
+            a.put(JSONObject().put("name", name).put("mb", bytes / 1e6).put("mins", secs / 60).put("live", name == rec.sessionName))
+        }
+        return JSONObject().put("on", _settings.value.recordGames).put("sessions", a)
+            .put("github", _settings.value.githubToken.isNotBlank()).toString()
+    }
+
+    /** A recording as a zip, streamed to [out]. */
+    /** Writes recording [name] to a zip file in the cache (for the phone page to download), or null. */
+    fun recordingZip(name: String): java.io.File? {
+        val f = java.io.File(app.cacheDir, "download.zip")
+        return f.takeIf { runCatching { it.outputStream().use { o -> writeRecording(name, o) } }.getOrDefault(false) }
+    }
+
+    fun writeRecording(name: String, out: java.io.OutputStream): Boolean = (recorder ?: recorderOrNull())?.zip(name, out) == true
+
+    fun deleteRecording(name: String): Boolean = (recorder ?: recorderOrNull())?.delete(name) == true
+
+    /**
+     * Puts a recording on GitHub (the app's own repository, a "recordings" branch) so it can be
+     * reviewed from there. Needs a GitHub token that can write to the repository (Settings).
+     */
+    fun uploadRecording(name: String): String? {
+        val token = _settings.value.githubToken.ifBlank { return "Add a GitHub token in Settings first (one that can write to the app's repository)." }
+        val tmp = java.io.File(app.cacheDir, "upload.zip")
+        if (!tmp.outputStream().use { writeRecording(name, it) }) return "No such recording"
+        if (tmp.length() > 1_500_000_000) return "That recording is too big to upload (${tmp.length() / 1_000_000} MB). Download it instead."
+        scope.launch(Dispatchers.IO) {
+            val msg = runCatching { com.rickle8.mvswitch.service.Uploader.put(token, "recordings/$name.zip", tmp) }
+                .getOrElse { "Upload failed: ${it.message}" }
+            log(msg)
+            tmp.delete()
+        }
+        log("Uploading the $name recording…")
+        return null
+    }
+
     // ------------------------------------------------- your feedback on switches, and notes
     /** A switch the app made: when, from where to where, why, and how ad-like the sound was. */
     private data class SwitchMade(val t: Double, val from: Int, val to: Int, val why: String, val adPct: Int?, var verdict: String? = null)
@@ -2008,6 +2123,8 @@ object Engine {
     private fun recordSwitch(from: Int?, to: Int?, started: Double) {
         if (from == null || to == null || from == to) return
         val why = synchronized(logLines) { logLines.firstOrNull()?.text }.orEmpty()
+        runCatching { recorder?.event("switch", JSONObject().put("from", from).put("to", to).put("why", why)
+            .put("adPct", lastResult?.adPct ?: -1), mark = true) }
         synchronized(switches) {
             switches.addFirst(SwitchMade(started, from, to, why, lastResult?.adPct))
             while (switches.size > 20) switches.removeLast()
@@ -2024,6 +2141,7 @@ object Engine {
                 runCatching { f.readLines().takeLast(60).reversed().forEach { feedback.addLast(it) } }
             }
             feedback.addFirst("${stamp()}  $line")
+            runCatching { recorder?.event("feedback", JSONObject().put("text", line), mark = true) }
             while (feedback.size > 60) feedback.removeLast()
             val all = feedback.toList().reversed()
             scope.launch(Dispatchers.IO) { runCatching { f.writeText(all.joinToString("\n")) } }
@@ -2095,6 +2213,7 @@ object Engine {
     /** The camera's lesson on a box you aren't hearing (or are): it's the game or a commercial, without moving the sound. */
     fun teachBox(box: Int, isAd: Boolean) {
         val n = now()
+        runCatching { recorder?.event("tap", JSONObject().put("what", if (isAd) "boxAd" else "boxGame").put("box", box), mark = true) }
         if (isAd) {
             adTapAt[box] = n; visualGameAt.remove(box); gameSaidAt.remove(box)
             if (box != nav?.current) ctrl?.userSaysAd(box)
@@ -2118,7 +2237,7 @@ object Engine {
             .put("useCamera", s.useCamera).put("cameraZoom", s.cameraZoom.toDouble())
             .put("layout", s.layout).put("breakSecs", s.breakSecs)
             .put("autoPause", s.autoPause).put("openYouTubeTv", s.openYouTubeTv)
-            .put("hopping", s.hopping.name)
+            .put("hopping", s.hopping.name).put("recordGames", s.recordGames)
             .put("corners", org.json.JSONArray(s.gridCorners))
             .put("soundLearned", "${d.first} s game, ${d.second} s commercials")
             .put("pictureLearned", visual?.describe() ?: "not started")
@@ -2143,6 +2262,8 @@ object Engine {
             "useCamera" -> update { it.copy(useCamera = bool()) }
             "autoPause" -> update { it.copy(autoPause = bool()) }
             "openYouTubeTv" -> update { it.copy(openYouTubeTv = bool()) }
+            "githubToken" -> update { it.copy(githubToken = value.trim()) }
+            "recordGames" -> { update { it.copy(recordGames = bool()) }; if (!bool()) recorder?.stop() }
             "breakSecs" -> num()?.let { v -> update { it.copy(breakSecs = v.toInt().coerceIn(60, 300)) } } ?: return "Not a number"
             "layout" -> value.toIntOrNull()?.takeIf { it in LAYOUTS }?.let { v -> update { it.copy(layout = v) } } ?: return "Not a layout"
             "hopping" -> runCatching { com.rickle8.mvswitch.data.Hopping.valueOf(value) }.getOrNull()

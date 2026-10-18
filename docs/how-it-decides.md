@@ -1,4 +1,4 @@
-# Multiview Audio: how it decides (v1.0.90)
+# Multiview Audio: how it decides (v1.0.91)
 
 Built for one setup: a Samsung QN75Q8F, YouTube TV multiview with 4 games (2x2), and a Galaxy S21 on a stand facing the TV doing everything (listening, watching, pressing the TV's buttons). College football Saturdays, NFL Sundays.
 
@@ -231,3 +231,16 @@ From the first NFL Sunday with the camera on: it held the sound on commercials a
 ## 15. The camera learns the picture (v1.0.88)
 
 The camera's hand-made signs (score bug text, yard lines, green) miss too much on your TV. Now it also learns what the game and commercials look like there, from the whole picture of all four boxes, taught by the sure signs and your taps, and it only counts once it has proven itself (section 5, "The picture, learned").
+
+## 16. Game recordings for review (v1.0.91)
+
+Each run (Start to Stop) is recorded on the camera phone, on by default (Settings tab of the phone page, "Record each game"):
+- **Every second:** the box heard, what the sound was called and how ad-like (and its top sound classes), why, the timing bias, the paired sound and camera call, and per box ESPN's status, score and detail, what it decided the box shows and why, what the camera sees, its points, the picture model's ad chance, and the text it read.
+- **Every event:** switches (with why), your taps, box lessons, feedback and notes, ESPN's plays as they come in, and the activity log.
+- **Pictures:** the straightened TV grid in gray, every 5 s, and every second within 25 s of a switch or a tap.
+- **Never the sound itself**, only the app's scores for it. Tokens and the TV's pairing are left out.
+- About 25-40 MB for a 3-hour game. The newest 8 are kept, 600 MB at most.
+
+On the phone page (Settings): **Send to Claude** uploads one to the app's GitHub repository, as a file on a "recordings" pre-release (never "latest", so updates aren't affected). It needs a GitHub token that can write to the repository (a fine-grained token with Contents read and write on rickle8/multiview-audio-switcher), pasted into the same panel. **Download** saves the zip to your phone instead, to attach in a chat.
+
+tools/review.py lays a recording out: each switch with the sound before and after it, how long the sound had been ad-like, what the camera and ESPN said; commercials it seemed to sit through (60%+ ad-like for 15 s+ with no switch); your taps and feedback with the sound before them; ESPN's plays near each switch; totals and the median sound-to-switch lag. With --frames it makes contact sheets of the TV around each switch and piece of feedback.

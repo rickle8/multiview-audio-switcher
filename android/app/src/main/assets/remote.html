@@ -186,6 +186,15 @@ select,input[type=search],input[type=text]{width:100%;background:var(--surface2)
     <div class="set"><div class="lab">Picture<div class="small muted" id="pictureLearned"></div></div></div>
     <div class="row"><button class="btn danger" id="forgetSound">Forget the sound</button><button class="btn danger" id="forgetPicture">Forget the picture</button></div>
   </div>
+  <div class="panel">
+    <div class="muted small">Game recordings, for Claude to review</div>
+    <div class="set"><div class="lab">Record each game<div class="small muted">What it heard (scores only, never the sound), saw, decided, your feedback, and small TV pictures</div></div>
+      <label class="sw"><input type="checkbox" data-set="recordGames"><span></span></label></div>
+    <div id="recs" class="small muted">Loading…</div>
+    <div class="set" style="display:block"><div class="lab">GitHub token <span id="tokState" class="muted small"></span>
+      <div class="small muted">Lets "Send to Claude" upload a recording to the app's GitHub, where Claude can open it. It needs permission to write to rickle8/multiview-audio-switcher.</div></div>
+      <div class="row"><input type="text" id="tok" placeholder="github_pat_…" autocomplete="off"><button class="btn" id="saveTok" style="flex:0 0 80px">Save</button></div></div>
+  </div>
 </div>
 
 <div class="page" id="p-camera" hidden>
@@ -431,6 +440,32 @@ document.querySelectorAll('[data-set]').forEach(el => {
 document.querySelectorAll('#layoutSeg .btn').forEach(b => b.onclick = () => setting('layout', b.dataset.layout, 'Layout set. Check the games for each box.'));
 $('forgetSound').onclick = () => { if (confirm('Forget what it learned about the sound? It goes back to the built-in rules.')) act('forgetSound'); };
 $('forgetPicture').onclick = () => { if (confirm('Forget what the camera learned about the picture?')) act('forgetPicture'); setTimeout(loadConfig, 500); };
+
+// ---------------------------------------------------------------- recordings
+async function loadRecs() {
+  try {
+    const r = await fetch('/recordings?k=' + enc(K), { cache: 'no-store' });
+    const j = await r.json();
+    $('tokState').textContent = j.github ? '(set)' : '(not set)';
+    const el = $('recs'); el.innerHTML = '';
+    if (!j.sessions.length) { el.textContent = 'No recordings yet. One starts each time you tap Start.'; return; }
+    for (const x of j.sessions) {
+      const d = document.createElement('div'); d.className = 'slot'; d.style.flexWrap = 'wrap';
+      d.innerHTML = '<span class="nm"></span><div class="row" style="width:100%;margin-top:6px"><button class="btn game">Send to Claude</button><button class="btn">Download</button><button class="btn danger">Delete</button></div>';
+      d.querySelector('.nm').textContent = x.name.replace('_', ' ') + ' · ' + x.mins + ' min · ' + x.mb.toFixed(1) + ' MB' + (x.live ? ' · recording now' : '');
+      const [send, dl, del] = d.querySelectorAll('.btn');
+      send.onclick = async () => {
+        const r = await fetch('/recording/upload?k=' + enc(K) + '&name=' + enc(x.name), { method: 'POST' }); const j2 = await r.json();
+        toast(j2.ok ? 'Uploading. The activity log says when it is done.' : j2.error);
+      };
+      dl.onclick = () => { location.href = '/recording.zip?k=' + enc(K) + '&name=' + enc(x.name); };
+      del.onclick = async () => { if (!confirm('Delete the ' + x.name + ' recording?')) return; await fetch('/recording/delete?k=' + enc(K) + '&name=' + enc(x.name), { method: 'POST' }); loadRecs(); };
+      el.appendChild(d);
+    }
+  } catch (e) { $('recs').textContent = "Couldn't reach the camera phone."; }
+}
+$('saveTok').onclick = async () => { const t = $('tok').value.trim(); if (!t) return; await setting('githubToken', t, 'Token saved.'); $('tok').value = ''; loadRecs(); };
+document.querySelector('#tabs button[data-tab=settings]').addEventListener('click', loadRecs);
 
 // ---------------------------------------------------------------- games
 function openPicker(box, name) {

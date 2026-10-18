@@ -70,6 +70,8 @@ data class Settings(
     val directInputs: Int = 0,
     /** "Something else" boxes used before (RedZone...), newest first. */
     val recentOthers: List<String> = emptyList(),
+    /** Record each game session (what it heard, saw, decided, small TV pictures) for review afterwards. */
+    val recordGames: Boolean = true,
 ) {
 
     val adThreshold: Double get() = 0.75 - 0.25 * micSensitivity
@@ -100,6 +102,7 @@ data class Settings(
         })
         .put("directInputs", directInputs)
         .put("recentOthers", org.json.JSONArray(recentOthers))
+        .put("recordGames", recordGames)
         .put("slots", JSONObject().apply {
             slots.forEach { (box, s) ->
                 put(box.toString(), JSONObject().put("league", s.league).put("team", s.team)
@@ -165,6 +168,7 @@ data class Settings(
                     }.filter { it.second.isNotEmpty() }.toMap()
                 }.orEmpty(),
                 directInputs = j.optInt("directInputs", 0),
+                recordGames = j.optBoolean("recordGames", true),
                 recentOthers = j.optJSONArray("recentOthers")?.let { a ->
                     (0 until a.length()).map { a.optString(it) }.filter { it.isNotBlank() }
                 }.orEmpty(),

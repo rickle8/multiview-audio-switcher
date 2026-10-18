@@ -214,6 +214,9 @@ class Controller(
         breakUntil[box] = now + breakLength(box, recentScore(box, now))
     }
 
+    /** How far behind ESPN the TV is taken to run right now, for the recording. */
+    fun dataLeadForRecord(): Double = dataLead()
+
     /** You said this game is on, recently. */
     fun userSaidGame(box: Int, now: Double): Boolean = userLive[box]?.let { now - it < userLiveSecs } == true
 

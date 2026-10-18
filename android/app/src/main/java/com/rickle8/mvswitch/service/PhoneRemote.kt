@@ -134,6 +134,23 @@ object PhoneRemote {
                 send(out, 200, "application/json",
                     JSONObject().put("ok", problem == null).put("error", problem ?: "").toString().toByteArray())
             }
+            "/recordings" -> send(out, 200, "application/json", Engine.remoteRecordings().toByteArray())
+            "/recording.zip" -> {
+                val name = q["name"].orEmpty()
+                val f = synchronized(this) { Engine.recordingZip(name) }
+                if (f == null) send(out, 404, "text/plain", "No such recording".toByteArray())
+                else synchronized(this) {
+                    val head = "HTTP/1.1 200 OK\r\nContent-Type: application/zip\r\nContent-Length: ${f.length()}\r\n" +
+                        "Content-Disposition: attachment; filename=\"multiview-$name.zip\"\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n"
+                    sock.soTimeout = 0
+                    out.write(head.toByteArray()); f.inputStream().use { it.copyTo(out) }; out.flush()
+                }
+            }
+            "/recording/delete" -> send(out, 200, "application/json", JSONObject().put("ok", Engine.deleteRecording(q["name"].orEmpty())).toString().toByteArray())
+            "/recording/upload" -> {
+                val problem = runCatching { Engine.uploadRecording(q["name"].orEmpty()) }.getOrElse { it.message ?: "Something went wrong" }
+                send(out, 200, "application/json", JSONObject().put("ok", problem == null).put("error", problem ?: "").toString().toByteArray())
+            }
             "/report" -> send(out, 200, "text/plain; charset=utf-8",
                 kotlinx.coroutines.runBlocking { Engine.report() }.toByteArray())
             "/frame.jpg" -> {
