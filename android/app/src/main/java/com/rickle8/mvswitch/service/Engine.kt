@@ -716,7 +716,10 @@ object Engine {
         if (!opened) {
             try {
                 synchronized(lock) { nav?.resync() }
-                log("Running. Audio on box ${nav?.current}.")
+                // Stopped and started again: the TV's sound is still where it was, not back on box 1.
+                val kept = if (!s.homing) keptBox(s) else null
+                if (kept != null) synchronized(lock) { nav?.current = kept }
+                log("Running. Audio on box ${nav?.current}" + (if (kept != null) " (where it was when you stopped)." else "."))
             } catch (e: Exception) {
                 error = e.message
                 log(e.message ?: "TV error")
@@ -785,6 +788,7 @@ object Engine {
                     result != null -> result.heard
                     else -> lastResult?.heard ?: Heard.UNSURE
                 }
+                rememberBox(s)
                 synchronized(lock) {
                     if (lockedBox == null) {
                         try {
@@ -820,6 +824,28 @@ object Engine {
             watching = false
         }
     }
+
+    // ---------------------------------------------------------------- where the sound was
+    /** Which games are up (a different set means a different multiview, where the sound starts on box 1). */
+    private fun gamesKey(s: Settings) = s.slots.toSortedMap().entries.joinToString(",") { "${it.key}:${it.value.eventId}" }
+    private var rememberedBox: Int? = null
+    private var rememberedAt = -1e9
+
+    /** Notes where the sound is (when it changes, and once a minute), so a stop and start picks up from there. */
+    private fun rememberBox(s: Settings) {
+        val box = nav?.current ?: return
+        val n = now()
+        if (box == rememberedBox && n - rememberedAt < 60) return
+        rememberedBox = box; rememberedAt = n
+        runCatching { java.io.File(app.filesDir, "last_box.txt").writeText("$box|${System.currentTimeMillis()}|${gamesKey(s)}") }
+    }
+
+    /** Where the sound was when switching last ran, if that was in the last 20 minutes with the same games. */
+    private fun keptBox(s: Settings): Int? = runCatching {
+        val (box, at, games) = java.io.File(app.filesDir, "last_box.txt").readText().split("|", limit = 3)
+        val b = box.toInt()
+        b.takeIf { System.currentTimeMillis() - at.toLong() < 20 * 60_000 && games == gamesKey(s) && b in 1..boxCount(s) }
+    }.getOrNull()
 
     /** Pauses switching while YouTube TV isn't on screen, so arrows never go to another app. */
     private suspend fun watchYouTubeTv(apps: TvApps, ytId: String) {
@@ -968,6 +994,8 @@ object Engine {
     // What the phone's text recognition reads in each box.
     private val tileRead = java.util.concurrent.ConcurrentHashMap<Int, Pair<com.rickle8.mvswitch.core.TileRead, Double>>()
     private val tileGameAt = java.util.concurrent.ConcurrentHashMap<Int, Double>()
+    /** Per box: when it read a score bug, over the last couple of minutes (how dependable reading that box is). */
+    private val tileGameTimes = java.util.concurrent.ConcurrentHashMap<Int, ArrayDeque<Double>>()
     private val tileMismatchLogged = java.util.Collections.synchronizedSet(HashSet<String>())
 
     /** Where the grid is and the layout, for the text reader (null when the camera isn't set up). */
@@ -987,7 +1015,11 @@ object Engine {
         val scores = f?.info?.mapValues { it.value.scores.values.toList() }.orEmpty()
         val r = com.rickle8.mvswitch.core.TileText.read(text, teams, scores)
         tileRead[box] = r to n
-        if (r.game) tileGameAt[box] = n
+        if (r.game) {
+            tileGameAt[box] = n
+            val q = tileGameTimes.getOrPut(box) { ArrayDeque() }
+            synchronized(q) { q.addLast(n); while (q.isNotEmpty() && n - q.first() > 120) q.removeFirst() }
+        }
         // The games in the Games tab in a different order than on the TV? Say so once.
         val other = r.showsGameOf
         if (r.game && other != null && other != box) {
@@ -1039,7 +1071,9 @@ object Engine {
         if (n - at < 10) return true
         val read = tileRead[box]
         val seesTv = (1..boxes).any { it != box && tileGameAt[it]?.let { t -> n - t < 45 } == true }
-        if (n - at in 45.0..1200.0 && read != null && n - read.second < 10 && seesTv) return false
+        // Only where reading this box's score bug is dependable: read 4+ times in the minute before it went.
+        val dependable = tileGameTimes[box]?.let { q -> synchronized(q) { q.count { it in (at - 60)..at } } }?.let { it >= 4 } == true
+        if (n - at in 45.0..1200.0 && read != null && n - read.second < 10 && seesTv && dependable) return false
         return null
     }
 

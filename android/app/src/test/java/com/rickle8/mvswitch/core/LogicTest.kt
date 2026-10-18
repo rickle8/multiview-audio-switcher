@@ -97,15 +97,19 @@ class LogicTest {
         assertEquals("DET", games.first().home)
     }
 
-    @Test fun feedTimeoutIsBreakThenExpires() {
+    @Test fun aTimeoutIsABreakForTheSwitchingLogicNotForEspnsStatus() {
         val c = Clock()
         var b = board(event("GB", "MIN", play = "Pass complete for 8 yards."))
         val f = GameFeed(mapOf(1 to GameSlot(team = "GB")), { b }, { c.t }, pollSecs = 0.0)
+        val ctrl = Controller(Navigator(Recorder(), LAYOUTS.getValue(2), home = false, sleep = {}), listOf(1, 2), f, clock = { c.t })
         assertEquals(GameStatus.LIVE, f.poll()[1])
         b = board(event("GB", "MIN", play = "Timeout #1 by GB at 04:12."))
-        assertEquals(GameStatus.BREAK, f.poll()[1])
-        c.t = 200.0
+        // ESPN still calls the game live; the switching logic sees the timeout on the TV.
         assertEquals(GameStatus.LIVE, f.poll()[1])
+        assertEquals(Controller.Outlook.BREAK, ctrl.outlook(1, c.t).first)
+        c.t = 200.0
+        f.poll()
+        assertNotEquals(Controller.Outlook.BREAK, ctrl.outlook(1, c.t).first)
     }
 
     // ---- excitement ----

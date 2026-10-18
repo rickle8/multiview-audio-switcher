@@ -320,17 +320,19 @@ class GameFeed(
         while (q.size > 40) q.removeFirst()
     }
 
+    /**
+     * A game's status is ESPN's own: live, halftime, end of a quarter, final. A break play (a
+     * timeout, a touchdown, a kickoff) doesn't turn it into BREAK here. ESPN runs ahead of your
+     * TV and many of those plays don't go to commercial at all, so that used to mark games
+     * "BREAK" while your TV was still showing them live. Whether a game is in commercial on your
+     * TV is the switching logic's call ([Controller.outlook]), which lines each play up with when
+     * your TV shows it.
+     */
     @Synchronized
-    private fun applyPlayStatus(box: Int, now: Double) {
+    private fun applyPlayStatus(box: Int, @Suppress("UNUSED_PARAMETER") now: Double) {
         val raw = rawStatus[box] ?: return
-        val latest = log[box]?.lastOrNull()
-        // Plays with a real wall-clock time are aged from when they happened; others from when seen.
-        val age = latest?.let { if (it.seq >= 0) now - it.t else now - it.seen } ?: Double.MAX_VALUE
-        val s = if (raw == GameStatus.LIVE && latest != null && isBreakPlay(latest.text) &&
-            age < breakPlaySecs
-        ) GameStatus.BREAK else raw
-        status[box] = s
-        info[box]?.status = s
+        status[box] = raw
+        info[box]?.status = raw
     }
 
     /**

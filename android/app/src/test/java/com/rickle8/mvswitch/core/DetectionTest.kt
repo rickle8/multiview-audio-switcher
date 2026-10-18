@@ -173,7 +173,11 @@ class DetectionTest {
         val plays = f.plays(1)
         assertEquals(3, plays.size)
         assertEquals(970.0, plays.last().t, 0.01)          // happened 30 s ago
-        assertEquals(GameStatus.BREAK, f.status[1])        // official timeout = TV break
+        assertEquals(GameStatus.LIVE, f.status[1])         // ESPN's own status: still live
+        // The TV runs behind ESPN: that timeout's commercial is coming, not on yet.
+        val c = Controller(Navigator(object : Remote { override fun press(key: Key) {} }, LAYOUTS.getValue(2),
+            home = false, sleep = {}), listOf(1, 2), f, clock = { now })
+        assertEquals(Controller.Outlook.SOON, c.outlook(1, now).first)
     }
 
     @Test fun breakOutlookFromPlays() {
