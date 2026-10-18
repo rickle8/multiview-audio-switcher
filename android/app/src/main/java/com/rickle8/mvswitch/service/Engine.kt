@@ -769,6 +769,7 @@ object Engine {
                             if (c.step(heard, strongAd = result?.strongAd == true,
                                     strongWhy = if (result?.strongAd == true) result.why else null)) {
                                 m?.drain()
+                                appMovedAt = now(); moveRetried = false
                                 synchronized(detector) { detector.onSwitch() }
                                 lastResult = null
                             }
@@ -893,6 +894,10 @@ object Engine {
     private var watcher: com.rickle8.mvswitch.core.ScreenWatcher? = null
     private var watcherKey: String? = null
     private var camMismatchSince = -1e9
+    /** When the app last moved the sound itself, so the camera can tell a lost key press from your own move. */
+    @Volatile private var appMovedAt = -1e9
+    @Volatile private var moveRetried = false
+    @Volatile private var fixingMove = false
     private val finder = com.rickle8.mvswitch.core.GridFinder()
     @Volatile private var finding = false
     @Volatile private var findSkip = 0
@@ -970,16 +975,37 @@ object Engine {
         // Where's the sound really? The highlight outline says.
         val seen = v.highlighted
         val running = job?.isActive == true && !paused && !autoPaused && !waitingForMultiview && lockedBox == null
-        if (seen != null && cur != null && seen != cur && running && c != null && n - c.lastSwitch > 4) {
+        if (seen != null && cur != null && seen != cur && running && c != null && n - c.lastSwitch > 4 && !fixingMove) {
             if (camMismatchSince < 0) camMismatchSince = n
             if (n - camMismatchSince >= 2) {
-                synchronized(lock) {
-                    nav?.current = seen
-                    c.lastSwitch = n
-                }
-                synchronized(detector) { detector.onSwitch() }
-                log("Camera: the sound is on box $seen, not box $cur. Fixed.")
                 camMismatchSince = -1e9
+                if (n - appMovedAt < 14 && !moveRetried) {
+                    // The app just moved the sound and it didn't land: a key press got lost. Try again from where it is.
+                    moveRetried = true
+                    fixingMove = true
+                    log("Camera: the move to box $cur didn't land (sound is on box $seen). Trying again.")
+                    scope.launch(Dispatchers.IO) {
+                        try {
+                            synchronized(lock) {
+                                nav?.current = seen
+                                nav?.goTo(cur)
+                                ctrl?.lastSwitch = now()
+                            }
+                        } catch (e: Exception) {
+                            log(e.message ?: "TV error")
+                        } finally { fixingMove = false }
+                    }
+                } else {
+                    // Nobody in the app moved it: you did, with the TV remote. Go with your pick.
+                    synchronized(lock) {
+                        nav?.current = seen
+                        c.lastSwitch = n
+                        c.returnTo = null
+                    }
+                    synchronized(detector) { detector.onSwitch() }
+                    log(if (n - appMovedAt < 14) "Camera: the sound is on box $seen, not box $cur. Fixed."
+                        else "Camera: you moved the sound to box $seen. Going with it.")
+                }
             }
         } else camMismatchSince = -1e9
     }
@@ -1073,6 +1099,7 @@ object Engine {
                 r.press(key)
                 // In multiview the arrows move the audio: keep track of where it went.
                 n.current = simulate(n.neighbors, n.current ?: 1, listOf(key))
+                appMovedAt = now(); moveRetried = false
                 ctrl?.lastSwitch = now()
                 ctrl?.returnTo = null
                 synchronized(detector) { detector.onSwitch() }
@@ -1393,6 +1420,7 @@ object Engine {
                     lockedBox = if (lock) box else null
                     holdUntil = 0.0
                     nav?.goTo(box)
+                    appMovedAt = now(); moveRetried = false
                     ctrl?.let { it.lastSwitch = now(); it.breakUntil.remove(box); it.returnTo = null }
                     synchronized(detector) { detector.onSwitch() }
                 }
