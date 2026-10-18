@@ -531,6 +531,17 @@ class BroadcastTest {
         assertEquals(Controller.Outlook.BREAK, c.outlook(2, now).first)
     }
 
+    @Test fun youMarkingAnotherBoxAsACommercialKeepsItOffTheList() {
+        val now = 100.0
+        val nav = Navigator(quiet, LAYOUTS.getValue(4), home = false, sleep = {})
+        val f = GameFeed(emptyMap(), { JSONObject() }, { now }, pollSecs = 1e9)
+        val c = Controller(nav, listOf(1, 2, 3, 4), f, clock = { now })
+        c.userSaysAd(2); c.userSaysAd(3)
+        assertEquals(1, nav.current)
+        assertTrue(c.step(Heard.AD, adPct = 75))
+        assertEquals(4, nav.current)
+    }
+
     @Test fun yourAdTapAlwaysMovesYou() {
         val now = 100.0
         val logs = mutableListOf<String>()

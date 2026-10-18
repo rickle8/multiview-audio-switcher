@@ -203,6 +203,17 @@ class Controller(
         awayForBreak.remove(box)
     }
 
+    /**
+     * You said a box you aren't hearing is in commercial: it's not a place to go until its
+     * break would be over, or the camera or ESPN shows it back.
+     */
+    fun userSaysAd(box: Int) {
+        val now = clock()
+        userLive.remove(box)
+        breakStarted[box] = now
+        breakUntil[box] = now + breakLength(box, recentScore(box, now))
+    }
+
     /** You said this game is on, recently. */
     fun userSaidGame(box: Int, now: Double): Boolean = userLive[box]?.let { now - it < userLiveSecs } == true
 

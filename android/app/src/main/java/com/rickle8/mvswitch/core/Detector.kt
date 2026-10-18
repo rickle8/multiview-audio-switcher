@@ -284,6 +284,16 @@ class Detector(private val dir: File? = null) {
         dirty = true
     }
 
+    /**
+     * Your feedback on a switch: the audio heard on [box] from [from] to [to] was a commercial
+     * ([isAd]) or the game. A wrong "game" call also forgets a fingerprint that fired then.
+     */
+    fun labelSpan(isAd: Boolean, from: Double, to: Double, box: Int) {
+        history.filter { it.box == box && it.t in from..to }.forEach { labelRec(it, isAd) }
+        if (!isAd) lastMatch?.let { (seg, t) -> if (t in (from - 5)..(to + 5)) { prints.remove(seg); lastMatch = null } }
+        dirty = true
+    }
+
     /** How loud the crowd/announcers reacted at second [t] on [box], or null if the mic wasn't on it. */
     private fun reaction(box: Int, t: Double): Double? {
         val r = history.firstOrNull { it.box == box && kotlin.math.abs(it.t - t) <= 0.5 } ?: return null

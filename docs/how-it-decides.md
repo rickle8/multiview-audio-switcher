@@ -1,4 +1,4 @@
-# Multiview Audio: how it decides (v1.0.89)
+# Multiview Audio: how it decides (v1.0.90)
 
 Built for one setup: a Samsung QN75Q8F, YouTube TV multiview with 4 games (2x2), and a Galaxy S21 on a stand facing the TV doing everything (listening, watching, pressing the TV's buttons). College football Saturdays, NFL Sundays.
 
@@ -151,6 +151,9 @@ The camera phone serves a control page on your home Wi-Fi. Scan the code in Sett
 
 Tabs along the top (v1.0.89):
 - **Control:** all of the above.
+- **Teach the camera a box** (tap a box): "It's the game" or "It's a commercial" teaches the picture model on that box for 30 s without moving the sound. A box you call a commercial is also kept off the list of places to go until its break would be over; one you call the game counts as on for 4 minutes.
+- **Last switch** (for 10 minutes after it): **Good** learns the 6 s before it as the commercial. **Too slow** (~5, 10, 20, 30 s+) learns that many seconds before it as the commercial and makes it a bit quicker (sensitivity +3%, +5% for 15 s or more). **Wrong** (it wasn't a commercial) learns the 15 s before it as the game, forgets a fingerprint that fired then, makes it a bit less quick (-3%), and goes back. Sensitivity stays between 20% and 85%.
+- **Tell it what happened:** type, or tap your keyboard's mic and talk. Notes are saved with what was going on (where the sound was, what it heard, the last switch and how long ago) and show up under "Your feedback and notes" in diagnostics, along with every Good / Too slow / Wrong. The app doesn't act on notes itself: they're for tuning it from the diagnostics.
 - **Games:** each box's game; Change searches games on now (or a team or network) and sets it, or sets "something else" by name; fill empty boxes; clear a box.
 - **Settings:** mic on or off, how quick to call a commercial, ESPN play-by-play, going back to your game, the camera on or off, typical break length, the layout; what the sound and picture have learned, and buttons to forget either.
 - **Camera:** the live picture with the boxes drawn on it; Find the TV again; Move the corners (drag the four dots to the TV's corners, then Save); zoom.

@@ -806,6 +806,7 @@ object Engine {
                                     adPct = result?.adPct ?: lastResult?.adPct)) {
                                 m?.drain()
                                 noteAppMove(from, nav?.current, started)
+                                recordSwitch(from, nav?.current, started)
                                 synchronized(detector) { detector.onSwitch() }
                                 lastResult = null
                             }
@@ -912,7 +913,7 @@ object Engine {
         val cur = nav?.current
         synchronized(detector) { detector.label(isAd, now(), cur) }
         if (isAd) {
-            if (cur != null) { adTapAt[cur] = now(); gameSaidAt.remove(cur) }
+            if (cur != null) { adTapAt[cur] = now(); gameSaidAt.remove(cur); visualGameAt.remove(cur) }
             log("Got it, commercial. Learning this sound.")
             scope.launch(Dispatchers.IO) {
                 synchronized(lock) {
@@ -921,6 +922,7 @@ object Engine {
                         val started = now()
                         if (lockedBox == null && ctrl?.commercialNow() == true) {
                             noteAppMove(from, nav?.current, started)
+                            recordSwitch(from, nav?.current, started)
                             mic?.drain()
                             synchronized(detector) { detector.onSwitch() }
                         }
@@ -933,7 +935,7 @@ object Engine {
             // You're looking at it: this game is on, whatever the camera or ESPN's timing guessed.
             if (cur != null) {
                 ctrl?.userSaysGame(cur)
-                gameSaidAt[cur] = now()
+                gameSaidAt[cur] = now(); visualGameAt[cur] = now(); adTapAt.remove(cur)
             }
             log("Got it, game audio. Learning this sound.")
         }
@@ -1007,6 +1009,8 @@ object Engine {
     private var visualSavedAt = 0.0
     /** When you tapped "It's an ad", and on which box: that box is a commercial for the next 30 s. */
     private val adTapAt = java.util.concurrent.ConcurrentHashMap<Int, Double>()
+    /** When you said a box is the game (for the picture model: 30 s of lessons). */
+    private val visualGameAt = java.util.concurrent.ConcurrentHashMap<Int, Double>()
 
     private fun visualFor(layout: Int): com.rickle8.mvswitch.core.VisualLook {
         visual?.takeIf { it.layoutIs(layout) }?.let { return it }
@@ -1043,7 +1047,7 @@ object Engine {
         for (b in 1..boxes) {
             if (f?.info?.get(b)?.statusName.let { it == "STATUS_HALFTIME" || it == "STATUS_END_PERIOD" }) continue
             val bugNow = bugReads.readWithin(b, n, 3.0)
-            val game = bugNow || gameSaidAt[b]?.let { n - it < 30 } == true
+            val game = bugNow || gameSaidAt[b]?.let { n - it < 30 } == true || visualGameAt[b]?.let { n - it < 30 } == true
             val soundAd = b == cur && r != null && r.heard == Heard.AD && (r.strongAd || (r.adPct ?: 0) >= 78) &&
                 !bugReads.readWithin(b, n, 6.0)
             val ad = adTextNow(b, n) || adTapAt[b]?.let { n - it < 30 } == true || soundAd
@@ -1939,6 +1943,10 @@ object Engine {
             .put("error", st.error ?: "")
             .put("remoteMsg", st.remoteMsg ?: "")
             .put("log", org.json.JSONArray(st.log.take(15).map { "${it.time}  ${it.text}" }))
+            .put("lastSwitch", lastSwitchMade()?.let { sw ->
+                JSONObject().put("ago", (now() - sw.t).toInt()).put("from", sw.from).put("to", sw.to)
+                    .put("why", sw.why).put("verdict", sw.verdict ?: "")
+            } ?: JSONObject())
         val boxes = org.json.JSONArray()
         val list = st.boxes.ifEmpty { (1..boxCount(s)).map { BoxView(it, s.slots[it], null, 0.0, false) } }
         for (b in list) boxes.put(JSONObject()
@@ -1978,9 +1986,125 @@ object Engine {
             "forgetSound" -> { resetLearning(); null }
             "forgetPicture" -> { visual?.forget(); saveVisual(now(), force = true); log("Camera: forgot what the game and commercials look like."); null }
             "fill" -> { scope.launch { val k = fillEmptyBoxes(); log(if (k > 0) "Filled $k empty boxes with games on now." else "No games to fill the empty boxes with.") }; null }
+            "boxGame" -> if (box == null) "Which box?" else { teachBox(box, false); null }
+            "boxAd" -> if (box == null) "Which box?" else { teachBox(box, true); null }
+            "good" -> switchFeedback("good", null)
+            "slow" -> switchFeedback("slow", v?.toIntOrNull())
+            "wrong" -> switchFeedback("wrong", null)
+            "note" -> note(v.orEmpty())
             "clearBox" -> if (box == null) "Which box?" else { update { st -> st.copy(slots = st.slots - box) }; null }
             else -> "That button isn't known"
         }
+    }
+
+    // ------------------------------------------------- your feedback on switches, and notes
+    /** A switch the app made: when, from where to where, why, and how ad-like the sound was. */
+    private data class SwitchMade(val t: Double, val from: Int, val to: Int, val why: String, val adPct: Int?, var verdict: String? = null)
+    private val switches = ArrayDeque<SwitchMade>()
+    /** Your feedback and notes, newest first, kept across restarts (for the diagnostics). */
+    private val feedback = ArrayDeque<String>()
+    private var feedbackLoaded = false
+
+    private fun recordSwitch(from: Int?, to: Int?, started: Double) {
+        if (from == null || to == null || from == to) return
+        val why = synchronized(logLines) { logLines.firstOrNull()?.text }.orEmpty()
+        synchronized(switches) {
+            switches.addFirst(SwitchMade(started, from, to, why, lastResult?.adPct))
+            while (switches.size > 20) switches.removeLast()
+        }
+    }
+
+    private fun lastSwitchMade(): SwitchMade? = synchronized(switches) { switches.firstOrNull() }
+
+    private fun keepFeedback(line: String) {
+        val f = java.io.File(app.filesDir, "feedback.txt")
+        synchronized(feedback) {
+            if (!feedbackLoaded) {
+                feedbackLoaded = true
+                runCatching { f.readLines().takeLast(60).reversed().forEach { feedback.addLast(it) } }
+            }
+            feedback.addFirst("${stamp()}  $line")
+            while (feedback.size > 60) feedback.removeLast()
+            val all = feedback.toList().reversed()
+            scope.launch(Dispatchers.IO) { runCatching { f.writeText(all.joinToString("\n")) } }
+        }
+    }
+
+    private fun nudgeSensitivity(by: Float): String {
+        var to = 0f
+        update { st -> st.copy(micSensitivity = (st.micSensitivity + by).coerceIn(0.2f, 0.85f)).also { to = it.micSensitivity } }
+        return "${(to * 100).toInt()}%"
+    }
+
+    /**
+     * Your word on the last switch the app made:
+     * - good: right call (the seconds before it are learned as the commercial);
+     * - slow: right, but [secs] late (those seconds are learned as the commercial, and it gets a bit quicker);
+     * - wrong: it wasn't a commercial (back to that game, the sound before it learned as the game, a bit less quick).
+     */
+    fun switchFeedback(kind: String, secs: Int?): String? {
+        val sw = lastSwitchMade() ?: return "It hasn't made a switch yet."
+        val n = now()
+        val ago = (n - sw.t).toInt()
+        if (ago > 600) return "Its last switch was over 10 minutes ago."
+        val what = "box ${sw.from} → ${sw.to} ${ago}s ago (${sw.why.take(60)}${sw.adPct?.let { ", $it% ad" } ?: ""})"
+        when (kind) {
+            "good" -> {
+                synchronized(detector) { detector.labelSpan(true, sw.t - 6, sw.t, sw.from) }
+                sw.verdict = "good"
+                keepFeedback("Good switch: $what")
+                log("Thanks: good switch.")
+            }
+            "slow" -> {
+                val late = (secs ?: 10).coerceIn(3, 60)
+                synchronized(detector) { detector.labelSpan(true, sw.t - late, sw.t, sw.from) }
+                val sens = nudgeSensitivity(if (late >= 15) 0.05f else 0.03f)
+                sw.verdict = "slow ${late}s"
+                keepFeedback("Too slow by about $late s: $what. Quickness now $sens.")
+                log("Got it: about $late s late. Learning that commercial and calling them a bit quicker ($sens).")
+            }
+            "wrong" -> {
+                synchronized(detector) { detector.labelSpan(false, sw.t - 15, sw.t, sw.from) }
+                val sens = nudgeSensitivity(-0.03f)
+                sw.verdict = "wrong"
+                keepFeedback("Wrong switch (not a commercial): $what. Quickness now $sens.")
+                log("Got it: box ${sw.from} wasn't in commercial. Going back, and calling them a bit less quickly ($sens).")
+                gameSaidAt[sw.from] = n; visualGameAt[sw.from] = n
+                ctrl?.userSaysGame(sw.from)
+                if (nav?.current != sw.from) switchTo(sw.from)
+            }
+            else -> return "That isn't known"
+        }
+        return null
+    }
+
+    /** Something you typed or said on the phone page: kept with what was going on, for the diagnostics. */
+    fun note(text: String): String? {
+        val t = text.trim().take(500)
+        if (t.isEmpty()) return "Nothing to save"
+        val sw = lastSwitchMade()
+        val r = lastResult
+        val ctx = "sound on box ${nav?.current ?: "?"}, " +
+            (r?.let { "heard ${it.heard.name.lowercase()}${it.adPct?.let { p -> " $p% ad" } ?: ""}, " } ?: "") +
+            (sw?.let { "last switch box ${it.from} → ${it.to} ${(now() - it.t).toInt()}s ago" } ?: "no switch yet")
+        keepFeedback("Note: \"$t\" [$ctx]")
+        log("Saved your note.")
+        return null
+    }
+
+    /** The camera's lesson on a box you aren't hearing (or are): it's the game or a commercial, without moving the sound. */
+    fun teachBox(box: Int, isAd: Boolean) {
+        val n = now()
+        if (isAd) {
+            adTapAt[box] = n; visualGameAt.remove(box); gameSaidAt.remove(box)
+            if (box != nav?.current) ctrl?.userSaysAd(box)
+            log("Camera: learning box $box as a commercial.")
+        } else {
+            visualGameAt[box] = n; adTapAt.remove(box)
+            ctrl?.userSaysGame(box)
+            log("Camera: learning box $box as the game.")
+        }
+        publish()
     }
 
     // ------------------------------------------------- settings and games from the phone page
@@ -2136,6 +2260,17 @@ object Engine {
             sb.appendLine("  Field green proven per box: " + (1..boxCount(s)).joinToString { b ->
                 val (u, g) = field.counts(b); "$b ${if (field.trusted(b)) "yes" else "$u/3 up, $g/1 gone"}" })
             sb.appendLine("  Outline last flashed on " + (lastOutline?.let { (b, t) -> "box $b, ${(n - t).toInt()} s ago" } ?: "no box yet"))
+        }
+        synchronized(feedback) {
+            if (!feedbackLoaded) {
+                feedbackLoaded = true
+                runCatching { java.io.File(app.filesDir, "feedback.txt").readLines().takeLast(60).reversed().forEach { feedback.addLast(it) } }
+            }
+            if (feedback.isNotEmpty()) {
+                sb.appendLine()
+                sb.appendLine("Your feedback and notes (newest first):")
+                feedback.take(25).forEach { sb.appendLine(it) }
+            }
         }
         java.io.File(app.filesDir, "last_error.txt").takeIf { it.exists() }?.let { f ->
             sb.appendLine()

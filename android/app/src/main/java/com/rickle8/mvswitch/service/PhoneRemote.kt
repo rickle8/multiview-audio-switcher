@@ -97,7 +97,7 @@ object PhoneRemote {
             if (h.isEmpty()) break
             if (h.startsWith("content-length:", ignoreCase = true)) length = h.substringAfter(':').trim().toIntOrNull() ?: 0
         }
-        val body = if (length in 1..8192) {
+        val body = if (length in 1..16384) {
             val buf = ByteArray(length); var read = 0
             while (read < length) { val r = input.read(buf, read, length - read); if (r < 0) break; read += r }
             String(buf, 0, read)
