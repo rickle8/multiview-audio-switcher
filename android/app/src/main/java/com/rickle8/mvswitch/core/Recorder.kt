@@ -77,8 +77,10 @@ class Recorder(
 
     /** A picture's worth recording now ([t] in seconds)? */
     @Synchronized
-    fun wantFrame(t: Double): Boolean {
+    fun wantFrame(@Suppress("UNUSED_PARAMETER") t: Double = 0.0, wallMs: Long = System.currentTimeMillis()): Boolean {
         if (dir == null) return false
+        // Wall-clock seconds, the same as frame() and event() keep (the app's own clock counts from boot).
+        val t = wallMs / 1000.0
         val every = if (t - markAt < nearSecs) frameEveryNear else frameEvery
         return t - lastFrameAt >= every
     }

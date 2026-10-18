@@ -542,6 +542,39 @@ class BroadcastTest {
         assertEquals(4, nav.current)
     }
 
+    @Test fun justLandedOnAGameThatLooksLikeTheGameItWaits() {
+        var now = 100.0
+        val nav = Navigator(quiet, LAYOUTS.getValue(4), home = false, sleep = {})
+        val f = GameFeed(emptyMap(), { JSONObject() }, { now }, pollSecs = 1e9)
+        val c = Controller(nav, listOf(1, 2, 3, 4), f, clock = { now })
+        c.see(now, 1 to Sight(), 2 to Sight(bug = true), 3 to Sight(), 4 to Sight(look = 0.2))
+        assertTrue(c.step(Heard.AD, adPct = 90)) // box 1's commercial: to box 2
+        val landed = nav.current!!
+        // 13 s later on the game it landed on: 68% ad-like sound, but the picture says it's the game.
+        now = 113.0; c.see(now, 1 to Sight(), 2 to Sight(look = 0.18), 3 to Sight(), 4 to Sight(look = 0.18))
+        assertFalse(c.step(Heard.AD, adPct = 68))
+        assertEquals(landed, nav.current)
+        // Clearly a commercial: it goes.
+        now = 116.0
+        assertTrue(c.step(Heard.AD, adPct = 88))
+    }
+
+    @Test fun yardLinesAndAGameLookAloneDontBringYouBack() {
+        var now = 100.0
+        val nav = Navigator(quiet, LAYOUTS.getValue(4), home = false, sleep = {})
+        val f = GameFeed(emptyMap(), { JSONObject() }, { now }, pollSecs = 1e9)
+        val c = Controller(nav, listOf(1, 2, 3, 4), f, clock = { now })
+        c.see(now, 1 to Sight(), 2 to Sight(bug = true), 3 to Sight(), 4 to Sight())
+        assertTrue(c.step(Heard.AD, adPct = 90))
+        // Box 1, 2 minutes into its break, shows yard lines and looks game-like (84%): not back yet.
+        now = 220.0; c.see(now, 1 to Sight(lines = true, look = 0.16), 2 to Sight(bug = true), 3 to Sight(), 4 to Sight())
+        assertFalse(c.step(Heard.GAME, adPct = 10))
+        // Its score bug read: back.
+        now = 230.0; c.see(now, 1 to Sight(bug = true), 2 to Sight(bug = true), 3 to Sight(), 4 to Sight())
+        assertTrue(c.step(Heard.GAME, adPct = 10))
+        assertEquals(1, nav.current)
+    }
+
     @Test fun yourAdTapAlwaysMovesYou() {
         val now = 100.0
         val logs = mutableListOf<String>()

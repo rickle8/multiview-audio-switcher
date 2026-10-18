@@ -53,7 +53,7 @@ data class Bias(
         /** The game clock is running: commercials only air when it's stopped. */
         val CLOCK = Bias(10.0, 16.0, 0.12, "game clock is running")
         /** ESPN says a break is coming (a score, timeout, quarter end): the first few seconds of commercial sound are enough. */
-        val EXPECTED = Bias(4.0, 3.0, -0.05, "ESPN said a break was coming")
+        val EXPECTED = Bias(2.5, 2.0, -0.05, "ESPN said a break was coming")
         /** Just switched games: if this one is also in a break, notice fast and move on. */
         val LANDED = Bias(5.0, 3.0, 0.0, "checking the game it just switched to")
     }

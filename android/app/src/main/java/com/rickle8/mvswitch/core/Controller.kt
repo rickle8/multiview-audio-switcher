@@ -383,12 +383,12 @@ class Controller(
         val end = lastBreakEnd[box] ?: -1e9
         if (armed[box] != null) return Bias.EXPECTED
         if (clockRunning(box, now)) return Bias.CLOCK
+        if (now - lastSwitch < 20) return Bias.LANDED
         val likely = feed.plays(box).lastOrNull {
             LIKELY_BREAK.containsMatchIn(it.text) && !NULLIFIED.containsMatchIn(it.text) && it.seen > end && now - it.seen < 180 && now - it.t < 300
         }
         if (likely != null) return Bias.LIKELY
         if (now - end < 240) return Bias.UNLIKELY
-        if (now - lastSwitch < 20) return Bias.LANDED
         return Bias.NORMAL
     }
 
@@ -402,8 +402,9 @@ class Controller(
         // Halftime or the end of a quarter: back only once the camera reads the live score bug (the
         // field in view isn't enough: the band plays on it at halftime), or ESPN's status moves on.
         if (status[box] == GameStatus.BREAK) return sightOf(box, now)?.bug == true
-        // The camera reading the game there is the fastest sign it's back; its silence proves nothing.
-        if (cameraSays(box, now) == true) return true
+        // The camera reading its score bug is the fastest sign it's back (its silence proves nothing).
+        // Yard lines or the learned picture alone aren't enough: ads and promos have fields too.
+        sightOf(box, now)?.let { if (it.bug || (it.lines && (it.look ?: 1.0) <= 0.1)) return true }
         if (sightOf(box, now)?.let { it.adText || it.looksAd } == true) return false
         val started = breakStarted[box]
         if (feed != null && started != null && feed.pbpFresh(box, now)) {
@@ -412,6 +413,8 @@ class Controller(
         }
         return !inBreak(box, now, status)
     }
+
+    private var landedLogged = -1e9
 
     /** When it left a game for a commercial, recently. */
     private val adSwitches = ArrayDeque<Double>()
@@ -528,7 +531,15 @@ class Controller(
         // commercial first, the camera confirms it or holds it.
         val call = Pairing.decide(heard0, adPct, strongAd0, strongWhy0, sightOf(cur, now), userSaidGame(cur, now))
         lastCall = call
-        val heard = call.heard; val strongAd = call.strong; val strongWhy = call.why
+        var heard = call.heard; val strongAd = call.strong; val strongWhy = call.why
+        // Just landed on this game: if the camera reads its score bug, or the learned picture says it's the
+        // game, an unsure-ish commercial sound (left over from the switch, the band) isn't enough to leave.
+        val landedOn = sightOf(cur, now)
+        if (heard == Heard.AD && !strongAd && now - lastSwitch < 20 && (adPct ?: 0) < 80 &&
+            landedOn != null && (landedOn.bug || (landedOn.look ?: 1.0) <= 0.25)) {
+            heard = Heard.UNSURE
+            if (now - landedLogged > 30) { landedLogged = now; log("Just switched to box $cur and it looks like the game there (${landedOn.describe()}). Waiting a moment.") }
+        }
         if (call.held && now - cameraLogged > 60) {
             cameraLogged = now
             log("Sounded like an ad, but the camera sees the game on box $cur (${sightOf(cur, now)?.describe()}). Staying.")

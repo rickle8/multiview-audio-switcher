@@ -1,4 +1,4 @@
-# Multiview Audio: how it decides (v1.0.91)
+# Multiview Audio: how it decides (v1.0.92)
 
 Built for one setup: a Samsung QN75Q8F, YouTube TV multiview with 4 games (2x2), and a Galaxy S21 on a stand facing the TV doing everything (listening, watching, pressing the TV's buttons). College football Saturdays, NFL Sundays.
 
@@ -244,3 +244,13 @@ Each run (Start to Stop) is recorded on the camera phone, on by default (Setting
 On the phone page (Settings): **Send to Claude** uploads one to the app's GitHub repository, as a file on a "recordings" pre-release (never "latest", so updates aren't affected). It needs a GitHub token that can write to the repository (a fine-grained token with Contents read and write on rickle8/multiview-audio-switcher), pasted into the same panel. **Download** saves the zip to your phone instead, to attach in a chat.
 
 tools/review.py lays a recording out: each switch with the sound before and after it, how long the sound had been ad-like, what the camera and ESPN said; commercials it seemed to sit through (60%+ ad-like for 15 s+ with no switch); your taps and feedback with the sound before them; ESPN's plays near each switch; totals and the median sound-to-switch lag. With --frames it makes contact sheets of the TV around each switch and piece of feedback.
+
+## 17. From the first recording (Oct 18, 41 min, v1.0.92)
+
+18 switches, 3 "too slow", 2 "wrong", and a note asking what made a game "better".
+1. **"Better game" jumps.** Three switches left live games because hopping was set to Calm in the app's settings. It's off for good now, whatever the setting says.
+2. **Slow after ESPN's warning.** The sound score is an average over a few seconds, so it rose slowly after the cut. With a break expected it now needs only 2 s of commercial sound over a 2.5 s window (about 3-4 s sooner).
+3. **Slow on landing in another commercial.** Just after a switch, "a break is likely on this game" set the pace (5 s) instead of "just switched, check fast" (3 s). Landing comes first now (only a running game clock outranks it).
+4. **Wrong leave right after landing.** Right after switching, leftover or band music read 60-70% ad while the picture model said the game (80%). For 20 s after a switch, the score bug or the picture model at 75%+ game holds a sound under 80% ad-like.
+5. **Back too early.** Yard lines on a commercial plus the picture model's 84% "game" brought it back to box 2 mid-break. Coming back on the camera's word now takes its score bug, or yard lines with the picture model 90%+ sure.
+6. **Only one TV picture was saved.** A clock mix-up in the recorder; pictures now save every 5 s (every second near switches and taps).

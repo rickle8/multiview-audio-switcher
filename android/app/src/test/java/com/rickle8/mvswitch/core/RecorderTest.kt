@@ -24,7 +24,7 @@ class RecorderTest {
                 .put("adPct", ad).put("why", "").put("call", "").put("bias", "").put("boxes", org.json.JSONArray()), ms)
             if (i == 50) r.event("switch", JSONObject().put("from", 1).put("to", 2).put("why", "Commercial on box 1"), ms, mark = true)
             if (i == 55) r.event("feedback", JSONObject().put("text", "Too slow by about 10 s: box 1 → 2"), ms, mark = true)
-            if (r.wantFrame(ms / 1000.0)) r.frame(byteArrayOf(1, 2, 3), ms)
+            if (r.wantFrame(wallMs = ms)) r.frame(byteArrayOf(1, 2, 3), ms)
         }
         // Pictures every 5 s, every second near the switch.
         assertTrue("${r.frames} pictures", r.frames in 40..60)
