@@ -1,8 +1,8 @@
-# Multiview Audio: how it decides (v1.0.81)
+# Multiview Audio: how it decides (v1.0.83)
 
 Built for one setup: a Samsung QN75Q8F, YouTube TV multiview with 4 games (2x2), and a Galaxy S21 on a stand facing the TV doing everything (listening, watching, pressing the TV's buttons). College football Saturdays, NFL Sundays.
 
-**The short version:** every second the mic decides whether the box you're hearing is a commercial. If it is, the app presses arrows to move the sound to the best other game that's on, then goes back when your game returns. ESPN and the camera help it decide when and where, and anything you tap wins. You don't have to touch the camera phone: your own phone is the remote (section 8).
+**The short version:** every second the mic and the camera together decide whether the box you're hearing is a commercial (section 5, "Sound and camera, paired"). If it is, the app presses arrows to move the sound to the best other game that's on, then goes back when your game returns. ESPN helps it decide when and where, and anything you tap wins. You don't have to touch the camera phone: your own phone is the remote (section 8).
 
 ---
 
@@ -12,7 +12,7 @@ Built for one setup: a Samsung QN75Q8F, YouTube TV multiview with 4 games (2x2),
 |---|---|---|
 | Mic | every second | Scores the sound: game or commercial |
 | ESPN | scoreboard every 10 s; plays every 5 s for your box, 8 s for the others | Status, plays, game clock for all 4 games |
-| Camera | about 4 frames a second | Reads each box's score bug; finds the TV |
+| Camera | about 4 frames a second; a close look at each box about every 2 s | Score bug text, yard lines, field green, commercial text; finds the TV |
 | Decision | every second | Stay, switch, or go back |
 | TV | only when switching | Arrow presses, 0.35 s apart |
 
@@ -71,7 +71,9 @@ The camera can make it quicker still: see "gone" in section 5.
 
 **Lining up.** It finds the TV by motion (the games move, the room doesn't). It checks again every minute and 2 seconds after a bump, and only moves the grid if the TV really moved. Turning the phone triggers a full find after it sits still 3 seconds.
 
-**Reading the score bug.** One box every half second (each box about every 2 s), it reads the text.
+**The picture.** 4K when the phone allows it (each box gets about twice the detail of 1080p), 15 frames a second (less heat over a long game, and exposures that don't band on the TV), the phone's best noise reduction and sharpening. Focus and exposure are measured on the TV itself, sized to it, and refreshed every 10 minutes and whenever the TV moves in the picture. Exposure is also nudged a third of a stop at a time so the TV's whites (the score bug's lettering, the yard lines) don't blow out and dark scenes don't go murky. The picture on your phone's camera view is in color at 1280 x 720.
+
+**The close look.** One box every half second (each box about every 2 s), straightened out at 1280 x 720 (960 x 540 from a 1080p camera). It reads the text and looks for yard lines.
 
 **What counts as the game being played:** that game's own teams and a score at or near ESPN's current one (your TV runs behind ESPN, so up to 8 points lower or 3 higher counts as near). Any of: ESPN's exact score with a team or the clock; a team, a near score and the clock or quarter (or both teams); both teams with the clock or quarter; a team with down and distance. A team name alone (a promo for the game) isn't enough, and the score bug's own HALF or FINAL isn't play.
 - Read in the last 10 s: that game is on.
@@ -84,20 +86,29 @@ The camera can make it quicker still: see "gone" in section 5.
 
 **The score bug's shape** (learned per box) only counts once it has matched the text: present twice during play and gone once in a commercial. If something surer contradicts it, it's relearned.
 
-**The field:** in each box it measures how much of the picture is football-field green. A wide shot of the field in the last 8 s says the game is on (never the other way round, since close-ups and replays go long stretches without it). It counts on a box once it has matched the score text or the sound: field during the game 3 times, none in a commercial once.
+**The field's green:** every frame it measures how much of each box is football-field green. A wide shot of the field in the last 8 s leans toward the game (never the other way round: close-ups and replays go long stretches without it). It counts on a box once proven there: field with the game 3 times, none in a commercial once.
 
-**How the camera's word is used:**
-- Other games: "on" makes it a good place to go and marks your game as back. "Commercial" means skip it.
-- Your game: score bug gone (8 s) + ad-sounding = sure commercial (beats ESPN's guards); gone + leaning ad = commercial. No score bug for 45 s + unsure sound = likely commercial. Score bug read in the last 6 s + ad-sounding = stays. **It never turns game audio into a commercial.**
+**Yard lines:** in each close look it searches the green for thin, straight, bright lines that run a good part of the way across the box (yard lines, sidelines, a row of hash marks), leaving out the box's edges and the bottom fifth where the score bar and a ticker run. Two or more long ones in the last 5 s are as strong a sign of the game as its score bug. Lawn stripes (too wide), a golf flag (just one), busy texture like leaves, and lines off the green don't count. A box proves them first: lines with the game twice, none in a commercial once. Lines in a commercial it's sure of start that over.
+
+**Sound and camera, paired.** Each second, the sound's call on the box you're hearing is paired with what the camera sees there. The camera adds up its evidence: score bug read (strong game), yard lines (strong game), field green (leans game), score bug look (proven) up or gone, commercial text (strong commercial), score bug gone 8-45 s (leans commercial) or 45 s+ (strong commercial). Yard lines or green with the dependable score bug missing count for little: that's a promo or an ad shot on a field.
+- **Camera sure it's the game** (score bug or yard lines): an ad-sounding moment doesn't switch, and unsure sound counts as the game (so it comes back from a commercial sooner). A recognized commercial still gets past yard lines, but nothing gets past the score bug read right off the screen. This is what keeps the band's music during a stoppage from moving you.
+- **Leaning game** (green): holds an ad-sounding moment unless the sound is 75%+ ad-like.
+- **Camera sure it's a commercial**: an ad-sounding moment is a sure one (beats ESPN's guards), unsure sound is a commercial, and even game-like sound is one when commercial text and a long-gone score bug agree and the sound is only shaky (30%+ ad-like). Sound that's clearly the game is never overruled.
+- **Leaning commercial** (score bug just gone): ad-leaning sound (45%+) is a commercial, ad-sounding is a sure one.
+- Your "It's the game" keeps the camera from calling that game a commercial.
+
+The Live screen and your phone page show what the camera sees on each box ("score bug, yard lines", "score bug gone 12 s") and how the last call paired up ("Sound: commercial (72% ad) · Camera: score bug → the game (camera sees it)").
+
+**Other games:** the camera's word ("on" with the score bug, yard lines, green or a proven score bar; "commercial" with commercial text or the bug long gone) makes a box a good place to go, marks your game as back, or rules a box out.
 
 ## 6. When it switches (the game you're hearing)
 
 Checked in this order:
 1. Switched in the last 6 seconds: wait.
-2. Commercial heard (or confirmed by the camera):
+2. Commercial (sound and camera paired, section 5):
    - Bounced twice in 75 seconds (every game in commercial): sit on this one for 45 s, but jump as soon as ESPN shows any game back on.
    - ESPN warned of a break your TV hasn't reached yet: wait.
-   - A commercial it's sure of (fingerprint, or the camera agrees): go now.
+   - A commercial it's sure of (fingerprint, or the camera backs it up): go now.
    - ESPN guard (play just happened, clock running): stay.
    - Otherwise go.
 3. **Where to, in the order you want:**
@@ -140,11 +151,12 @@ Both phones need the same Wi-Fi, and the app open on the camera phone. Only a de
 
 ## 10. Weak spots for your setup
 
-1. **The camera is untested on your TV.** Distance, glare and each network's bug design decide how much it reads. Diagnostics show, per box, what it reads, whether the field and score bug shape are proven, and how many of the app's moves the outline confirmed.
-2. **ESPN's college play-by-play is late,** often 30-90 seconds and sometimes in bursts. That's why the mic leads and ESPN mostly guards and picks targets. Going back to your game is slow without the camera.
-3. **The start position is a guess** (box 1, or where it was). If it's wrong, every switch after it is wrong until you tap "Sound is already on this box," or (once the outline is proven) press an arrow on the TV remote so the camera sees where the sound is.
-4. **Your TV's delay** is assumed to be 40 s until it learns it from a few timeouts.
-5. **The mic's learning resets** if the app's data gets cleared. A few taps of each button retrains it.
+1. **The camera is untested on your TV.** Distance, glare and each network's bug design decide how much it reads, and the yard-line finder was tuned on drawn pictures, not your TV. Diagnostics show, per box, what it sees and its points, how many yard lines its last look found, whether lines, field and score bug shape are proven, and how many of the app's moves the outline confirmed.
+2. **Fields in commercials.** Baseball and other sports promos, or ads shot on a field, have green and lines too. A box where the score bug reads dependably catches it within about 8 s (lines without the bug count for little); on a box where it doesn't, a field-heavy promo can hold the sound there for its length.
+3. **ESPN's college play-by-play is late,** often 30-90 seconds and sometimes in bursts. That's why the mic leads and ESPN mostly guards and picks targets. Going back to your game is slow without the camera.
+4. **The start position is a guess** (box 1, or where it was). If it's wrong, every switch after it is wrong until you tap "Sound is already on this box," or (once the outline is proven) press an arrow on the TV remote so the camera sees where the sound is.
+5. **Your TV's delay** is assumed to be 40 s until it learns it from a few timeouts.
+6. **The mic's learning resets** if the app's data gets cleared. A few taps of each button retrains it.
 
 ## 11. Reading the Activity log
 
@@ -152,9 +164,9 @@ Both phones need the same Wi-Fi, and the app open on the camera phone. Only a de
 |---|---|
 | Commercial on box N → box M | Mic heard a commercial, moved to M |
 | Recognized a commercial it's heard before on box N → box M | Fingerprint match |
-| Sounds like a commercial and the camera sees no score bug on box N → box M | Mic and camera agreed |
-| Sounds like a commercial and the score bug is gone on box N → box M | Mic and a just-vanished score bug agreed |
-| Sounded like an ad, but box N just had a play / clock is running / camera sees the game. Staying. | A guard held it |
+| Sounds like a commercial and the camera agrees (score bug gone 12 s) on box N → box M | Mic and camera agreed |
+| Sounded like an ad, but box N just had a play / clock is running. Staying. | An ESPN guard held it |
+| Sounded like an ad, but the camera sees the game on box N (score bug, yard lines). Staying. | The camera held it |
 | ESPN: break coming on box N (...). Waiting for the commercial. | Warned; leaves when the sound turns |
 | Commercial started on box N after "..." → box M | The warned break came |
 | ...every game is in commercial, box M should be back first | Nothing live; went where the break started earliest |
