@@ -33,7 +33,12 @@ class CameraEye(
     private val onColor: (Bitmap) -> Unit,
     private val wantColor: () -> Boolean,
     private val onError: (String) -> Unit,
+    /** Where the grid is (fractions of the upright picture) and the layout, for reading each box's text. */
+    private val grid: () -> Pair<List<Pair<Double, Double>>, Int>?,
+    private val onText: (Int, String) -> Unit,
 ) {
+    private val ocr = TileOcr(onText, onError)
+    private var lastOcrAt = 0L
     private val executor = Executors.newSingleThreadExecutor()
     private var provider: ProcessCameraProvider? = null
     private var analysis: ImageAnalysis? = null
@@ -68,7 +73,7 @@ class CameraEye(
                 provider = p
                 val selector = ResolutionSelector.Builder()
                     .setAspectRatioStrategy(AspectRatioStrategy.RATIO_16_9_FALLBACK_AUTO_STRATEGY)
-                    .setResolutionStrategy(ResolutionStrategy(Size(1280, 720),
+                    .setResolutionStrategy(ResolutionStrategy(Size(1920, 1080),
                         ResolutionStrategy.FALLBACK_RULE_CLOSEST_HIGHER_THEN_LOWER))
                     .build()
                 val a = ImageAnalysis.Builder()
@@ -96,6 +101,7 @@ class CameraEye(
 
     fun stop() {
         orientation.disable()
+        ocr.close()
         runCatching { provider?.unbindAll() }
         provider = null; camera = null; analysis = null
     }
@@ -151,6 +157,19 @@ class CameraEye(
                 for (x in 0 until w) raw[yy * w + x] = buf.get(row + x * step * pxStride)
             }
             onFrame(upright(raw, w, h, rotDeg), rotDeg)
+            // Every half second, hand one box at full resolution to the text reader.
+            val g = grid()
+            if (g != null && now - lastOcrAt >= 450 && ocr.ready()) {
+                lastOcrAt = now
+                val full = ByteArray(srcW * srcH)
+                if (pxStride == 1) {
+                    for (yy in 0 until srcH) { buf.position(yy * rowStride); buf.get(full, yy * srcW, srcW) }
+                    buf.rewind()
+                } else {
+                    for (yy in 0 until srcH) for (x in 0 until srcW) full[yy * srcW + x] = buf.get(yy * rowStride + x * pxStride)
+                }
+                ocr.submit(GrayFrame(srcW, srcH, full), rotDeg, g.first, g.second)
+            }
             if (wantColor()) onColor(colorBitmap(img, step, w, h, rotDeg))
         } catch (e: Exception) {
             onError(e.message ?: "camera frame failed")

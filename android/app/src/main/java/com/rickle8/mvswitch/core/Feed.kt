@@ -461,6 +461,11 @@ class GameFeed(
 
     fun league(box: Int): String = slots[box]?.league.orEmpty()
 
+    /** Each game's team words: names, places, abbreviations (for reading score bugs off the screen). */
+    fun teamWords(): Map<Int, Set<String>> = slots.keys.associateWith { box ->
+        teams[box].orEmpty() + info[box]?.scores?.keys.orEmpty().map { it.lowercase() }.filter { it.length >= 2 }
+    }
+
     /** Player and team names for every game, lowercase (for the announcers' words). */
     fun names(): Set<String> = names.values.flatten().toSet()
 

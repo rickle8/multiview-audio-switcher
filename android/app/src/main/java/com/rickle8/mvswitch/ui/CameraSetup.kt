@@ -154,10 +154,11 @@ fun CameraSetup(state: EngineState, settings: Settings, onDismiss: () -> Unit) {
                     if (!state.cameraLive) "Not watching yet: the camera runs while the app is open with camera mode on."
                     else "Sound on box ${state.currentBox ?: "?"}" +
                         (state.cameraBox?.let { " (outline last flashed on box $it)" } ?: "") + "\n" +
-                        boxRects(settings.layout).keys.joinToString("   ") { b ->
+                        boxRects(settings.layout).keys.joinToString("\n") { b ->
                             val g = state.cameraGame[b]
-                            "Box $b: " + when (g) { true -> "game"; false -> "commercial"; null -> "learning the score bug" } +
-                                (state.cameraBars[b]?.let { " ($it%)" } ?: "")
+                            "Box $b: " + when (g) { true -> "game"; false -> "commercial"; null -> "learning" } +
+                                (state.cameraBars[b]?.let { " ($it%)" } ?: "") +
+                                (state.cameraText[b]?.let { "\n   reads: $it" } ?: "")
                         },
                     color = C.text, fontSize = 13.sp,
                 )

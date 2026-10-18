@@ -112,6 +112,8 @@ data class EngineState(
     val cameraBugs: Map<Int, DoubleArray?> = emptyMap(),
     /** Per box: game (true) / commercial (false) / not sure (null), as the camera sees it. */
     val cameraGame: Map<Int, Boolean?> = emptyMap(),
+    /** Per box: what the phone read in it (score bug text), for the setup screen. */
+    val cameraText: Map<Int, String> = emptyMap(),
     /** Per box: how much of the learned score bar is on screen, 0..100. */
     val cameraBars: Map<Int, Int?> = emptyMap(),
     /** Auto-finding the TV: progress or result. */
@@ -480,7 +482,8 @@ object Engine {
             cameraLive = n - cameraAt < 5,
             cameraBox = lastOutline?.takeIf { n - it.second < 30 }?.first,
             cameraBugs = cameraView?.bugArea?.takeIf { n - cameraAt < 5 }.orEmpty(),
-            cameraGame = cameraView?.showingGame?.takeIf { n - cameraAt < 5 }.orEmpty(),
+            cameraGame = cameraMerged.takeIf { n - cameraAt < 5 }.orEmpty(),
+            cameraText = tileRead.mapValues { (_, r) -> r.first.summary.ifBlank { "(no text)" } }.takeIf { n - cameraAt < 5 }.orEmpty(),
             cameraBars = cameraView?.scoreBar?.takeIf { n - cameraAt < 5 }.orEmpty(),
             cameraFind = findStatus,
             tvLinked = (tv as? SamsungRemote)?.linked,
@@ -895,6 +898,7 @@ object Engine {
     /** The setup screen is open and wants the color picture. */
     @Volatile var wantCameraColor = false
     @Volatile private var cameraView: com.rickle8.mvswitch.core.CameraView? = null
+    @Volatile private var cameraMerged: Map<Int, Boolean?> = emptyMap()
     @Volatile private var cameraAt = -1e9
     @Volatile private var cameraRotation = -1
     private var watcher: com.rickle8.mvswitch.core.ScreenWatcher? = null
@@ -918,6 +922,50 @@ object Engine {
         private set
 
     fun onCameraColor(b: android.graphics.Bitmap) { cameraColor = b }
+
+    // What the phone's text recognition reads in each box.
+    private val tileRead = java.util.concurrent.ConcurrentHashMap<Int, Pair<com.rickle8.mvswitch.core.TileRead, Double>>()
+    private val tileGameAt = java.util.concurrent.ConcurrentHashMap<Int, Double>()
+    private val tileMismatchLogged = HashSet<String>()
+
+    /** Where the grid is and the layout, for the text reader (null when the camera isn't set up). */
+    fun cameraGrid(): Pair<List<Pair<Double, Double>>, Int>? {
+        val s = _settings.value
+        if (!s.useCamera || finding || s.gridRotation < 0) return null
+        return s.gridCorners.chunked(2).map { it[0] to it[1] } to s.layout
+    }
+
+    /** The text read off one box: a score bug means that box is showing its game. */
+    fun onTileText(box: Int, text: String) {
+        val n = now()
+        val f = feed ?: previewFeed
+        val teams = f?.teamWords().orEmpty()
+        val scores = f?.info?.mapValues { it.value.scores.values.toList() }.orEmpty()
+        val r = com.rickle8.mvswitch.core.TileText.read(text, teams, scores)
+        tileRead[box] = r to n
+        if (r.game) tileGameAt[box] = n
+        // The games in the Games tab in a different order than on the TV? Say so once.
+        val other = r.showsGameOf
+        if (r.game && other != null && other != box) {
+            val key = "$box>$other"
+            if (tileMismatchLogged.add(key)) {
+                val name = _settings.value.slots[other]?.let { it.name.ifBlank { it.team } } ?: "box $other's"
+                log("Camera: box $box on the TV is showing the $name game (it's set as box $other in Games).")
+            }
+        }
+    }
+
+    /** Game (true) / commercial (false) / not sure, from the score bug's text and its look together. */
+    private fun cameraVerdict(box: Int, bug: Boolean?, n: Double): Boolean? {
+        val textAt = tileGameAt[box]
+        if (textAt != null && n - textAt < 25) return true          // read a score bug lately: the game
+        if (bug == true) return true                                 // the bug's shape is there
+        if (bug == false) return false                               // the bug's been gone ~25 s
+        val read = tileRead[box]
+        // Text reading works on this box (it has read a bug before) but no bug for 40 s: commercial.
+        if (textAt != null && read != null && n - read.second < 10 && n - textAt > 40) return false
+        return null
+    }
 
     /** Look for the TV in the camera picture (a few seconds, while the games play). */
     fun findTv() {
@@ -977,6 +1025,7 @@ object Engine {
         // Score bars are only learned from boxes known to be showing the game.
         val gameLikely = (1..boxCount(s)).filter { b ->
             (b == cur && lastResult?.heard == Heard.GAME) ||
+                (tileGameAt[b]?.let { n - it < 10 } == true) ||
                 (c != null && c.outlook(b, n, ignoreCamera = true).first == com.rickle8.mvswitch.core.Controller.Outlook.LIVE)
         }.toSet()
         // ...and never from one known to be in commercial.
@@ -987,7 +1036,8 @@ object Engine {
         val v = watcher!!.frame(img, gameLikely, adLikely)
         cameraView = v
         cameraAt = n
-        c?.camera = n to v.showingGame
+        cameraMerged = (1..boxCount(s)).associateWith { cameraVerdict(it, v.showingGame[it], n) }
+        c?.camera = n to cameraMerged
         // Where did the sound just go? YouTube TV flashes an outline on the box it moved to.
         if (v.outlineAppeared != null) lastOutline = v.outlineAppeared to n
         val running = job?.isActive == true && !paused && !autoPaused && !waitingForMultiview && lockedBox == null
