@@ -1,8 +1,8 @@
-# Multiview Audio: how it decides (v1.0.75)
+# Multiview Audio: how it decides (v1.0.76)
 
 Built for one setup: a Samsung QN75Q8F, YouTube TV multiview with 4 games (2x2), and a Galaxy S21 on a stand facing the TV doing everything (listening, watching, pressing the TV's buttons). College football Saturdays, NFL Sundays.
 
-**The short version:** every second the mic decides whether the box you're hearing is a commercial. If it is, the app presses arrows to move the sound to the best other game that's on, then goes back when your game returns. ESPN and the camera help it decide when and where. Neither one moves the sound on its own, and anything you tap wins.
+**The short version:** every second the mic decides whether the box you're hearing is a commercial. If it is, the app presses arrows to move the sound to the best other game that's on, then goes back when your game returns. ESPN and the camera help it decide when and where, and anything you tap wins. You don't have to touch the camera phone: your own phone is the remote (section 8).
 
 ---
 
@@ -22,8 +22,8 @@ When you tap Start: it turns the TV on if it's off, connects, and starts listeni
 
 YouTube TV never tells the app which box has the sound, so the app keeps count itself:
 - Every arrow it presses moves its count (edges don't wrap). The arrows on the Remote tab count too.
-- **If it's ever wrong, tap the box and pick "Sound is already on this box."** That's the fix for everything downstream.
-- Your TV remote's arrows aren't seen. The camera may notice the outline flash and ask "Camera saw the sound move to box N. Is it there?" It only acts on Yes.
+- **Your TV remote:** YouTube TV flashes a white outline on the box the sound moves to. Every time the app moves the sound itself, the camera checks the outline flashed on the right box. Once it has been right on the last 3 moves (and wrong on none of the last 5), it follows your TV-remote moves on its own ("Camera: you moved the sound to box N. Going with it."). Until then it asks "Camera saw the sound move to box N. Is it there?" on both phones, and your answers count toward proving it. If it ever "moves" more than 3 times in 2 minutes, it's misreading something and goes back to asking.
+- **If it's ever wrong, tap the box and pick "Sound is already on this box"** (on either phone). That's the fix for everything downstream.
 - Homing (pressing up/left to reset to box 1) is off, because it opens YouTube TV's menus.
 
 ## 3. Is it a commercial? (the mic)
@@ -73,7 +73,11 @@ YouTube TV never tells the app which box has the sound, so the app keeps count i
 - Read in the last 10 s: that game is on.
 - Nothing for 45 s on a box it normally reads well (4+ reads in the minute before), while it still reads the other boxes: commercial. 45 s is longer than replays and close-ups.
 
+**Commercial text:** web addresses, APR or MSRP, "see dealer", "closed course", "ask your doctor", 1-800 numbers, two of "shop now" / "lease" / "limited time" and the like, with no score bug in the same read: that box is in a commercial, no waiting.
+
 **The score bug's shape** (learned per box) only counts once it has matched the text: present twice during play and gone once in a commercial. If something surer contradicts it, it's relearned.
+
+**The field:** in each box it measures how much of the picture is football-field green. A wide shot of the field in the last 8 s says the game is on (never the other way round, since close-ups and replays go long stretches without it). It counts on a box once it has matched the score text or the sound: field during the game 3 times, none in a commercial once.
 
 **How the camera's word is used:**
 - Other games: "on" makes it a good place to go and marks your game as back. "Commercial" means skip it.
@@ -102,20 +106,32 @@ When it leaves your game for a commercial, it remembers it (not the stops along 
 
 Tapping a box, "Sound is already on this box," or Remote-tab arrows drops the plan to go back. Wherever you put the sound is what it comes back to after the next commercial.
 
-## 8. On your TV, these do nothing
+## 8. Your phone is the remote
+
+The camera phone serves a control page on your home Wi-Fi. Scan the code in Settings > Camera (or on the camera setup screen) with your own phone and bookmark it. It has:
+- the four boxes with their status, which one has the sound, and what the camera says about each
+- **It's an ad** / **It's the game**
+- tap a box: play it, "sound is already on this box", lock it
+- start, stop, pause, and the camera's "Is it there?" question
+- what the camera sees, with the boxes it reads drawn on it, and "Find the TV again"
+- the activity log, and **Copy diagnostics** to paste into a chat
+
+Both phones need the same Wi-Fi, and the app open on the camera phone. Only a device with the link's key can use it.
+
+## 9. On your TV, these do nothing
 
 - **Open YouTube TV on start** and **pause when YouTube TV isn't on screen:** your TV won't give the app its app list, so these never start ("YouTube TV app: (not found yet)" in diagnostics). The same goes for "On the TV" and the volume readout.
 - Roku support, 2- and 3-game layouts, "something else" boxes, hopping, HDMI input teaching: unused by you, and they don't run during games.
 
-## 9. Weak spots for your setup
+## 10. Weak spots for your setup
 
-1. **Score bug reading is untested on your TV.** Distance, glare and each network's bug design all matter. If the Live screen keeps saying "no score bugs read yet" during play, the camera isn't helping. Diagnostics show what it reads in each box.
+1. **The camera is untested on your TV.** Distance, glare and each network's bug design decide how much it reads. Diagnostics show, per box, what it reads, whether the field and score bug shape are proven, and how many of the app's moves the outline confirmed.
 2. **ESPN's college play-by-play is late,** often 30-90 seconds and sometimes in bursts. That's why the mic leads and ESPN mostly guards and picks targets. Going back to your game is slow without the camera.
-3. **The start position is a guess** (box 1, or where it was). If it's wrong, every switch after it is wrong until you tap "Sound is already on this box."
+3. **The start position is a guess** (box 1, or where it was). If it's wrong, every switch after it is wrong until you tap "Sound is already on this box," or (once the outline is proven) press an arrow on the TV remote so the camera sees where the sound is.
 4. **Your TV's delay** is assumed to be 40 s until it learns it from a few timeouts.
 5. **The mic's learning resets** if the app's data gets cleared. A few taps of each button retrains it.
 
-## 10. Reading the Activity log
+## 11. Reading the Activity log
 
 | Line | Meaning |
 |---|---|
@@ -131,3 +147,4 @@ Tapping a box, "Sound is already on this box," or Remote-tab arrows drops the pl
 | Camera: box N's score bug was learned wrong (...). Learning it again. | Shape didn't match the text or your tap |
 | Camera: the TV moved in the picture. Lined it up again. | The minute check or a bump moved the grid |
 | Camera was right/wrong: the sound moved to box N. | Your answer to the outline question |
+| Camera: you moved the sound to box N. Going with it. | Followed your TV remote (outline proven) |
