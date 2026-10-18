@@ -1,4 +1,4 @@
-# Multiview Audio: how it decides (v1.0.76)
+# Multiview Audio: how it decides (v1.0.77)
 
 Built for one setup: a Samsung QN75Q8F, YouTube TV multiview with 4 games (2x2), and a Galaxy S21 on a stand facing the TV doing everything (listening, watching, pressing the TV's buttons). College football Saturdays, NFL Sundays.
 
