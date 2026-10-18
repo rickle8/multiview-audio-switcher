@@ -1,4 +1,4 @@
-# Multiview Audio: how it decides (v1.0.77)
+# Multiview Audio: how it decides (v1.0.79)
 
 Built for one setup: a Samsung QN75Q8F, YouTube TV multiview with 4 games (2x2), and a Galaxy S21 on a stand facing the TV doing everything (listening, watching, pressing the TV's buttons). College football Saturdays, NFL Sundays.
 
@@ -51,7 +51,7 @@ YouTube TV never tells the app which box has the sound, so the app keeps count i
 
 ## 4. What ESPN tells it
 
-**Status** is ESPN's own: live, halftime, end of a quarter, final, pregame. (Changed in v1.0.75: a timeout, touchdown or kickoff no longer flips a game to BREAK for 2.5 minutes. That's what made live games show BREAK.)
+**Status** is ESPN's own: live, halftime, end of a quarter, final, pregame. (Changed in v1.0.75: a timeout, touchdown or kickoff no longer flips a game to BREAK for 2.5 minutes. That's what made live games show BREAK.) Halftime counts as a show, not a commercial (section 6), and the box says HALFTIME.
 
 **Your TV runs behind ESPN.** It assumes 40 seconds until it learns the real delay, from commercials that start right after a timeout or from the crowd's roar after big plays.
 
@@ -73,6 +73,8 @@ YouTube TV never tells the app which box has the sound, so the app keeps count i
 - Read in the last 10 s: that game is on.
 - Nothing for 45 s on a box it normally reads well (4+ reads in the minute before), while it still reads the other boxes: commercial. 45 s is longer than replays and close-ups.
 
+**The ticker:** some networks (ESPN's BottomLine) run other games' scores and headlines along the bottom. Each line it reads comes with where it sits, so a ticker line (a league name like NCAAF, two of your games in one line, or along the very bottom another game's score, "final" or a headline) never counts as the box's own score bug or says which game it is. A ticker with no score bug means the network's own programming is on (tickers don't run in commercials): a show, not the game and not a commercial. The score bug's own HALF or FINAL doesn't count as play either.
+
 **Commercial text:** web addresses, APR or MSRP, "see dealer", "closed course", "ask your doctor", 1-800 numbers, two of "shop now" / "lease" / "limited time" and the like, with no score bug in the same read: that box is in a commercial, no waiting.
 
 **The score bug's shape** (learned per box) only counts once it has matched the text: present twice during play and gone once in a commercial. If something surer contradicts it, it's relearned.
@@ -93,9 +95,15 @@ Checked in this order:
    - A commercial it's sure of (fingerprint, or the camera agrees): go now.
    - ESPN guard (play just happened, clock running): stay.
    - Otherwise go.
-3. **Where to:** games that are on first, then unknown ones, ranked by how exciting they are (close, late, red zone, overtime). Never one in commercial or about to go to one. If every game is in commercial, the one whose break started first (at least 60 s ago). If none qualify, it stays.
-4. Game heard: if the game you were watching is back, go back to it.
-5. Jumping to a more exciting game mid-play ("hopping"): off.
+3. **Where to, in the order you want:**
+   - a game being played (sure ones first, then ones it can't vouch for), most exciting first (close, late, red zone, overtime)
+   - no game being played anywhere: a show (another game's halftime show, or a box where the camera sees the network's ticker without the game), the camera's sure ones first
+   - nothing but commercials: the one whose break started first (at least 60 s ago)
+   - nothing at all: it stays
+4. **Halftime on your game:** once your TV reaches it, it goes to a game being played. If none is, it stays for the halftime show.
+5. **Parked on a show** because nothing was being played (or the camera has seen only the network's show there for a minute): it leaves for a live game as soon as there is one. A commercial during the show is handled like any other.
+6. Game heard: if the game you were watching is back, go back to it.
+7. Jumping to a more exciting game mid-play ("hopping"): off.
 
 ## 7. Going back to your game
 
@@ -103,6 +111,8 @@ When it leaves your game for a commercial, it remembers it (not the stops along 
 - the camera reads your game's score bug again (fastest), or
 - ESPN shows a play since the break that your TV has had time to show, or
 - the break has gone on longer than normal (2.5-8 minutes; halftime 20).
+
+At halftime it remembers your game even if it parks on its halftime show and then leaves for a live game, so it comes back for the second half.
 
 Tapping a box, "Sound is already on this box," or Remote-tab arrows drops the plan to go back. Wherever you put the sound is what it comes back to after the next commercial.
 
@@ -143,6 +153,9 @@ Both phones need the same Wi-Fi, and the app open on the camera phone. Only a de
 | Commercial started on box N after "..." → box M | The warned break came |
 | ...every game is in commercial, box M should be back first | Nothing live; went where the break started earliest |
 | Commercials everywhere. Staying on box N for a bit. | Bounced twice in 75 s |
+| ...no game is being played, box M has the halftime show → box M | Nothing live; a show beats a commercial |
+| ...No other game is being played: staying for the halftime show. | Your game's halftime, nothing live elsewhere |
+| Box M is being played; leaving the halftime show on box N → box M | A live game came back |
 | Box N is back from commercial → box N | Went back to your game |
 | Camera: box N's score bug was learned wrong (...). Learning it again. | Shape didn't match the text or your tap |
 | Camera: the TV moved in the picture. Lined it up again. | The minute check or a bump moved the grid |
