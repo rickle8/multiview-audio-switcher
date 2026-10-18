@@ -40,6 +40,10 @@ data class Settings(
     val useCamera: Boolean = false,
     /** The multiview grid's corners in the camera picture, as fractions: TL x,y, TR, BR, BL. */
     val gridCorners: List<Double> = listOf(0.1, 0.2, 0.9, 0.2, 0.9, 0.8, 0.1, 0.8),
+    /** Which way the phone was turned when the corners were set (-1: never set; found again if it changes). */
+    val gridRotation: Int = -1,
+    /** Camera zoom, 0 = wide. */
+    val cameraZoom: Float = 0f,
     /** Go back to the game you were watching when its commercial ends. */
     val returnToGame: Boolean = true,
     val breakSecs: Int = 150,
@@ -74,7 +78,8 @@ data class Settings(
         .put("layout", layout).put("homing2", homing).put("homePresses", homePresses)
         .put("useMic", useMic).put("micSensitivity", micSensitivity.toDouble())
         .put("proactive", proactive).put("hopping2", hopping.name).put("returnToGame", returnToGame)
-        .put("useCamera", useCamera).put("gridCorners", org.json.JSONArray(gridCorners)).put("breakSecs", breakSecs)
+        .put("useCamera", useCamera).put("gridCorners", org.json.JSONArray(gridCorners))
+        .put("gridRotation", gridRotation).put("cameraZoom", cameraZoom.toDouble()).put("breakSecs", breakSecs)
         .put("league", league)
         .put("githubToken", githubToken)
         .put("openYouTubeTv", openYouTubeTv)
@@ -125,6 +130,8 @@ data class Settings(
                 proactive = j.optBoolean("proactive", d.proactive),
                 returnToGame = j.optBoolean("returnToGame", true),
                 useCamera = j.optBoolean("useCamera", false),
+                gridRotation = j.optInt("gridRotation", -1),
+                cameraZoom = j.optDouble("cameraZoom", 0.0).toFloat(),
                 gridCorners = j.optJSONArray("gridCorners")?.let { a -> (0 until a.length()).map { a.optDouble(it) } }
                     ?.takeIf { it.size == 8 && it.all { v -> !v.isNaN() } } ?: d.gridCorners,
                 hopping = runCatching { Hopping.valueOf(j.optString("hopping2")) }.getOrDefault(d.hopping),

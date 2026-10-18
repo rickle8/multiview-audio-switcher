@@ -177,10 +177,10 @@ class Controller(
      * end of quarter (and nothing since) means it's probably in commercial; a break
      * play ESPN has but the TV hasn't reached yet means a commercial is coming.
      */
-    fun outlook(box: Int, now: Double, status: Map<Int, GameStatus> = feedStatus()): Pair<Outlook, String> {
+    fun outlook(box: Int, now: Double, status: Map<Int, GameStatus> = feedStatus(), ignoreCamera: Boolean = false): Pair<Outlook, String> {
         if (status[box] == GameStatus.BREAK) return Outlook.BREAK to (info(box)?.detail?.ifBlank { null } ?: "break")
         // The camera sees the box itself: nothing beats that.
-        when (cameraSays(box, now)) {
+        if (!ignoreCamera) when (cameraSays(box, now)) {
             true -> return Outlook.LIVE to "camera sees the game"
             false -> return Outlook.BREAK to "camera sees a commercial"
             null -> Unit

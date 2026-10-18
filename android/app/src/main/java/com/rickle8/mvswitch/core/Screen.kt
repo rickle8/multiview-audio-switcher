@@ -220,3 +220,124 @@ class ScreenWatcher(private val layout: Int, private val w: Int = 192, private v
     /** You said the sound is on this box: trust that until the picture says otherwise. */
     fun setHighlighted(box: Int) { highlighted = box; bestRuns = 3; lastBest = box }
 }
+
+/**
+ * Finds the TV in the camera picture on its own: the screen is the one big area
+ * where the picture keeps changing (four live games), while the room stays still.
+ * Feed it frames for several seconds, then ask for the grid's four corners.
+ */
+class GridFinder(private val cols: Int = 96) {
+    private var rows = 0
+    private var cellW = 1.0
+    private var cellH = 1.0
+    private var fw = 0
+    private var fh = 0
+    private var prev: FloatArray? = null
+    private var motion: FloatArray? = null
+    private var bright: FloatArray? = null
+    var frames = 0
+        private set
+
+    private fun cells(f: GrayFrame): FloatArray {
+        if (fw != f.width || fh != f.height) {
+            fw = f.width; fh = f.height
+            rows = maxOf(8, (cols * f.height.toDouble() / f.width).toInt())
+            cellW = f.width.toDouble() / cols; cellH = f.height.toDouble() / rows
+            prev = null; motion = null; bright = null; frames = 0
+        }
+        val out = FloatArray(cols * rows)
+        for (r in 0 until rows) for (c in 0 until cols) {
+            val x0 = (c * cellW).toInt(); val x1 = maxOf(x0 + 1, ((c + 1) * cellW).toInt())
+            val y0 = (r * cellH).toInt(); val y1 = maxOf(y0 + 1, ((r + 1) * cellH).toInt())
+            var s = 0; var n = 0
+            var y = y0
+            while (y < y1) { var x = x0; while (x < x1) { s += f.at(x, y); n++; x += 2 }; y += 2 }
+            out[r * cols + c] = s.toFloat() / maxOf(1, n)
+        }
+        return out
+    }
+
+    fun add(f: GrayFrame) {
+        val cur = cells(f)
+        val p = prev
+        val m = motion ?: FloatArray(cur.size).also { motion = it }
+        val b = bright ?: FloatArray(cur.size).also { bright = it }
+        if (p != null) for (i in cur.indices) m[i] += abs(cur[i] - p[i])
+        for (i in cur.indices) b[i] += cur[i]
+        prev = cur
+        frames++
+    }
+
+    /** Enough frames to tell the moving screen from the still room. */
+    val ready: Boolean get() = frames >= 12
+
+    /** The grid's corners as fractions of the frame (TL, TR, BR, BL), or null if there's no clear TV. */
+    fun find(): List<Pair<Double, Double>>? {
+        val m = motion ?: return null
+        if (frames < 4) return null
+        val n = m.size
+        val sorted = m.sorted()
+        val hi = sorted[(n * 0.97).toInt().coerceAtMost(n - 1)]
+        if (hi < frames * 2f) return null // nothing on screen is moving
+        val thr = maxOf(hi * 0.18f, sorted[n / 2] * 3f)
+        val on = BooleanArray(n) { m[it] >= thr }
+        // Close small gaps (score bars, the black lines between games) so the screen is one piece.
+        val closed = BooleanArray(n)
+        for (r in 0 until rows) for (c in 0 until cols) {
+            var any = false
+            for (dr in -2..2) for (dc in -2..2) {
+                val rr = r + dr; val cc = c + dc
+                if (rr in 0 until rows && cc in 0 until cols && on[rr * cols + cc]) { any = true }
+            }
+            closed[r * cols + c] = any
+        }
+        // Largest connected piece.
+        val label = IntArray(n) { -1 }
+        var best = -1; var bestSize = 0; var next = 0
+        val stack = IntArray(n)
+        for (start in 0 until n) {
+            if (!closed[start] || label[start] >= 0) continue
+            var sp = 0; stack[sp++] = start; label[start] = next; var size = 0
+            while (sp > 0) {
+                val i = stack[--sp]; size++
+                val r = i / cols; val c = i % cols
+                for ((dr, dc) in listOf(-1 to 0, 1 to 0, 0 to -1, 0 to 1)) {
+                    val rr = r + dr; val cc = c + dc
+                    if (rr !in 0 until rows || cc !in 0 until cols) continue
+                    val j = rr * cols + cc
+                    if (closed[j] && label[j] < 0) { label[j] = next; stack[sp++] = j }
+                }
+            }
+            if (size > bestSize) { bestSize = size; best = next }
+            next++
+        }
+        if (best < 0 || bestSize < n * 0.04) return null // too small to be the TV
+        // Corners: the piece's extreme points along the diagonals, using only cells that really moved
+        // (the closing step padded the edges by two cells).
+        var tl = Double.MAX_VALUE; var br = -Double.MAX_VALUE; var tr = -Double.MAX_VALUE; var bl = Double.MAX_VALUE
+        var ptl = 0.0 to 0.0; var pbr = 0.0 to 0.0; var ptr = 0.0 to 0.0; var pbl = 0.0 to 0.0
+        for (i in 0 until n) {
+            if (label[i] != best || !on[i]) continue
+            val x = (i % cols + 0.5) / cols; val y = (i / cols + 0.5) / rows
+            // Weight by the frame's shape so "diagonal" means corner of the picture, not of a square.
+            val ax = x * cols; val ay = y * rows
+            if (ax + ay < tl) { tl = ax + ay; ptl = x to y }
+            if (ax + ay > br) { br = ax + ay; pbr = x to y }
+            if (ax - ay > tr) { tr = ax - ay; ptr = x to y }
+            if (ax - ay < bl) { bl = ax - ay; pbl = x to y }
+        }
+        // Push each corner out by half a cell to the true edge.
+        val hx = 0.5 / cols; val hy = 0.5 / rows
+        val corners = listOf(
+            (ptl.first - hx) to (ptl.second - hy), (ptr.first + hx) to (ptr.second - hy),
+            (pbr.first + hx) to (pbr.second + hy), (pbl.first - hx) to (pbl.second + hy),
+        ).map { (x, y) -> x.coerceIn(0.0, 1.0) to y.coerceIn(0.0, 1.0) }
+        // Sanity: a real screen is a decent size and roughly TV-shaped (wider than tall in the picture's terms).
+        val wTop = corners[1].first - corners[0].first
+        val hLeft = corners[3].second - corners[0].second
+        if (wTop < 0.15 || hLeft < 0.1) return null
+        return corners
+    }
+
+    fun reset() { prev = null; motion = null; bright = null; frames = 0 }
+}

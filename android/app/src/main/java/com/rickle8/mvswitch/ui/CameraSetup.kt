@@ -17,6 +17,11 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.material3.Button
+import androidx.compose.material3.Slider
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
@@ -51,9 +56,16 @@ private fun GrayFrame.toBitmap(): Bitmap {
 @Composable
 fun CameraSetup(state: EngineState, settings: Settings, onDismiss: () -> Unit) {
     var frame by remember { mutableStateOf(Engine.cameraFrame) }
-    LaunchedEffect(Unit) { while (true) { frame = Engine.cameraFrame; delay(400) } }
-    val corners = remember { mutableStateListOf(*settings.gridCorners.toTypedArray()) }
+    var color by remember { mutableStateOf(Engine.cameraColor) }
+    DisposableEffect(Unit) {
+        Engine.wantCameraColor = true
+        onDispose { Engine.wantCameraColor = false }
+    }
+    LaunchedEffect(Unit) { while (true) { frame = Engine.cameraFrame; color = Engine.cameraColor; delay(300) } }
+    // Follows the saved corners (so an automatic find shows up right away).
+    val corners = remember(settings.gridCorners) { mutableStateListOf(*settings.gridCorners.toTypedArray()) }
     var dragging by remember { mutableStateOf(-1) }
+    var zoom by remember { mutableFloatStateOf(settings.cameraZoom) }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -63,14 +75,23 @@ fun CameraSetup(state: EngineState, settings: Settings, onDismiss: () -> Unit) {
         title = { Text("Line up the camera") },
         text = {
             Column(Modifier.verticalScroll(rememberScrollState())) {
-                Text("Put this phone on a stand facing the TV, plugged in. Open multiview, then drag the four " +
-                    "dots onto the outer corners of the four-game grid.", color = C.muted, fontSize = 13.sp)
+                Text("Put this phone on a stand facing the TV (standing up or on its side), plugged in, with " +
+                    "multiview and the games playing. It finds the TV on its own; drag a dot to fine-tune.",
+                    color = C.muted, fontSize = 13.sp)
+                Spacer(Modifier.height(8.dp))
+                Button(onClick = { Engine.findTv() }, modifier = Modifier.fillMaxWidth().height(46.dp),
+                    shape = RoundedCornerShape(14.dp)) { Text("Find the TV automatically") }
+                state.cameraFind?.let {
+                    Text(it, color = if (it.startsWith("Found")) C.accent else C.muted, fontSize = 13.sp,
+                        modifier = Modifier.padding(top = 6.dp))
+                }
                 Spacer(Modifier.height(10.dp))
                 val f = frame
                 if (f == null) {
                     Text("Waiting for the camera…", color = C.muted)
                 } else {
-                    val bmp = remember(f) { f.toBitmap().asImageBitmap() }
+                    val c = color?.takeIf { it.width == f.width && it.height == f.height }
+                    val bmp = remember(f, c) { (c ?: f.toBitmap()).asImageBitmap() }
                     Canvas(
                         Modifier.fillMaxWidth().aspectRatio(f.width.toFloat() / f.height)
                             .pointerInput(Unit) {
@@ -112,7 +133,11 @@ fun CameraSetup(state: EngineState, settings: Settings, onDismiss: () -> Unit) {
                         pts.forEach { drawCircle(Color(0xFF6CB4FF), radius = 16f, center = it) }
                     }
                 }
-                Spacer(Modifier.height(10.dp))
+                Spacer(Modifier.height(8.dp))
+                Text("Zoom: make the TV fill as much of the picture as you can (it finds the TV again after).",
+                    color = C.muted, fontSize = 12.sp)
+                Slider(value = zoom, onValueChange = { zoom = it },
+                    onValueChangeFinished = { Engine.setCameraZoom(zoom) })
                 Text(
                     if (!state.cameraLive) "Not watching yet: the camera runs while the app is open with camera mode on."
                     else "Sound on box: ${state.cameraBox ?: "not sure yet"}\n" +

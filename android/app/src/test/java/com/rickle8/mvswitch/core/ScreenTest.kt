@@ -73,4 +73,62 @@ class ScreenTest {
         assertTrue(out[0] > 150f)
         assertTrue(out[w * h - 1] < 50f)
     }
+
+    /** A camera frame: a still room, with the TV (moving picture) inside the given quad. */
+    private fun room(fw: Int, fh: Int, quad: List<Pair<Double, Double>>, t: Int, rnd: Random): GrayFrame {
+        val px = ByteArray(fw * fh)
+        val hom = Homography(quad.map { (x, y) -> x * fw to y * fh })
+        // Room: fixed pattern plus sensor noise.
+        for (y in 0 until fh) for (x in 0 until fw) {
+            val v = 60 + 30 * kotlin.math.sin(x / 13.0) * kotlin.math.cos(y / 17.0) + rnd.nextGaussian() * 3
+            px[y * fw + x] = v.toInt().coerceIn(0, 255).toByte()
+        }
+        // Screen: sample the unit square densely and paint moving content.
+        val steps = 400
+        for (j in 0 until steps) for (i in 0 until steps) {
+            val u = (i + 0.5) / steps; val v = (j + 0.5) / steps
+            val gap = kotlin.math.abs(u - 0.5) < 0.005 || kotlin.math.abs(v - 0.5) < 0.008
+            val bar = (v % 0.5) > 0.42 && (v % 0.5) < 0.46
+            val value = when {
+                gap -> 10.0
+                bar -> 220.0
+                else -> 120 + 80 * kotlin.math.sin(u * 40 + t * 1.3 + v * 7) + rnd.nextGaussian() * 10
+            }
+            val (x, y) = hom.map(u, v)
+            val xi = x.toInt(); val yi = y.toInt()
+            if (xi in 0 until fw && yi in 0 until fh) px[yi * fw + xi] = value.toInt().coerceIn(0, 255).toByte()
+        }
+        return GrayFrame(fw, fh, px)
+    }
+
+    private fun near(a: List<Pair<Double, Double>>, b: List<Pair<Double, Double>>, tol: Double) =
+        a.zip(b).all { (p, q) -> kotlin.math.abs(p.first - q.first) < tol && kotlin.math.abs(p.second - q.second) < tol }
+
+    @Test fun findsTheTvOnItsOwnSideways() {
+        val quad = listOf(0.18 to 0.22, 0.86 to 0.18, 0.88 to 0.80, 0.16 to 0.76)
+        val gf = GridFinder()
+        val rnd = Random(5)
+        for (t in 0 until 14) gf.add(room(320, 180, quad, t, rnd))
+        assertTrue(gf.ready)
+        val found = gf.find()!!
+        assertTrue("found $found", near(found, quad, 0.04))
+    }
+
+    @Test fun findsTheTvWithThePhoneUpright() {
+        // Phone standing vertical: the TV is a band across the middle of a tall picture.
+        val quad = listOf(0.05 to 0.36, 0.95 to 0.37, 0.94 to 0.62, 0.06 to 0.61)
+        val gf = GridFinder()
+        val rnd = Random(6)
+        for (t in 0 until 14) gf.add(room(180, 320, quad, t, rnd))
+        val found = gf.find()!!
+        assertTrue("found $found", near(found, quad, 0.04))
+    }
+
+    @Test fun noTvMeansNoGuess() {
+        val gf = GridFinder()
+        val rnd = Random(7)
+        val px = ByteArray(320 * 180) { 50 }
+        for (t in 0 until 14) gf.add(GrayFrame(320, 180, ByteArray(320 * 180) { (50 + rnd.nextGaussian() * 2).toInt().toByte() }))
+        assertEquals(null, gf.find())
+    }
 }

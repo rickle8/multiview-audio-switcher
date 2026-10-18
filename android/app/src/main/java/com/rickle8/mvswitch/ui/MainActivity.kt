@@ -46,13 +46,24 @@ class MainActivity : ComponentActivity() {
         } else {
             window.clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
             eye?.stop(); eye = null
+            Engine.cameraControls = null
         }
     }
 
     private fun startCamera() {
         if (eye != null) return
-        eye = com.rickle8.mvswitch.camera.CameraEye(this, Engine::onCameraFrame) { msg -> Engine.cameraError(msg) }
-            .also { it.start(this) }
+        val e = com.rickle8.mvswitch.camera.CameraEye(this,
+            onFrame = Engine::onCameraFrame,
+            onColor = Engine::onCameraColor,
+            wantColor = { Engine.wantCameraColor },
+            onError = { msg -> Engine.cameraError(msg) })
+        eye = e
+        e.start(this)
+        e.setZoom(Engine.settings.value.cameraZoom)
+        Engine.cameraControls = object : Engine.CameraControls {
+            override fun zoom(linear: Float) = e.setZoom(linear)
+            override fun meterOn(cx: Double, cy: Double) = runOnUiThread { e.meterOn(cx, cy) }
+        }
     }
 
     /** True while the Remote tab is showing: phone volume buttons then control the TV. */

@@ -112,6 +112,8 @@ data class EngineState(
     val cameraGame: Map<Int, Boolean?> = emptyMap(),
     /** Per box: how much of the learned score bar is on screen, 0..100. */
     val cameraBars: Map<Int, Int?> = emptyMap(),
+    /** Auto-finding the TV: progress or result. */
+    val cameraFind: String? = null,
     /** Samsung: whether the TV connection is up right now (null for other TVs). */
     val tvLinked: Boolean? = null,
     /** While connecting: what it's waiting for ("Press Allow on the TV"). */
@@ -477,6 +479,7 @@ object Engine {
             cameraBox = cameraView?.highlighted?.takeIf { n - cameraAt < 5 },
             cameraGame = cameraView?.showingGame?.takeIf { n - cameraAt < 5 }.orEmpty(),
             cameraBars = cameraView?.scoreBar?.takeIf { n - cameraAt < 5 }.orEmpty(),
+            cameraFind = findStatus,
             tvLinked = (tv as? SamsungRemote)?.linked,
             tvWaiting = tvWaiting,
             tvKeyboard = tvKeyboard,
@@ -869,23 +872,88 @@ object Engine {
     }
 
     // ---------------------------------------------------------------- camera
+    /** What the screen can ask of the camera on the phone (zoom, where to expose). */
+    interface CameraControls {
+        fun zoom(linear: Float)
+        fun meterOn(cx: Double, cy: Double)
+    }
+    @Volatile var cameraControls: CameraControls? = null
+
     /** The latest camera frame, for lining up the grid on the setup screen. */
     @Volatile var cameraFrame: com.rickle8.mvswitch.core.GrayFrame? = null
         private set
+    /** A color picture of what the camera sees, while the setup screen is open. */
+    @Volatile var cameraColor: android.graphics.Bitmap? = null
+        private set
+    /** The setup screen is open and wants the color picture. */
+    @Volatile var wantCameraColor = false
     @Volatile private var cameraView: com.rickle8.mvswitch.core.CameraView? = null
     @Volatile private var cameraAt = -1e9
+    @Volatile private var cameraRotation = -1
     private var watcher: com.rickle8.mvswitch.core.ScreenWatcher? = null
     private var watcherKey: String? = null
     private var camMismatchSince = -1e9
+    private val finder = com.rickle8.mvswitch.core.GridFinder()
+    @Volatile private var finding = false
+    @Volatile private var findSkip = 0
+    private var cameraPublished = -1e9
+    /** "Looking for the TV…" / "Found the TV" / "Couldn't find…", for the setup screen. */
+    @Volatile var findStatus: String? = null
+        private set
 
-    /** A frame from the camera watching the TV (about 2 a second). */
-    fun onCameraFrame(frame: com.rickle8.mvswitch.core.GrayFrame) {
+    fun onCameraColor(b: android.graphics.Bitmap) { cameraColor = b }
+
+    /** Look for the TV in the camera picture (a few seconds, while the games play). */
+    fun findTv() {
+        synchronized(finder) { finder.reset() }
+        findSkip = 4 // let the picture settle (after a zoom or a turn) before comparing frames
+        finding = true
+        findStatus = "Looking for the TV… keep the games playing."
+        publish()
+    }
+
+    /** A frame from the camera watching the TV (about 3 a second), and which way the phone is turned. */
+    fun onCameraFrame(frame: com.rickle8.mvswitch.core.GrayFrame, rotation: Int) {
         cameraFrame = frame
         val s = _settings.value
         if (!s.useCamera) return
         val n = now()
+        // Keep the screens current even when switching isn't running (setting up the camera).
+        if (job?.isActive != true && n - cameraPublished > 0.9) { cameraPublished = n; publish() }
+        // Turned the phone, or never lined up: find the TV again on its own.
+        if (rotation != cameraRotation) {
+            cameraRotation = rotation
+            if (s.gridRotation != rotation && !finding) findTv()
+        }
+        if (finding) {
+            if (findSkip > 0) { findSkip--; return }
+            val corners = synchronized(finder) {
+                finder.add(frame)
+                if (finder.ready) finder.find() else null
+            }
+            when {
+                corners != null -> {
+                    finding = false
+                    val flat = corners.flatMap { listOf(it.first, it.second) }
+                    update { it.copy(gridCorners = flat, gridRotation = rotation) }
+                    findStatus = "Found the TV. Drag a dot if a corner's a little off."
+                    log("Camera found the TV.")
+                    meterOnGrid(flat)
+                    publish()
+                }
+                finder.frames > 75 -> {
+                    finding = false
+                    findStatus = "Couldn't find the TV. Make sure the whole TV is in view and the games are playing, then try again."
+                    publish()
+                }
+            }
+            return
+        }
         val key = "${s.layout}:${s.gridCorners}"
-        if (watcher == null || watcherKey != key) { watcher = com.rickle8.mvswitch.core.ScreenWatcher(s.layout); watcherKey = key }
+        if (watcher == null || watcherKey != key) {
+            watcher = com.rickle8.mvswitch.core.ScreenWatcher(s.layout); watcherKey = key
+            meterOnGrid(s.gridCorners)
+        }
         val corners = s.gridCorners.chunked(2).map { it[0] to it[1] }
         val img = runCatching { com.rickle8.mvswitch.core.warpGrid(frame, corners) }.getOrNull() ?: return
         val c = ctrl
@@ -893,8 +961,7 @@ object Engine {
         // Score bars are only learned from boxes known to be showing the game.
         val gameLikely = (1..boxCount(s)).filter { b ->
             (b == cur && lastResult?.heard == Heard.GAME) ||
-                (c != null && c.outlook(b, n).first == com.rickle8.mvswitch.core.Controller.Outlook.LIVE &&
-                    c.outlook(b, n).second != "camera sees the game")
+                (c != null && c.outlook(b, n, ignoreCamera = true).first == com.rickle8.mvswitch.core.Controller.Outlook.LIVE)
         }.toSet()
         val v = watcher!!.frame(img, gameLikely)
         cameraView = v
@@ -917,13 +984,27 @@ object Engine {
         } else camMismatchSince = -1e9
     }
 
+    /** Expose and focus on the TV, not the room. */
+    private fun meterOnGrid(flat: List<Double>) {
+        if (flat.size != 8) return
+        val cx = (flat[0] + flat[2] + flat[4] + flat[6]) / 4
+        val cy = (flat[1] + flat[3] + flat[5] + flat[7]) / 4
+        cameraControls?.meterOn(cx, cy)
+    }
+
+    fun setCameraZoom(z: Float) {
+        cameraControls?.zoom(z)
+        update { it.copy(cameraZoom = z) }
+        findTv() // the TV moved in the picture
+    }
+
     private var cameraErrorLogged: String? = null
     fun cameraError(msg: String) {
         if (cameraErrorLogged != msg) { cameraErrorLogged = msg; log("Camera problem: $msg") }
     }
 
     fun setGridCorners(corners: List<Double>) {
-        update { it.copy(gridCorners = corners) }
+        update { it.copy(gridCorners = corners, gridRotation = cameraRotation) }
     }
 
     fun resetLearning() {
