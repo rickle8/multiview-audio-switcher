@@ -15,6 +15,8 @@ data class TileRead(
     val showsGameOf: Int?,
     /** A short version of what it read, for the setup screen. */
     val summary: String,
+    /** It reads like a commercial: fine print, a web address, a price offer (and no score bug in it). */
+    val ad: Boolean = false,
 )
 
 object TileText {
@@ -24,6 +26,18 @@ object TileText {
     private val PERIOD = Regex("""\b(1ST|2ND|3RD|4TH|OT|HALF|HALFTIME|FINAL|Q[1-4])\b""")
     private val DOWN = Regex("""\b(1ST|2ND|3RD|4TH)\s*(&|AND|8)\s*(\d{1,2}|GOAL|GL|INCHES)\b""")
     private val SCORE = Regex("""\b(\d{1,2})\b""")
+
+    /** Commercial text that's enough on its own: web addresses, financing fine print, disclaimers, phone numbers. */
+    private val AD_SURE = Regex(
+        """\.(COM|NET|ORG)\b|\bWWW\.|\bAPR\b|\bMSRP\b|\bSEE DEALER\b|\bCLOSED COURSE\b|\bDO NOT ATTEMPT\b|""" +
+            """\bASK YOUR DOCTOR\b|\bSIDE EFFECTS\b|\bRESTRICTIONS APPLY\b|\bTERMS APPLY\b|\bOFFER ENDS\b|""" +
+            """\bPAID FOR BY\b|\bAPPROVED? THIS MESSAGE\b|\b1 ?8(00|88|77|66|55|44|33)\b""")
+    /** Commercial words that take two together (one alone shows up in game graphics too). */
+    private val AD_HINTS = listOf(
+        "SHOP NOW", "BUY NOW", "ORDER NOW", "CALL NOW", "LEARN MORE", "LIMITED TIME", "PER MONTH", "LEASE",
+        "FINANCING", "DEALER", "DOWNLOAD", "APP STORE", "GOOGLE PLAY", "IN THEATERS", "NOW STREAMING",
+        "STREAMING NOW", "AVAILABLE NOW", "SUBSCRIBE", "INSURANCE", "VISIT", "SALE", "FREE TRIAL",
+    ).map { Regex("""\b$it\b""") } + Regex("""\b\d+ OFF\b""") + Regex("""\bRATED (PG|R)\b""")
 
     private val OTHER_CHARS = Regex("[^A-Z0-9.:&' ]")
     private val SPACES = Regex("\\s+")
@@ -61,7 +75,9 @@ object TileText {
         val summary = norm(text).take(60)
         // Game-like: a clock with a quarter, or down and distance, or a team of one of your games plus a clock or quarter.
         val game = strength >= 3 || (showsGameOf != null && (clock || period))
-        return TileRead(game, strength, showsGameOf, summary)
+        // Commercial-like, only without a score bug in the same picture (sponsor graphics show up mid-game).
+        val ad = !game && (AD_SURE.containsMatchIn(t) || AD_HINTS.count { it.containsMatchIn(t) } >= 2)
+        return TileRead(game, strength, showsGameOf, summary, ad)
     }
 }
 

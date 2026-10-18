@@ -75,6 +75,8 @@ dependencies {
     implementation("androidx.camera:camera-lifecycle:1.3.4")
     // Reads score bugs off the screen, on the phone (bundled model, no internet, free).
     implementation("com.google.mlkit:text-recognition:16.0.1")
+    // The code your phone scans to open the controls.
+    implementation("com.google.zxing:core:3.5.3")
 
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.json:json:20240303")

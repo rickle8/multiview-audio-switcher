@@ -163,6 +163,9 @@ fun CameraSetup(state: EngineState, settings: Settings, onDismiss: () -> Unit) {
                         },
                     color = C.text, fontSize = 13.sp,
                 )
+                Spacer(Modifier.height(16.dp))
+                PhoneRemoteCard()
+                Spacer(Modifier.height(12.dp))
                 Text("Green: it sees the game (reads the score bug). Orange: commercial (no score bug for a while). " +
                     "Thick outline: the box with the sound. Yellow: where it found each game's score bug; that only " +
                     "counts once it has matched what it reads or hears a few times.", color = C.muted, fontSize = 12.sp,

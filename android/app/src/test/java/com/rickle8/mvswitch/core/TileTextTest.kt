@@ -37,6 +37,19 @@ class TileTextTest {
         assertEquals(1, promo.showsGameOf)
     }
 
+    @Test fun recognizesCommercialText() {
+        assertTrue(TileText.read("0.9% APR FOR 60 MONTHS. SEE DEALER FOR DETAILS", teams).ad)
+        assertTrue(TileText.read("Professional driver on closed course. Do not attempt.", teams).ad)
+        assertTrue(TileText.read("VISIT GEICO.COM", teams).ad)
+        assertTrue(TileText.read("CALL 1-800-555-0199", teams).ad)
+        assertTrue(TileText.read("THE DENIM EVENT 50% OFF EVERYTHING SHOP NOW", teams).ad)
+        // One hint alone isn't enough.
+        assertFalse(TileText.read("SHOP NOW", teams).ad)
+        // A sponsor's name on the game's own graphics isn't a commercial.
+        assertFalse(TileText.read("BYU 14 UTAH 10 2ND 4:32 3RD & 6 VISIT STATEFARM.COM", teams).ad)
+        assertFalse(TileText.read("ESPN FLORIDA ST 14 1ST & 10 3RD 5:45 MIAMI 14", teams).ad)
+    }
+
     @Test fun sharedNicknamesDontPickAGame() {
         // "COUGARS" is both BYU and Houston: no call on which game it is.
         assertEquals(null, TileText.read("COUGARS 2ND 10:12", teams).showsGameOf)

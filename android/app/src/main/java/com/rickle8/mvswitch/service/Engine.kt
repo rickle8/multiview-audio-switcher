@@ -246,6 +246,8 @@ object Engine {
         }
         store = SettingsStore(app)
         _settings.value = store.load()
+        // Controls on your own phone (the camera phone sits on its stand).
+        runCatching { PhoneRemote.start(app) }
         detector = Detector(app.filesDir)
         // Learned sounds load in the background (a few MB); anything that needs them waits on the lock.
         scope.launch(Dispatchers.IO) { synchronized(detector) { runCatching { detector.load() } }; publish() }
@@ -792,10 +794,12 @@ object Engine {
                 synchronized(lock) {
                     if (lockedBox == null) {
                         try {
+                            val from = nav?.current
+                            val started = now()
                             if (c.step(heard, strongAd = result?.strongAd == true,
                                     strongWhy = if (result?.strongAd == true) result.why else null)) {
                                 m?.drain()
-                                appMovedAt = now(); outlineAsk = null
+                                noteAppMove(from, nav?.current, started)
                                 synchronized(detector) { detector.onSwitch() }
                                 lastResult = null
                             }
@@ -906,8 +910,10 @@ object Engine {
             scope.launch(Dispatchers.IO) {
                 synchronized(lock) {
                     try {
+                        val from = nav?.current
+                        val started = now()
                         if (lockedBox == null && ctrl?.commercialNow() == true) {
-                            appMovedAt = now(); outlineAsk = null
+                            noteAppMove(from, nav?.current, started)
                             mic?.drain()
                             synchronized(detector) { detector.onSwitch() }
                         }
@@ -931,6 +937,7 @@ object Engine {
     fun answerOutline(yes: Boolean) {
         val ask = outlineAsk ?: return
         outlineAsk = null
+        outline.answered(yes)
         if (yes) {
             log("Camera was right: the sound moved to box ${ask.first}.")
             audioIsOn(ask.first)
@@ -979,6 +986,10 @@ object Engine {
     private val finder = com.rickle8.mvswitch.core.GridFinder()
     /** Keeps the TV lined up: it looks again in the background every minute, and right after a bump. */
     private val tracker = com.rickle8.mvswitch.core.GridTracker()
+    /** Whether the outline flash can be trusted to say where the sound is (proven on the app's own moves). */
+    private val outline = com.rickle8.mvswitch.core.OutlineTrust()
+    /** Football's green field in each box (proven against the score text and the sound before it counts). */
+    private val field = com.rickle8.mvswitch.core.FieldWatch()
     @Volatile private var finding = false
     @Volatile private var findSkip = 0
     private var cameraPublished = -1e9
@@ -991,9 +1002,34 @@ object Engine {
     /** The camera phone got bumped (its motion sensor): look for the TV again once it settles. */
     fun cameraBumped() { tracker.bumped(now()) }
 
+    /** Per box, how much of the picture is football-field green right now. */
+    fun onCameraField(shares: Map<Int, Double>) {
+        val n = now()
+        shares.forEach { (b, g) -> field.add(b, g, n) }
+    }
+
+    /**
+     * The app just moved the sound from [from] to [to] (its keys went out from [start] until now):
+     * the outline should flash on [to], which is how the camera proves it reads the outline right.
+     */
+    private fun noteAppMove(from: Int?, to: Int?, start: Double) {
+        appMovedAt = now(); outlineAsk = null
+        if (from == null || to == null || from == to) return
+        val via = runCatching {
+            val nb = nav?.neighbors ?: return@runCatching emptySet<Int>()
+            var b: Int = from
+            val passed = HashSet<Int>()
+            for (k in com.rickle8.mvswitch.core.keyPath(nb, from, to).dropLast(1)) { b = nb[b]?.get(k) ?: b; passed += b }
+            passed
+        }.getOrDefault(emptySet())
+        outline.appMoved(to, via, start, now())
+    }
+
     // What the phone's text recognition reads in each box.
     private val tileRead = java.util.concurrent.ConcurrentHashMap<Int, Pair<com.rickle8.mvswitch.core.TileRead, Double>>()
     private val tileGameAt = java.util.concurrent.ConcurrentHashMap<Int, Double>()
+    /** Per box: when it last read commercial text there (a web address, fine print) with no score bug. */
+    private val tileAdAt = java.util.concurrent.ConcurrentHashMap<Int, Double>()
     /** Per box: when it read a score bug, over the last couple of minutes (how dependable reading that box is). */
     private val tileGameTimes = java.util.concurrent.ConcurrentHashMap<Int, ArrayDeque<Double>>()
     private val tileMismatchLogged = java.util.Collections.synchronizedSet(HashSet<String>())
@@ -1015,6 +1051,7 @@ object Engine {
         val scores = f?.info?.mapValues { it.value.scores.values.toList() }.orEmpty()
         val r = com.rickle8.mvswitch.core.TileText.read(text, teams, scores)
         tileRead[box] = r to n
+        if (r.ad) tileAdAt[box] = n
         if (r.game) {
             tileGameAt[box] = n
             val q = tileGameTimes.getOrPut(box) { ArrayDeque() }
@@ -1067,6 +1104,9 @@ object Engine {
      * close-ups, while it still reads other boxes, so the camera can see), or not sure.
      */
     private fun textSays(box: Int, n: Double, boxes: Int): Boolean? {
+        // Commercial text read lately (and no score bug since): a commercial, no waiting.
+        val adAt = tileAdAt[box]
+        if (adAt != null && n - adAt < 10 && (tileGameAt[box] ?: -1e9) < adAt) return false
         val at = tileGameAt[box] ?: return null
         if (n - at < 10) return true
         val read = tileRead[box]
@@ -1119,7 +1159,24 @@ object Engine {
      */
     private fun cameraVerdict(box: Int, bug: Boolean?, n: Double, boxes: Int): Boolean? {
         textSays(box, n, boxes)?.let { return it }
-        return if (bugTrusted(box)) bug else null
+        if (bugTrusted(box) && bug != null) return bug
+        // The field in view, once proven on this box: the game is on (it never says commercial).
+        if (field.trusted(box) && field.fieldNow(box, n)) return true
+        return null
+    }
+
+    /** Checks each box's field green against what's read on screen and heard, every frame. */
+    private fun checkField(cur: Int?, onSound: Boolean, n: Double, boxes: Int) {
+        val r = lastResult
+        for (b in 1..boxes) {
+            val here = onSound && b == cur
+            val textNow = tileGameAt[b]?.let { n - it < 3 } == true
+            val heard = if (here) r?.heard else null
+            val sureAd = (here && r != null && r.heard == Heard.AD && r.strongAd) ||
+                (tileAdAt[b]?.let { n - it < 5 } == true)
+            field.check(b, n, game = textNow || heard == Heard.GAME,
+                commercial = textSays(b, n, boxes) == false || heard == Heard.AD, sureAd = sureAd)
+        }
     }
 
     /** Look for the TV in the camera picture (a few seconds, while the games play). */
@@ -1187,6 +1244,7 @@ object Engine {
         if (watcher == null || watcherKey != key) {
             watcher = com.rickle8.mvswitch.core.ScreenWatcher(s.layout); watcherKey = key
             forgetBugChecks()
+            field.clear()
             meterOnGrid(s.gridCorners)
         }
         while (true) { val b = bugForget.poll() ?: break; watcher?.forgetBug(b) }
@@ -1210,17 +1268,32 @@ object Engine {
         cameraView = v
         cameraAt = n
         checkBugs(v, cur, job?.isActive == true, n, boxCount(s))
+        checkField(cur, job?.isActive == true, n, boxCount(s))
         cameraMerged = (1..boxCount(s)).associateWith { cameraVerdict(it, v.showingGame[it], n, boxCount(s)) }
         // Sure enough to overrule an ad-sounding moment on the box you're hearing: its score read just now.
         c?.cameraReading = (1..boxCount(s)).filter { b -> tileGameAt[b]?.let { n - it < 6 } == true }.toSet()
         c?.camera = n to cameraMerged
-        // YouTube TV flashes an outline on the box the sound moves to. That's only shown and asked
-        // about, never acted on by itself: reading it wrong used to move the app off the right box.
+        // YouTube TV flashes an outline on the box the sound moves to. Every move the app makes
+        // checks it; once it has proven it reads the outline right, a flash the app didn't cause
+        // (you, with the TV remote) moves the app's sound box too. Until then it only asks.
+        outline.tick(n)
         val flash = v.outlineAppeared
         if (flash != null) {
             lastOutline = flash to n
-            if (running && cur != null && flash != cur && n - appMovedAt > 3) outlineAsk = flash to n
-            else if (flash == cur) outlineAsk = null
+            when (outline.flash(flash, n, cur)) {
+                com.rickle8.mvswitch.core.OutlineTrust.Action.FOLLOW -> if (job?.isActive == true && cur != null) {
+                    synchronized(lock) {
+                        nav?.current = flash
+                        c?.lastSwitch = n
+                        c?.returnTo = null
+                    }
+                    synchronized(detector) { detector.onSwitch() }
+                    outlineAsk = null
+                    log("Camera: you moved the sound to box $flash. Going with it.")
+                }
+                com.rickle8.mvswitch.core.OutlineTrust.Action.ASK -> if (running && cur != null) outlineAsk = flash to n
+                com.rickle8.mvswitch.core.OutlineTrust.Action.NOTHING -> if (flash == cur) outlineAsk = null
+            }
         }
     }
 
@@ -1310,10 +1383,12 @@ object Engine {
         val switching = job?.isActive == true && !paused && !autoPaused && !waitingForMultiview && now() >= holdUntil
         if (key in ARROWS && n != null && switching) {
             synchronized(lock) {
+                val from = n.current
+                val started = now()
                 r.press(key)
                 // In multiview the arrows move the audio: keep track of where it went.
                 n.current = simulate(n.neighbors, n.current ?: 1, listOf(key))
-                appMovedAt = now(); outlineAsk = null
+                noteAppMove(from, n.current, started)
                 ctrl?.lastSwitch = now()
                 ctrl?.returnTo = null
                 synchronized(detector) { detector.onSwitch() }
@@ -1633,8 +1708,10 @@ object Engine {
                 synchronized(this@Engine.lock) {
                     lockedBox = if (lock) box else null
                     holdUntil = 0.0
+                    val from = nav?.current
+                    val started = now()
                     nav?.goTo(box)
-                    appMovedAt = now(); outlineAsk = null
+                    noteAppMove(from, box, started)
                     ctrl?.let { it.lastSwitch = now(); it.breakUntil.remove(box); it.returnTo = null }
                     synchronized(detector) { detector.onSwitch() }
                 }
@@ -1683,6 +1760,113 @@ object Engine {
             } catch (e: Exception) {
                 status("Failed: ${e.message}")
             }
+        }
+    }
+
+    // ---------------------------------------------------------------- your phone as the remote
+    /** The camera picture in color for a few seconds after the phone page asks for it. */
+    @Volatile private var remoteColorUntil = -1e9
+
+    /** The camera should make the color picture (the setup screen or the phone page is showing it). */
+    fun wantsColor(): Boolean = wantCameraColor || now() < remoteColorUntil
+
+    /** What the camera sees right now, as a JPEG (in color when it has one). */
+    fun cameraJpeg(): ByteArray? {
+        remoteColorUntil = now() + 5
+        val f = cameraFrame ?: return null
+        val color = cameraColor?.takeIf { it.width == f.width && it.height == f.height && !it.isRecycled }
+        val bmp = color ?: android.graphics.Bitmap.createBitmap(
+            IntArray(f.width * f.height) { i -> val g = f.pixels[i].toInt() and 0xFF; (0xFF shl 24) or (g shl 16) or (g shl 8) or g },
+            f.width, f.height, android.graphics.Bitmap.Config.ARGB_8888)
+        val out = java.io.ByteArrayOutputStream()
+        bmp.compress(android.graphics.Bitmap.CompressFormat.JPEG, 72, out)
+        return out.toByteArray()
+    }
+
+    private fun chip(v: BoxView): String {
+        val info = v.info
+        return when {
+            v.slot == null -> "EMPTY"
+            v.slot.isOther -> "OTHER"
+            v.noGame -> "NO GAME"
+            info == null -> ""
+            info.status == GameStatus.FINAL -> "FINAL"
+            info.status == GameStatus.PREGAME -> "LATER"
+            v.onBreak || info.status == GameStatus.BREAK -> "BREAK"
+            info.status == GameStatus.LIVE -> "LIVE"
+            else -> ""
+        }
+    }
+
+    private fun statusText(st: EngineState): String = when {
+        st.tvWaiting != null && (st.running || st.starting) -> st.tvWaiting
+        st.starting -> "Connecting to the TV…"
+        !st.running -> "Not running"
+        st.waitingForMultiview -> "Waiting for multiview"
+        st.autoPaused -> "Paused · YouTube TV isn't on screen"
+        st.paused -> "Paused"
+        st.held -> "Waiting while you use the remote"
+        st.lockedBox != null -> "Locked on box ${st.lockedBox}"
+        else -> "Auto switching · sound on box ${st.currentBox ?: "?"}"
+    }
+
+    /** Everything the phone page shows, as JSON. */
+    fun remoteState(): String {
+        val st = _state.value
+        val s = _settings.value
+        val j = JSONObject()
+            .put("version", appVersion())
+            .put("running", st.running).put("starting", st.starting)
+            .put("paused", st.paused || st.autoPaused)
+            .put("locked", st.lockedBox ?: 0)
+            .put("box", st.currentBox ?: 0)
+            .put("status", statusText(st))
+            .put("heard", when (st.heard) { Heard.GAME -> "game"; Heard.AD -> "commercial"; Heard.UNSURE -> "unsure" })
+            .put("adPct", st.adPct ?: -1)
+            .put("why", st.why ?: "")
+            .put("mic", st.micOn)
+            .put("layout", s.layout)
+            .put("ask", st.outlineAsk ?: 0)
+            .put("cameraLive", st.cameraLive)
+            .put("corners", org.json.JSONArray(s.gridCorners))
+            .put("error", st.error ?: "")
+            .put("remoteMsg", st.remoteMsg ?: "")
+            .put("log", org.json.JSONArray(st.log.take(15).map { "${it.time}  ${it.text}" }))
+        val boxes = org.json.JSONArray()
+        val list = st.boxes.ifEmpty { (1..boxCount(s)).map { BoxView(it, s.slots[it], null, 0.0, false) } }
+        for (b in list) boxes.put(JSONObject()
+            .put("box", b.box)
+            .put("name", b.slot?.name?.ifBlank { null } ?: b.slot?.team ?: "")
+            .put("chip", chip(b))
+            .put("detail", b.info?.detail ?: "")
+            .put("camera", when (st.cameraGame[b.box]) { true -> "game"; false -> "commercial"; null -> "" })
+            .put("reads", st.cameraText[b.box] ?: ""))
+        j.put("boxes", boxes)
+        return j.toString()
+    }
+
+    /** A button pressed on the phone page. Returns what went wrong, or null. */
+    fun remoteCommand(a: String, n: Int?): String? {
+        val running = job?.isActive == true
+        val box = n?.takeIf { it in 1..boxCount(_settings.value) }
+        fun needsRun(block: () -> Unit): String? = if (!running) "Switching isn't running. Tap Start." else { block(); null }
+        fun needsBox(block: (Int) -> Unit): String? = needsRun { } ?: if (box == null) "Which box?" else { block(box); null }
+        return when (a) {
+            "ad" -> needsRun { label(true) }
+            "game" -> needsRun { label(false) }
+            "on" -> needsBox { audioIsOn(it) }
+            "play" -> needsBox { switchTo(it) }
+            "lock" -> needsBox { switchTo(it, lock = true) }
+            "unlock" -> { unlock(); null }
+            "pause" -> needsRun { setPaused(true) }
+            "resume" -> needsRun { setPaused(false) }
+            "yes" -> { answerOutline(true); null }
+            "no" -> { answerOutline(false); null }
+            "find" -> { findTv(); null }
+            "start" -> if (running) null else runCatching { SwitcherService.start(app); null }
+                .getOrElse { "Couldn't start from here. Open the app on the camera phone." }
+            "stop" -> { SwitcherService.stop(app); null }
+            else -> "That button isn't known"
         }
     }
 
@@ -1741,6 +1925,10 @@ object Engine {
             }
             sb.appendLine("  Looked for the TV again ${tracker.looks} times, moved the grid ${tracker.moves}" +
                 (if (tracker.lastLookAt > 0) ", last look ${(n - tracker.lastLookAt).toInt()} s ago" else ""))
+            sb.appendLine("  Outline checks on the app's own moves: right ${outline.right}, wrong ${outline.wrong}, " +
+                "not seen ${outline.missed}; " + (if (outline.trusted) "follows TV-remote moves" else "asks"))
+            sb.appendLine("  Field green proven per box: " + (1..boxCount(s)).joinToString { b ->
+                val (u, g) = field.counts(b); "$b ${if (field.trusted(b)) "yes" else "$u/3 up, $g/1 gone"}" })
             sb.appendLine("  Outline last flashed on " + (lastOutline?.let { (b, t) -> "box $b, ${(n - t).toInt()} s ago" } ?: "no box yet"))
         }
         java.io.File(app.filesDir, "last_error.txt").takeIf { it.exists() }?.let { f ->

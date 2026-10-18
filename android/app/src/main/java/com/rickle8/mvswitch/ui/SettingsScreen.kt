@@ -197,8 +197,9 @@ fun SettingsScreen(state: EngineState, settings: Settings, update: UpdateState, 
         Panel {
             var setup by remember { mutableStateOf(false) }
             ToggleRow("Watch the TV with this phone's camera",
-                "For a spare phone on a stand facing the TV. It sees which box has the sound (the highlight) and " +
-                    "which games are in commercial (their score bar disappears). Keeps the screen on while open.",
+                "For a spare phone on a stand facing the TV. It reads each game's score bug, spots commercials and " +
+                    "the field, and follows the sound when you move it with the TV remote once it has proven it " +
+                    "reads the highlight right. Keeps the screen on while open.",
                 settings.useCamera) { v -> Engine.update { it.copy(useCamera = v) } }
             if (settings.useCamera) {
                 Spacer(Modifier.height(10.dp))
@@ -206,6 +207,8 @@ fun SettingsScreen(state: EngineState, settings: Settings, update: UpdateState, 
                     shape = RoundedCornerShape(14.dp)) { Text("Line up the camera") }
             }
             if (setup) CameraSetup(state, settings) { setup = false }
+            Spacer(Modifier.height(16.dp))
+            PhoneRemoteCard()
         }
 
         // ------------------------------------------------------------ Detection

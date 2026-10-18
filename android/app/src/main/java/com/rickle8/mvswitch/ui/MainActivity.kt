@@ -55,11 +55,12 @@ class MainActivity : ComponentActivity() {
         val e = com.rickle8.mvswitch.camera.CameraEye(this,
             onFrame = Engine::onCameraFrame,
             onColor = Engine::onCameraColor,
-            wantColor = { Engine.wantCameraColor },
+            wantColor = { Engine.wantsColor() },
             onError = { msg -> Engine.cameraError(msg) },
             grid = { Engine.cameraGrid() },
             onText = Engine::onTileText,
-            onBump = { Engine.cameraBumped() })
+            onBump = { Engine.cameraBumped() },
+            onField = Engine::onCameraField)
         eye = e
         e.start(this)
         e.setZoom(Engine.settings.value.cameraZoom)

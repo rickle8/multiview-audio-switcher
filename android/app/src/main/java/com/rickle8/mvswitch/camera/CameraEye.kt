@@ -38,6 +38,8 @@ class CameraEye(
     private val onText: (Int, String) -> Unit,
     /** The phone got bumped or shaken (so the TV may have moved in the picture). */
     private val onBump: () -> Unit = {},
+    /** Per box, the share of the picture that's football-field green, every frame once the TV is lined up. */
+    private val onField: (Map<Int, Double>) -> Unit = {},
 ) {
     private val ocr = TileOcr(context.filesDir,
         runCatching { context.packageManager.getPackageInfo(context.packageName, 0).versionName }.getOrNull() ?: "?",
@@ -188,9 +190,11 @@ class CameraEye(
                 val row = yy * step * rowStride
                 for (x in 0 until w) raw[yy * w + x] = buf.get(row + x * step * pxStride)
             }
+            val g = runCatching { grid() }.getOrNull()
+            // The field's green in each box (from the color planes), before the frame is read.
+            if (g != null) runCatching { onField(fieldShares(img, rotDeg, g.first, g.second)) }
             onFrame(upright(raw, w, h, rotDeg), rotDeg)
             // Every half second, hand one box at full resolution to the text reader.
-            val g = runCatching { grid() }.getOrNull()
             if (g != null && now - lastOcrAt >= 450 && ocr.ready()) try {
                 lastOcrAt = now
                 val full = ByteArray(srcW * srcH)
@@ -211,6 +215,35 @@ class CameraEye(
         } finally {
             img.close()
         }
+    }
+
+    /**
+     * Per box, the share of sampled points that are football-field green. Samples a 24 x 14 grid
+     * inside each box, clear of its edges (the outline) and its bottom fifth (the score bar).
+     */
+    private fun fieldShares(img: ImageProxy, deg: Int, corners: List<Pair<Double, Double>>, layout: Int): Map<Int, Double> {
+        val yP = img.planes[0]; val uP = img.planes[1]; val vP = img.planes[2]
+        val yb = yP.buffer; val ub = uP.buffer; val vb = vP.buffer
+        val w = img.width; val h = img.height
+        val hom = com.rickle8.mvswitch.core.Homography(corners)
+        val out = HashMap<Int, Double>()
+        for ((box, r) in com.rickle8.mvswitch.core.boxRects(layout)) {
+            var green = 0; var n = 0
+            for (j in 0 until 14) for (i in 0 until 24) {
+                val gx = r[0] + (r[2] - r[0]) * (0.06 + 0.88 * (i + 0.5) / 24)
+                val gy = r[1] + (r[3] - r[1]) * (0.06 + 0.74 * (j + 0.5) / 14)
+                val (u, v) = hom.map(gx, gy)
+                val (rx, ry) = com.rickle8.mvswitch.core.uprightToRaw(u, v, deg)
+                val x = (rx * w).toInt().coerceIn(0, w - 1); val y = (ry * h).toInt().coerceIn(0, h - 1)
+                val yy = yb.get(y * yP.rowStride + x * yP.pixelStride).toInt() and 0xFF
+                val uu = ub.get((y / 2) * uP.rowStride + (x / 2) * uP.pixelStride).toInt() and 0xFF
+                val vv = vb.get((y / 2) * vP.rowStride + (x / 2) * vP.pixelStride).toInt() and 0xFF
+                n++
+                if (com.rickle8.mvswitch.core.FieldWatch.isFieldGreen(yy, uu, vv)) green++
+            }
+            out[box] = if (n == 0) 0.0 else green.toDouble() / n
+        }
+        return out
     }
 
     private fun upright(raw: ByteArray, w: Int, h: Int, deg: Int): GrayFrame = when (deg) {
