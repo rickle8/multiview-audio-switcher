@@ -1,4 +1,4 @@
-# Multiview Audio: how it decides (v1.0.79)
+# Multiview Audio: how it decides (v1.0.81)
 
 Built for one setup: a Samsung QN75Q8F, YouTube TV multiview with 4 games (2x2), and a Galaxy S21 on a stand facing the TV doing everything (listening, watching, pressing the TV's buttons). College football Saturdays, NFL Sundays.
 
@@ -32,16 +32,18 @@ YouTube TV never tells the app which box has the sound, so the app keeps count i
 
 **Commercials it's heard before.** Every "It's an ad" tap saves that commercial's audio fingerprint. When it hears one again it's sure within about 4-5 seconds.
 
-**The call.** It looks at the last 10 seconds. At the default sensitivity, about 62% or more ad-like for 8 seconds in a row = commercial; 42% or less = game. ESPN changes how quick it is:
+**The call.** It looks at the last 8 seconds. At the default sensitivity, about 62% or more ad-like for 6 seconds in a row = commercial; 42% or less = game. In all, about 10 seconds from the cut to commercial to the switch (14 before v1.0.81). ESPN changes how quick it is:
 
-| Situation | Needs | Why |
-|---|---|---|
-| Normal | 8 s | |
-| A break-likely play just happened (score, timeout, turnover, quarter end) | 7 s | Break expected |
-| Just switched to this game | 4 s | If it's also in commercial, leave fast |
-| Sound changed suddenly (the cut to commercial) | 5 s | |
-| Game clock running | 16 s, and more ad-like | TV breaks only come with the clock stopped |
-| Just back from a break | 16 s | Another one is unlikely |
+| Situation | Needs | From the cut | Why |
+|---|---|---|---|
+| Normal | 6 s | about 10 s | |
+| A break-likely play just happened (score, timeout, turnover, quarter end) | 5 s | about 8 s | Break expected |
+| Sound changed suddenly (the cut to commercial) | 4 s | about 7 s | |
+| Just switched to this game | 3 s | | If it's also in commercial, leave fast |
+| Game clock running | 16 s, and more ad-like | | TV breaks only come with the clock stopped |
+| Just back from a break | 16 s | | Another one is unlikely |
+
+The camera can make it quicker still: see "gone" in section 5.
 
 **It also learns on its own:** audio between plays that came less than 50 seconds apart is game, and replayed commercials it recognizes are commercials.
 
@@ -69,13 +71,16 @@ YouTube TV never tells the app which box has the sound, so the app keeps count i
 
 **Lining up.** It finds the TV by motion (the games move, the room doesn't). It checks again every minute and 2 seconds after a bump, and only moves the grid if the TV really moved. Turning the phone triggers a full find after it sits still 3 seconds.
 
-**Reading the score bug.** One box every half second (each box about every 2 s), it reads the text: clock with quarter, down and distance, your teams' names, scores matching ESPN.
+**Reading the score bug.** One box every half second (each box about every 2 s), it reads the text.
+
+**What counts as the game being played:** that game's own teams and a score at or near ESPN's current one (your TV runs behind ESPN, so up to 8 points lower or 3 higher counts as near). Any of: ESPN's exact score with a team or the clock; a team, a near score and the clock or quarter (or both teams); both teams with the clock or quarter; a team with down and distance. A team name alone (a promo for the game) isn't enough, and the score bug's own HALF or FINAL isn't play.
 - Read in the last 10 s: that game is on.
+- **Gone:** on a box where it reads the bug nearly every time (60%+ of reads), missing it 8 s or more, enough reads in a row that it isn't a misread, while it still reads the other boxes. A cut to commercial looks like that. Some replays drop the bug too, so it only backs up the sound: an ad-leaning sound becomes a commercial and an ad-sounding one a sure one (section 6), a few seconds sooner than the sound alone.
 - Nothing for 45 s on a box it normally reads well (4+ reads in the minute before), while it still reads the other boxes: commercial. 45 s is longer than replays and close-ups.
 
-**The ticker:** some networks (ESPN's BottomLine) run other games' scores and headlines along the bottom. Each line it reads comes with where it sits, so a ticker line (a league name like NCAAF, two of your games in one line, or along the very bottom another game's score, "final" or a headline) never counts as the box's own score bug or says which game it is. A ticker with no score bug means the network's own programming is on (tickers don't run in commercials): a show, not the game and not a commercial. The score bug's own HALF or FINAL doesn't count as play either.
+**The ticker:** some networks (ESPN's BottomLine) run other games' scores and headlines along the bottom, sometimes over commercials too, so a ticker says nothing about the box: not the game, not a commercial, not a show. Each line comes with where it sits, and ticker lines never count toward the game: a league name like NCAAF, two of your games in one line, another game's score, "final" or a headline along the very bottom, or anything in the band where the text keeps changing read after read (it scrolls or flips). The score bug never makes that band: lines with the game's own teams, and its clock, quarter and down and distance, are left out, one change (a "review" banner) isn't enough, and the game's own teams staying put still count even inside a band.
 
-**Commercial text:** web addresses, APR or MSRP, "see dealer", "closed course", "ask your doctor", 1-800 numbers, two of "shop now" / "lease" / "limited time" and the like, with no score bug in the same read: that box is in a commercial, no waiting.
+**Commercial text:** web addresses, APR or MSRP, "see dealer", "closed course", "ask your doctor", 1-800 numbers, two of "shop now" / "lease" / "limited time" and the like, with no score bug in the same read: that box is in a commercial, no waiting. Fine print counts even along the bottom where a ticker runs.
 
 **The score bug's shape** (learned per box) only counts once it has matched the text: present twice during play and gone once in a commercial. If something surer contradicts it, it's relearned.
 
@@ -83,7 +88,7 @@ YouTube TV never tells the app which box has the sound, so the app keeps count i
 
 **How the camera's word is used:**
 - Other games: "on" makes it a good place to go and marks your game as back. "Commercial" means skip it.
-- Your game: no score bug + ad-sounding = sure commercial (beats ESPN's guards). No score bug + unsure sound = likely commercial. Score bug read in the last 6 s + ad-sounding = stays. **It never turns game audio into a commercial.**
+- Your game: score bug gone (8 s) + ad-sounding = sure commercial (beats ESPN's guards); gone + leaning ad = commercial. No score bug for 45 s + unsure sound = likely commercial. Score bug read in the last 6 s + ad-sounding = stays. **It never turns game audio into a commercial.**
 
 ## 6. When it switches (the game you're hearing)
 
@@ -97,11 +102,11 @@ Checked in this order:
    - Otherwise go.
 3. **Where to, in the order you want:**
    - a game being played (sure ones first, then ones it can't vouch for), most exciting first (close, late, red zone, overtime)
-   - no game being played anywhere: a show (another game's halftime show, or a box where the camera sees the network's ticker without the game), the camera's sure ones first
+   - no game being played anywhere: another game's halftime show
    - nothing but commercials: the one whose break started first (at least 60 s ago)
    - nothing at all: it stays
 4. **Halftime on your game:** once your TV reaches it, it goes to a game being played. If none is, it stays for the halftime show.
-5. **Parked on a show** because nothing was being played (or the camera has seen only the network's show there for a minute): it leaves for a live game as soon as there is one. A commercial during the show is handled like any other.
+5. **Parked on a halftime show** because nothing was being played: it leaves for a live game as soon as there is one. A commercial during the show is handled like any other.
 6. Game heard: if the game you were watching is back, go back to it.
 7. Jumping to a more exciting game mid-play ("hopping"): off.
 
@@ -148,6 +153,7 @@ Both phones need the same Wi-Fi, and the app open on the camera phone. Only a de
 | Commercial on box N → box M | Mic heard a commercial, moved to M |
 | Recognized a commercial it's heard before on box N → box M | Fingerprint match |
 | Sounds like a commercial and the camera sees no score bug on box N → box M | Mic and camera agreed |
+| Sounds like a commercial and the score bug is gone on box N → box M | Mic and a just-vanished score bug agreed |
 | Sounded like an ad, but box N just had a play / clock is running / camera sees the game. Staying. | A guard held it |
 | ESPN: break coming on box N (...). Waiting for the commercial. | Warned; leaves when the sound turns |
 | Commercial started on box N after "..." → box M | The warned break came |
