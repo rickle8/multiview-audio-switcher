@@ -1954,7 +1954,7 @@ object Engine {
     }
 
     /** A button pressed on the phone page. Returns what went wrong, or null. */
-    fun remoteCommand(a: String, n: Int?): String? {
+    fun remoteCommand(a: String, n: Int?, v: String? = null): String? {
         val running = job?.isActive == true
         val box = n?.takeIf { it in 1..boxCount(_settings.value) }
         fun needsRun(block: () -> Unit): String? = if (!running) "Switching isn't running. Tap Start." else { block(); null }
@@ -1974,8 +1974,96 @@ object Engine {
             "start" -> if (running) null else runCatching { SwitcherService.start(app); null }
                 .getOrElse { "Couldn't start from here. Open the app on the camera phone." }
             "stop" -> { SwitcherService.stop(app); null }
+            "key" -> runCatching { Key.valueOf(v.orEmpty().uppercase()) }.getOrNull()?.let { k -> press(k); null } ?: "That button isn't known"
+            "forgetSound" -> { resetLearning(); null }
+            "forgetPicture" -> { visual?.forget(); saveVisual(now(), force = true); log("Camera: forgot what the game and commercials look like."); null }
+            "fill" -> { scope.launch { val k = fillEmptyBoxes(); log(if (k > 0) "Filled $k empty boxes with games on now." else "No games to fill the empty boxes with.") }; null }
+            "clearBox" -> if (box == null) "Which box?" else { update { st -> st.copy(slots = st.slots - box) }; null }
             else -> "That button isn't known"
         }
+    }
+
+    // ------------------------------------------------- settings and games from the phone page
+    /** The settings the phone page can change, the games set for each box, and what's been learned. */
+    fun remoteConfig(): String {
+        val s = _settings.value
+        val d = synchronized(detector) { detector.model.gameSeconds to detector.model.adSeconds }
+        val j = JSONObject()
+            .put("useMic", s.useMic).put("micSensitivity", s.micSensitivity.toDouble())
+            .put("proactive", s.proactive).put("returnToGame", s.returnToGame)
+            .put("useCamera", s.useCamera).put("cameraZoom", s.cameraZoom.toDouble())
+            .put("layout", s.layout).put("breakSecs", s.breakSecs)
+            .put("autoPause", s.autoPause).put("openYouTubeTv", s.openYouTubeTv)
+            .put("hopping", s.hopping.name)
+            .put("corners", org.json.JSONArray(s.gridCorners))
+            .put("soundLearned", "${d.first} s game, ${d.second} s commercials")
+            .put("pictureLearned", visual?.describe() ?: "not started")
+        val slots = org.json.JSONArray()
+        for (b in 1..boxCount(s)) {
+            val g = s.slots[b]
+            slots.put(JSONObject().put("box", b).put("name", g?.let { it.name.ifBlank { it.team } } ?: "")
+                .put("other", g?.isOther == true))
+        }
+        return j.put("slots", slots).toString()
+    }
+
+    /** One setting changed on the phone page. Returns what went wrong, or null. */
+    fun remoteSet(name: String, value: String): String? {
+        fun bool() = value == "true" || value == "1"
+        fun num() = value.toDoubleOrNull()
+        when (name) {
+            "useMic" -> update { it.copy(useMic = bool()) }
+            "micSensitivity" -> num()?.let { v -> update { it.copy(micSensitivity = v.toFloat().coerceIn(0f, 1f)) } } ?: return "Not a number"
+            "proactive" -> update { it.copy(proactive = bool()) }
+            "returnToGame" -> update { it.copy(returnToGame = bool()) }
+            "useCamera" -> update { it.copy(useCamera = bool()) }
+            "autoPause" -> update { it.copy(autoPause = bool()) }
+            "openYouTubeTv" -> update { it.copy(openYouTubeTv = bool()) }
+            "breakSecs" -> num()?.let { v -> update { it.copy(breakSecs = v.toInt().coerceIn(60, 300)) } } ?: return "Not a number"
+            "layout" -> value.toIntOrNull()?.takeIf { it in LAYOUTS }?.let { v -> update { it.copy(layout = v) } } ?: return "Not a layout"
+            "hopping" -> runCatching { com.rickle8.mvswitch.data.Hopping.valueOf(value) }.getOrNull()
+                ?.let { h -> update { it.copy(hopping = h) } } ?: return "Not known"
+            "cameraZoom" -> num()?.let { v -> setCameraZoom(v.toFloat().coerceIn(0f, 1f)) } ?: return "Not a number"
+            "corners" -> {
+                val c = value.split(',').mapNotNull { it.trim().toDoubleOrNull() }
+                if (c.size != 8 || c.any { it !in -0.05..1.05 }) return "Those corners don't look right"
+                setGridCorners(c.map { it.coerceIn(0.0, 1.0) })
+                log("Camera: corners set from your phone.")
+            }
+            else -> return "That setting isn't known"
+        }
+        return null
+    }
+
+    /** Games found for the phone page's search, by id, so a tap can set one. */
+    private val remoteFound = java.util.concurrent.ConcurrentHashMap<String, ScheduledGame>()
+
+    /** Games to pick from: on now and coming up (blank), or matching a search. */
+    fun remoteGames(query: String): String = kotlinx.coroutines.runBlocking {
+        val list = runCatching { searchGames(query) }.getOrDefault(emptyList()).take(40)
+        val a = org.json.JSONArray()
+        for (g in list) {
+            remoteFound[g.id] = g
+            a.put(JSONObject().put("id", g.id).put("name", g.shortName).put("detail", g.detail)
+                .put("network", g.network).put("status", g.status.name))
+        }
+        a.toString()
+    }
+
+    /** Sets box [box] to a game from the phone page's search, or to "something else" by name. */
+    fun remoteAssign(box: Int?, id: String?, other: String?): String? {
+        val b = box?.takeIf { it in 1..boxCount(_settings.value) } ?: return "Which box?"
+        other?.trim()?.takeIf { it.isNotEmpty() }?.let { setOther(b, it); return null }
+        val g = id?.let { remoteFound[it] } ?: return "Search again and pick a game."
+        update { s ->
+            val keep = s.slots[b]
+            s.copy(league = g.league, slots = s.slots + (b to GameSlot(
+                league = g.league, team = g.home.ifBlank { g.away }, name = g.shortName,
+                importance = keep?.importance ?: 1.0, pick = "", eventId = g.id,
+            )))
+        }
+        log("Box $b set to ${g.shortName} from your phone.")
+        return null
     }
 
     /** Everything useful for figuring out a problem, as text to paste into a message. */

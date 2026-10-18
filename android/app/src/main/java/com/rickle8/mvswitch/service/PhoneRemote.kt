@@ -115,7 +115,21 @@ object PhoneRemote {
             "/", "/index.html" -> send(out, 200, "text/html; charset=utf-8", page())
             "/state" -> send(out, 200, "application/json", Engine.remoteState().toByteArray())
             "/do" -> {
-                val problem = runCatching { Engine.remoteCommand(q["a"].orEmpty(), q["n"]?.toIntOrNull()) }
+                val problem = runCatching { Engine.remoteCommand(q["a"].orEmpty(), q["n"]?.toIntOrNull(), q["v"]) }
+                    .getOrElse { it.message ?: "Something went wrong" }
+                send(out, 200, "application/json",
+                    JSONObject().put("ok", problem == null).put("error", problem ?: "").toString().toByteArray())
+            }
+            "/config" -> send(out, 200, "application/json", Engine.remoteConfig().toByteArray())
+            "/set" -> {
+                val problem = runCatching { Engine.remoteSet(q["name"].orEmpty(), q["value"].orEmpty()) }
+                    .getOrElse { it.message ?: "Something went wrong" }
+                send(out, 200, "application/json",
+                    JSONObject().put("ok", problem == null).put("error", problem ?: "").toString().toByteArray())
+            }
+            "/games" -> send(out, 200, "application/json", Engine.remoteGames(q["q"].orEmpty()).toByteArray())
+            "/assign" -> {
+                val problem = runCatching { Engine.remoteAssign(q["n"]?.toIntOrNull(), q["id"], q["other"]) }
                     .getOrElse { it.message ?: "Something went wrong" }
                 send(out, 200, "application/json",
                     JSONObject().put("ok", problem == null).put("error", problem ?: "").toString().toByteArray())

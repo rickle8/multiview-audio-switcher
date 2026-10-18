@@ -50,11 +50,47 @@ textarea{width:100%;height:160px;margin-top:10px;background:var(--surface2);colo
 #sheet .card .btn{margin-top:10px}
 #toast{position:fixed;left:16px;right:16px;bottom:18px;max-width:528px;margin:0 auto;background:var(--surface2);border:1px solid var(--line);border-radius:12px;padding:12px 14px;font-size:14px;opacity:0;transition:opacity .2s;pointer-events:none}
 #toast.on{opacity:1}
+.tabs{display:flex;gap:6px;margin-top:12px;position:sticky;top:0;background:var(--bg);padding:6px 0;z-index:5}
+.tabs button{flex:1;appearance:none;border:1px solid var(--line);background:var(--surface);color:var(--muted);border-radius:10px;padding:9px 2px;font:600 13px system-ui,-apple-system,Roboto,sans-serif}
+.tabs button.on{color:var(--text);border-color:var(--accent);background:rgba(43,217,160,.10)}
+.page[hidden]{display:none}
+.set{display:flex;align-items:center;gap:12px;padding:12px 0;border-bottom:1px solid var(--line)}
+.set:last-child{border-bottom:0}
+.set .lab{flex:1}.set .lab .small{margin-top:2px}
+.sw{position:relative;width:50px;height:30px;flex:0 0 50px}
+.sw input{opacity:0;width:0;height:0}
+.sw span{position:absolute;inset:0;background:var(--surface2);border:1px solid var(--line);border-radius:15px;transition:.15s}
+.sw span:before{content:"";position:absolute;width:22px;height:22px;left:3px;top:3px;background:var(--muted);border-radius:50%;transition:.15s}
+.sw input:checked+span{background:rgba(43,217,160,.25);border-color:var(--accent)}
+.sw input:checked+span:before{transform:translateX(20px);background:var(--accent)}
+input[type=range]{width:100%;accent-color:var(--accent)}
+select,input[type=search],input[type=text]{width:100%;background:var(--surface2);color:var(--text);border:1px solid var(--line);border-radius:10px;padding:10px;font:16px system-ui,-apple-system,Roboto,sans-serif}
+.seg{display:flex;gap:6px;margin-top:8px}.seg button{flex:1}
+.seg .btn.on{border-color:var(--accent);color:var(--accent)}
+.slot{display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid var(--line)}
+.slot:last-child{border-bottom:0}
+.slot .num{color:var(--muted);font-weight:700;width:18px}
+.slot .nm{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.slot .btn{width:auto;padding:8px 12px;font-size:14px}
+.gm{padding:10px 0;border-bottom:1px solid var(--line);cursor:pointer}
+.gm .small{margin-top:2px}
+.pad{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:12px}
+.pad .btn{height:64px;font-size:20px}
+.danger{border-color:var(--red);color:var(--red)}
 </style>
 </head>
 <body>
 <h1>Multiview Audio</h1>
 <div id="status" class="muted">Connecting to the camera phone…</div>
+<div class="tabs" id="tabs">
+  <button data-tab="control" class="on">Control</button>
+  <button data-tab="games">Games</button>
+  <button data-tab="settings">Settings</button>
+  <button data-tab="camera">Camera</button>
+  <button data-tab="tv">TV</button>
+</div>
+
+<div class="page" id="p-control">
 
 <div id="ask" class="panel" hidden>
   <div id="askText"></div>
@@ -80,11 +116,6 @@ textarea{width:100%;height:160px;margin-top:10px;background:var(--surface2);colo
   <button class="btn" id="startstop">Start</button>
 </div>
 
-<details class="panel" id="camPanel">
-  <summary>Camera view</summary>
-  <div class="camwrap"><img id="cam" alt=""><canvas id="ov"></canvas></div>
-  <div class="row"><button class="btn" data-a="find">Find the TV again</button></div>
-</details>
 
 <div class="panel">
   <div class="muted small">Activity</div>
@@ -93,6 +124,74 @@ textarea{width:100%;height:160px;margin-top:10px;background:var(--surface2);colo
 
 <div class="row"><button class="btn" id="diag">Copy diagnostics</button></div>
 <textarea id="report" hidden readonly></textarea>
+</div>
+
+<div class="page" id="p-games" hidden>
+  <div class="panel">
+    <div class="muted small">The game in each multiview box, in the TV's order (left to right, top to bottom)</div>
+    <div id="slots"></div>
+    <div class="row"><button class="btn" id="fill">Fill empty boxes with games on now</button></div>
+  </div>
+  <div class="panel" id="picker" hidden>
+    <div style="font-weight:700" id="pickTitle"></div>
+    <input type="search" id="q" placeholder="Search a team or network" style="margin-top:10px">
+    <div id="found" class="small muted" style="margin-top:6px"></div>
+    <div id="gameList"></div>
+    <div class="row"><input type="text" id="otherName" placeholder="Or something else (RedZone)"><button class="btn" id="setOther" style="flex:0 0 90px">Set</button></div>
+    <div class="row"><button class="btn" id="clearBox">Clear this box</button><button class="btn" id="closePick">Done</button></div>
+  </div>
+</div>
+
+<div class="page" id="p-settings" hidden>
+  <div class="panel">
+    <div class="set"><div class="lab">Listen with the mic<div class="small muted">The sound decides when it's a commercial</div></div>
+      <label class="sw"><input type="checkbox" data-set="useMic"><span></span></label></div>
+    <div class="set" style="display:block"><div class="lab">How quick to call a commercial <span id="sensVal" class="muted"></span>
+      <div class="small muted">Left: only obvious ones. Right: quicker, more mistakes.</div></div>
+      <input type="range" min="0" max="1" step="0.05" data-set="micSensitivity"></div>
+    <div class="set"><div class="lab">Use ESPN's play-by-play<div class="small muted">Gets quicker after a score or timeout</div></div>
+      <label class="sw"><input type="checkbox" data-set="proactive"><span></span></label></div>
+    <div class="set"><div class="lab">Go back to my game after its commercial</div>
+      <label class="sw"><input type="checkbox" data-set="returnToGame"><span></span></label></div>
+    <div class="set"><div class="lab">Use the camera</div>
+      <label class="sw"><input type="checkbox" data-set="useCamera"><span></span></label></div>
+    <div class="set" style="display:block"><div class="lab">Typical commercial break <span id="breakVal" class="muted"></span></div>
+      <input type="range" min="60" max="300" step="10" data-set="breakSecs"></div>
+    <div class="set" style="display:block"><div class="lab">Multiview layout</div>
+      <div class="seg" id="layoutSeg"><button class="btn" data-layout="2">2 games</button><button class="btn" data-layout="3">3 games</button><button class="btn" data-layout="4">4 games</button></div></div>
+  </div>
+  <div class="panel">
+    <div class="muted small">What it has learned</div>
+    <div class="set"><div class="lab">Sound<div class="small muted" id="soundLearned"></div></div></div>
+    <div class="set"><div class="lab">Picture<div class="small muted" id="pictureLearned"></div></div></div>
+    <div class="row"><button class="btn danger" id="forgetSound">Forget the sound</button><button class="btn danger" id="forgetPicture">Forget the picture</button></div>
+  </div>
+</div>
+
+<div class="page" id="p-camera" hidden>
+  <div class="panel">
+    <div class="small muted" id="camHelp">What the camera phone sees, with the boxes as it reads them.</div>
+    <div class="camwrap"><img id="cam" alt=""><canvas id="ov"></canvas></div>
+    <div class="row"><button class="btn" data-a="find">Find the TV again</button><button class="btn" id="editCorners">Move the corners</button></div>
+    <div class="row" id="cornerBtns" hidden><button class="btn game" id="saveCorners">Save corners</button><button class="btn" id="cancelCorners">Cancel</button></div>
+  </div>
+  <div class="panel">
+    <div class="lab">Zoom <span id="zoomVal" class="muted"></span></div>
+    <div class="small muted">Make the TV fill the picture: each box gets more detail to read.</div>
+    <input type="range" min="0" max="1" step="0.02" id="zoom">
+  </div>
+</div>
+
+<div class="page" id="p-tv" hidden>
+  <div class="small muted" style="margin-top:12px">Arrows here count toward where the app thinks the sound is.</div>
+  <div class="pad">
+    <button class="btn" data-key="BACK">↩</button><button class="btn" data-key="UP">▲</button><button class="btn" data-key="HOME">⌂</button>
+    <button class="btn" data-key="LEFT">◀</button><button class="btn game" data-key="SELECT">OK</button><button class="btn" data-key="RIGHT">▶</button>
+    <button class="btn" data-key="VOL_DOWN">Vol −</button><button class="btn" data-key="DOWN">▼</button><button class="btn" data-key="VOL_UP">Vol +</button>
+    <button class="btn" data-key="MUTE">Mute</button><button class="btn" data-key="PLAY">Play</button><button class="btn" data-key="PAUSE">Pause</button>
+  </div>
+  <div class="row"><button class="btn danger" data-key="POWER">Power</button></div>
+</div>
 
 <div id="sheet" hidden>
   <div class="card">
@@ -108,13 +207,14 @@ textarea{width:100%;height:160px;margin-top:10px;background:var(--surface2);colo
 <script>
 const K = new URLSearchParams(location.search).get('k') || '';
 let S = null, sheetBox = 0, failures = 0;
+let tab = 'control', C = null, editing = null, pickBox = 0;
 const $ = id => document.getElementById(id);
 
 function toast(t) { const el = $('toast'); el.textContent = t; el.classList.add('on'); clearTimeout(toast.h); toast.h = setTimeout(() => el.classList.remove('on'), 2600); }
 
-async function act(a, n) {
+async function act(a, n, v) {
   try {
-    const r = await fetch('/do?k=' + encodeURIComponent(K) + '&a=' + a + (n ? '&n=' + n : ''), { method: 'POST' });
+    const r = await fetch('/do?k=' + encodeURIComponent(K) + '&a=' + a + (n ? '&n=' + n : '') + (v ? '&v=' + encodeURIComponent(v) : ''), { method: 'POST' });
     const j = await r.json();
     if (!j.ok && j.error) toast(j.error);
     else if (a === 'ad') toast('Got it, commercial.');
@@ -201,10 +301,10 @@ function lerp(a, b, t) { return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) 
 function at(c, u, v) { const top = lerp(c[0], c[1], u), bot = lerp(c[3], c[2], u); return lerp(top, bot, v); }
 function drawGrid() {
   const img = $('cam'), cv = $('ov');
-  if (!S || !img.naturalWidth || !$('camPanel').open) return;
+  if (!S || !img.naturalWidth || tab !== 'camera') return;
   cv.width = img.clientWidth * devicePixelRatio; cv.height = img.clientHeight * devicePixelRatio;
   const ctx = cv.getContext('2d'); ctx.clearRect(0, 0, cv.width, cv.height);
-  const f = S.corners; if (!f || f.length !== 8) return;
+  const f = editing || S.corners; if (!f || f.length !== 8) return;
   const c = [[f[0], f[1]], [f[2], f[3]], [f[4], f[5]], [f[6], f[7]]].map(p => [p[0] * cv.width, p[1] * cv.height]);
   const rects = S.layout === 2 ? { 1: [0, 0, .5, 1], 2: [.5, 0, 1, 1] } : S.layout === 3 ? { 1: [0, 0, .66, 1], 2: [.66, 0, 1, .5], 3: [.66, .5, 1, 1] } :
     { 1: [0, 0, .5, .5], 2: [.5, 0, 1, .5], 3: [0, .5, .5, 1], 4: [.5, .5, 1, 1] };
@@ -216,15 +316,18 @@ function drawGrid() {
     ctx.strokeStyle = b.camera === 'game' ? '#2BD9A0' : b.camera === 'commercial' ? '#F5A524' : 'rgba(255,255,255,.7)';
     ctx.stroke();
   }
+  if (editing) for (const p of c) {
+    ctx.beginPath(); ctx.arc(p[0], p[1], 14 * devicePixelRatio, 0, 7);
+    ctx.fillStyle = 'rgba(43,217,160,.35)'; ctx.fill(); ctx.lineWidth = 3 * devicePixelRatio; ctx.strokeStyle = '#2BD9A0'; ctx.stroke();
+  }
 }
 function refreshCam() {
-  if (!$('camPanel').open) return;
+  if (tab !== 'camera') return;
   const img = new Image();
   img.onload = () => { $('cam').src = img.src; setTimeout(drawGrid, 30); };
   img.src = '/frame.jpg?k=' + encodeURIComponent(K) + '&t=' + Date.now();
 }
 setInterval(refreshCam, 1500);
-$('camPanel').addEventListener('toggle', refreshCam);
 
 $('diag').onclick = async () => {
   try {
@@ -237,6 +340,143 @@ $('diag').onclick = async () => {
     toast(copied ? 'Diagnostics copied. Paste them into your chat.' : 'Select the text below and copy it.');
   } catch (e) { toast("Couldn't reach the camera phone."); }
 };
+
+// ---------------------------------------------------------------- tabs
+const enc = encodeURIComponent;
+document.querySelectorAll('#tabs button').forEach(b => b.onclick = () => {
+  tab = b.dataset.tab;
+  document.querySelectorAll('#tabs button').forEach(x => x.classList.toggle('on', x === b));
+  document.querySelectorAll('.page').forEach(p => p.hidden = p.id !== 'p-' + tab);
+  if (tab === 'camera') refreshCam();
+  if (tab === 'games' || tab === 'settings' || tab === 'camera') loadConfig();
+});
+
+async function loadConfig() {
+  try { const r = await fetch('/config?k=' + enc(K), { cache: 'no-store' }); C = await r.json(); renderConfig(); } catch (e) {}
+}
+setInterval(() => { if (tab === 'settings' || tab === 'games') loadConfig(); }, 5000);
+
+async function setting(name, value, done) {
+  try {
+    const r = await fetch('/set?k=' + enc(K) + '&name=' + enc(name) + '&value=' + enc(value), { method: 'POST' });
+    const j = await r.json();
+    toast(j.ok ? (done || 'Saved.') : j.error);
+  } catch (e) { toast("Couldn't reach the camera phone."); }
+  loadConfig();
+}
+
+function renderConfig() {
+  if (!C) return;
+  document.querySelectorAll('[data-set]').forEach(el => {
+    const v = C[el.dataset.set];
+    if (el.type === 'checkbox') el.checked = !!v; else if (document.activeElement !== el) el.value = v;
+  });
+  $('sensVal').textContent = Math.round(C.micSensitivity * 100) + '%';
+  $('breakVal').textContent = Math.floor(C.breakSecs / 60) + ':' + String(C.breakSecs % 60).padStart(2, '0');
+  document.querySelectorAll('#layoutSeg .btn').forEach(b => b.classList.toggle('on', +b.dataset.layout === C.layout));
+  $('soundLearned').textContent = C.soundLearned;
+  $('pictureLearned').textContent = C.pictureLearned;
+  if (document.activeElement !== $('zoom')) $('zoom').value = C.cameraZoom;
+  $('zoomVal').textContent = Math.round(C.cameraZoom * 100) + '%';
+  const sl = $('slots'); sl.innerHTML = '';
+  for (const g of C.slots) {
+    const d = document.createElement('div'); d.className = 'slot';
+    d.innerHTML = '<span class="num"></span><span class="nm"></span><button class="btn">Change</button>';
+    d.querySelector('.num').textContent = g.box;
+    const nm = d.querySelector('.nm'); nm.textContent = g.name || 'No game set'; if (!g.name) nm.classList.add('muted');
+    d.querySelector('.btn').onclick = () => openPicker(g.box, g.name);
+    sl.appendChild(d);
+  }
+}
+
+document.querySelectorAll('[data-set]').forEach(el => {
+  const name = el.dataset.set;
+  el.addEventListener('change', () => setting(name, el.type === 'checkbox' ? el.checked : el.value));
+  if (el.type === 'range') el.addEventListener('input', () => {
+    if (name === 'micSensitivity') $('sensVal').textContent = Math.round(el.value * 100) + '%';
+    if (name === 'breakSecs') $('breakVal').textContent = Math.floor(el.value / 60) + ':' + String(el.value % 60).padStart(2, '0');
+  });
+});
+document.querySelectorAll('#layoutSeg .btn').forEach(b => b.onclick = () => setting('layout', b.dataset.layout, 'Layout set. Check the games for each box.'));
+$('forgetSound').onclick = () => { if (confirm('Forget what it learned about the sound? It goes back to the built-in rules.')) act('forgetSound'); };
+$('forgetPicture').onclick = () => { if (confirm('Forget what the camera learned about the picture?')) act('forgetPicture'); setTimeout(loadConfig, 500); };
+
+// ---------------------------------------------------------------- games
+function openPicker(box, name) {
+  pickBox = box;
+  $('pickTitle').textContent = 'Box ' + box + (name ? ' (now ' + name + ')' : '');
+  $('picker').hidden = false; $('q').value = ''; $('otherName').value = '';
+  search('');
+  $('picker').scrollIntoView({ behavior: 'smooth' });
+}
+async function search(q) {
+  $('found').textContent = 'Looking…'; $('gameList').innerHTML = '';
+  try {
+    const r = await fetch('/games?k=' + enc(K) + '&q=' + enc(q), { cache: 'no-store' });
+    const list = await r.json();
+    $('found').textContent = list.length ? (q ? 'Tap a game' : 'On now and coming up. Tap a game.') : 'No games found.';
+    for (const g of list) {
+      const d = document.createElement('div'); d.className = 'gm';
+      d.innerHTML = '<div class="nm"></div><div class="small muted"></div>';
+      d.querySelector('.nm').textContent = g.name;
+      d.querySelector('.small').textContent = [g.detail, g.network].filter(Boolean).join(' · ');
+      d.onclick = () => assign('&id=' + enc(g.id), g.name);
+      $('gameList').appendChild(d);
+    }
+  } catch (e) { $('found').textContent = "Couldn't reach the camera phone."; }
+}
+let qTimer = 0;
+$('q').addEventListener('input', () => { clearTimeout(qTimer); qTimer = setTimeout(() => search($('q').value), 400); });
+async function assign(extra, name) {
+  try {
+    const r = await fetch('/assign?k=' + enc(K) + '&n=' + pickBox + extra, { method: 'POST' });
+    const j = await r.json();
+    toast(j.ok ? 'Box ' + pickBox + ': ' + name : j.error);
+    if (j.ok) $('picker').hidden = true;
+  } catch (e) { toast("Couldn't reach the camera phone."); }
+  loadConfig();
+}
+$('setOther').onclick = () => { const n = $('otherName').value.trim(); if (n) assign('&other=' + enc(n), n); };
+$('clearBox').onclick = async () => { await act('clearBox', pickBox); $('picker').hidden = true; loadConfig(); };
+$('closePick').onclick = () => $('picker').hidden = true;
+$('fill').onclick = async () => { await act('fill'); setTimeout(loadConfig, 2500); };
+
+// ---------------------------------------------------------------- camera: corners and zoom
+$('editCorners').onclick = () => {
+  if (!S || !S.corners || S.corners.length !== 8) return;
+  editing = S.corners.slice();
+  $('cornerBtns').hidden = false; $('editCorners').hidden = true;
+  $('camHelp').textContent = 'Drag each dot to a corner of the TV picture (the multiview grid), then Save.';
+  drawGrid();
+};
+function stopEditing() {
+  editing = null; $('cornerBtns').hidden = true; $('editCorners').hidden = false;
+  $('camHelp').textContent = 'What the camera phone sees, with the boxes as it reads them.'; drawGrid();
+}
+$('cancelCorners').onclick = stopEditing;
+$('saveCorners').onclick = async () => { const c = editing; stopEditing(); await setting('corners', c.map(v => v.toFixed(4)).join(','), 'Corners saved.'); };
+let dragging = -1;
+function pt(e) { const r = $('ov').getBoundingClientRect(); return [(e.clientX - r.left) / r.width, (e.clientY - r.top) / r.height, r]; }
+$('ov').addEventListener('pointerdown', e => {
+  if (!editing) return;
+  const [x, y, r] = pt(e); let best = -1, bd = 1e9;
+  for (let i = 0; i < 4; i++) { const dx = (editing[i * 2] - x) * r.width, dy = (editing[i * 2 + 1] - y) * r.height, d = dx * dx + dy * dy; if (d < bd) { bd = d; best = i; } }
+  if (bd < 60 * 60) { dragging = best; $('ov').setPointerCapture(e.pointerId); e.preventDefault(); }
+});
+$('ov').addEventListener('pointermove', e => {
+  if (dragging < 0 || !editing) return;
+  const [x, y] = pt(e); editing[dragging * 2] = Math.min(1, Math.max(0, x)); editing[dragging * 2 + 1] = Math.min(1, Math.max(0, y)); drawGrid(); e.preventDefault();
+});
+$('ov').addEventListener('pointerup', () => dragging = -1);
+$('ov').style.touchAction = 'none';
+$('zoom').addEventListener('input', () => $('zoomVal').textContent = Math.round($('zoom').value * 100) + '%');
+$('zoom').addEventListener('change', () => setting('cameraZoom', $('zoom').value, 'Zoom set. Finding the TV again.'));
+
+// ---------------------------------------------------------------- TV remote
+document.querySelectorAll('[data-key]').forEach(b => b.addEventListener('click', () => {
+  if (b.dataset.key === 'POWER' && !confirm('Turn the TV off?')) return;
+  act('key', 0, b.dataset.key);
+}));
 </script>
 </body>
 </html>

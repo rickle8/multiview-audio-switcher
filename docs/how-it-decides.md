@@ -1,4 +1,4 @@
-# Multiview Audio: how it decides (v1.0.88)
+# Multiview Audio: how it decides (v1.0.89)
 
 Built for one setup: a Samsung QN75Q8F, YouTube TV multiview with 4 games (2x2), and a Galaxy S21 on a stand facing the TV doing everything (listening, watching, pressing the TV's buttons). College football Saturdays, NFL Sundays.
 
@@ -148,6 +148,13 @@ The camera phone serves a control page on your home Wi-Fi. Scan the code in Sett
 - start, stop, pause, and the camera's "Is it there?" question
 - what the camera sees, with the boxes it reads drawn on it, and "Find the TV again"
 - the activity log, and **Copy diagnostics** to paste into a chat
+
+Tabs along the top (v1.0.89):
+- **Control:** all of the above.
+- **Games:** each box's game; Change searches games on now (or a team or network) and sets it, or sets "something else" by name; fill empty boxes; clear a box.
+- **Settings:** mic on or off, how quick to call a commercial, ESPN play-by-play, going back to your game, the camera on or off, typical break length, the layout; what the sound and picture have learned, and buttons to forget either.
+- **Camera:** the live picture with the boxes drawn on it; Find the TV again; Move the corners (drag the four dots to the TV's corners, then Save); zoom.
+- **TV:** arrows, OK, back, home, volume, mute, play, pause, power. Arrows count toward where the app thinks the sound is.
 
 Both phones need the same Wi-Fi, and the app open on the camera phone. Only a device with the link's key can use it.
 
