@@ -926,7 +926,7 @@ object Engine {
     // What the phone's text recognition reads in each box.
     private val tileRead = java.util.concurrent.ConcurrentHashMap<Int, Pair<com.rickle8.mvswitch.core.TileRead, Double>>()
     private val tileGameAt = java.util.concurrent.ConcurrentHashMap<Int, Double>()
-    private val tileMismatchLogged = HashSet<String>()
+    private val tileMismatchLogged = java.util.Collections.synchronizedSet(HashSet<String>())
 
     /** Where the grid is and the layout, for the text reader (null when the camera isn't set up). */
     fun cameraGrid(): Pair<List<Pair<Double, Double>>, Int>? {
@@ -936,7 +936,9 @@ object Engine {
     }
 
     /** The text read off one box: a score bug means that box is showing its game. */
-    fun onTileText(box: Int, text: String) {
+    fun onTileText(box: Int, text: String) = runCatching { tileText(box, text) }.let { }
+
+    private fun tileText(box: Int, text: String) {
         val n = now()
         val f = feed ?: previewFeed
         val teams = f?.teamWords().orEmpty()

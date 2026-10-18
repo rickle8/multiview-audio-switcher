@@ -37,7 +37,7 @@ class CameraEye(
     private val grid: () -> Pair<List<Pair<Double, Double>>, Int>?,
     private val onText: (Int, String) -> Unit,
 ) {
-    private val ocr = TileOcr(onText, onError)
+    private val ocr = TileOcr(context.filesDir, onText, onError)
     private var lastOcrAt = 0L
     private val executor = Executors.newSingleThreadExecutor()
     private var provider: ProcessCameraProvider? = null
@@ -158,8 +158,8 @@ class CameraEye(
             }
             onFrame(upright(raw, w, h, rotDeg), rotDeg)
             // Every half second, hand one box at full resolution to the text reader.
-            val g = grid()
-            if (g != null && now - lastOcrAt >= 450 && ocr.ready()) {
+            val g = runCatching { grid() }.getOrNull()
+            if (g != null && now - lastOcrAt >= 450 && ocr.ready()) try {
                 lastOcrAt = now
                 val full = ByteArray(srcW * srcH)
                 if (pxStride == 1) {
@@ -169,9 +169,12 @@ class CameraEye(
                     for (yy in 0 until srcH) for (x in 0 until srcW) full[yy * srcW + x] = buf.get(yy * rowStride + x * pxStride)
                 }
                 ocr.submit(GrayFrame(srcW, srcH, full), rotDeg, g.first, g.second)
+            } catch (t: Throwable) {
+                buf.rewind()
+                onError("text reading: ${t.message ?: t.javaClass.simpleName}")
             }
             if (wantColor()) onColor(colorBitmap(img, step, w, h, rotDeg))
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             onError(e.message ?: "camera frame failed")
         } finally {
             img.close()
