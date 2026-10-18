@@ -45,7 +45,7 @@ data class Sight(
         if (adText) parts += "ad text"
         bugGoneSecs?.let { parts += "score bug gone ${it.toInt()} s" }
         if (bugShape != null && !bug && bugGoneSecs == null) parts += if (bugShape) "score bar" else "no score bar"
-        return parts.joinToString(", ").ifEmpty { "nothing telling" }
+        return parts.joinToString(", ").ifEmpty { "not sure" }
     }
 }
 

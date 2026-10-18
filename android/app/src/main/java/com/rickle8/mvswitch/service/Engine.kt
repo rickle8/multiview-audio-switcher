@@ -753,7 +753,6 @@ object Engine {
         }
         var micFails = 0
         var loopErrors = 0
-        var vocabAt = -1e9
         try {
             while (currentCoroutineContext().isActive) {
               try {
@@ -1050,23 +1049,22 @@ object Engine {
 
     // What the phone's text recognition reads in each box.
     private val tileRead = java.util.concurrent.ConcurrentHashMap<Int, Pair<com.rickle8.mvswitch.core.TileRead, Double>>()
-    private val tileGameAt = java.util.concurrent.ConcurrentHashMap<Int, Double>()
+    /** Each box's score bug read over time: when, how dependably, how long it's been gone. */
+    private val bugReads = com.rickle8.mvswitch.core.BugReads()
     /** Per box: when it last read commercial text there (a web address, fine print) with no score bug. */
     private val tileAdAt = java.util.concurrent.ConcurrentHashMap<Int, Double>()
     /** Per box: when it last read a scores ticker there (other games: says nothing about this one). */
     private val tileTickerAt = java.util.concurrent.ConcurrentHashMap<Int, Double>()
     /** Where each box's ticker scrolls, so even one of your games going by on it isn't read as this box's game. */
     private val tickers = com.rickle8.mvswitch.core.TickerBands()
-    /** Per box: when it read a score bug, over the last couple of minutes (how dependable reading that box is). */
-    private val tileGameTimes = java.util.concurrent.ConcurrentHashMap<Int, ArrayDeque<Double>>()
-    /** Per box: every read in the last couple of minutes (when, score bug read, its graphics said halftime or final). */
-    private val tileReads = java.util.concurrent.ConcurrentHashMap<Int, ArrayDeque<Triple<Double, Boolean, Boolean>>>()
+
     private val tileMismatchLogged = java.util.Collections.synchronizedSet(HashSet<String>())
 
     /** Where the grid is and the layout, for the text reader (null when the camera isn't set up). */
     fun cameraGrid(): Pair<List<Pair<Double, Double>>, Int>? {
         val s = _settings.value
-        if (!s.useCamera || finding || s.gridRotation < 0) return null
+        // Not while the phone is turned from where the grid was lined up (it re-finds the TV after 3 s).
+        if (!s.useCamera || finding || s.gridRotation < 0 || (cameraRotation >= 0 && cameraRotation != s.gridRotation)) return null
         return s.gridCorners.chunked(2).map { it[0] to it[1] } to s.layout
     }
 
@@ -1083,16 +1081,9 @@ object Engine {
         val r = com.rickle8.mvswitch.core.TileText.read(lines, teams, scores, own = box, sides = sides,
             tickerBand = tickers.band(box, n), steady = { tickers.steady(box, it) })
         tileRead[box] = r to n
-        tileReads.getOrPut(box) { ArrayDeque() }.let { q ->
-            synchronized(q) { q.addLast(Triple(n, r.game, r.notLive)); while (q.isNotEmpty() && n - q.first().first > 120) q.removeFirst() }
-        }
+        bugReads.add(box, n, r.game, r.notLive)
         if (r.ad) tileAdAt[box] = n
         if (r.ticker) tileTickerAt[box] = n
-        if (r.game) {
-            tileGameAt[box] = n
-            val q = tileGameTimes.getOrPut(box) { ArrayDeque() }
-            synchronized(q) { q.addLast(n); while (q.isNotEmpty() && n - q.first() > 120) q.removeFirst() }
-        }
         // The games in the Games tab in a different order than on the TV? Say so once.
         val other = r.showsGameOf
         if (r.game && other != null && other != box) {
@@ -1135,65 +1126,34 @@ object Engine {
     }
 
     /**
-     * This game's score bug just went away: it read it on nearly every read of this box (60%+ of
-     * the 40 s before), then missed it enough reads in a row, 8 s or more, that it isn't a misread,
-     * while it still reads the other boxes. A cut to commercial looks like that (so do some replays,
-     * which is why it only backs up the sound). Halftime or final in its graphics isn't gone.
-     */
-    private fun bugJustGone(box: Int, n: Double, boxes: Int): Boolean {
-        val at = tileGameAt[box] ?: return false
-        if (n - at !in 8.0..45.0) return false
-        val q = tileReads[box] ?: return false
-        val (before, since) = synchronized(q) { q.filter { it.first in (at - 40)..at } to q.filter { it.first > at } }
-        if (before.size < 8 || since.size < 3 || since.any { it.third } || n - since.last().first > 6) return false
-        val hit = before.count { it.second }.toDouble() / before.size
-        if (hit < 0.6 || Math.pow(1 - hit, since.size.toDouble()) > 0.01) return false
-        return (1..boxes).any { it != box && tileGameAt[it]?.let { t -> n - t < 20 } == true }
-    }
-
-    /**
      * What the text on a box says: the game (its score bug read in the last 10 s), a commercial
      * (it reads this box's score bug normally but nothing for 45 s, longer than replays and
      * close-ups, while it still reads other boxes, so the camera can see), or not sure.
      */
-    private fun textSays(box: Int, n: Double, boxes: Int): Boolean? {
+    private fun textSays(box: Int, n: Double): Boolean? {
         // Commercial text read lately (and no score bug since): a commercial, no waiting.
         if (adTextNow(box, n)) return false
-        val at = tileGameAt[box] ?: return null
-        if (n - at < 10) return true
-        return if ((bugGoneSecs(box, n, boxes) ?: 0.0) >= 45) false else null
+        if (bugReads.readWithin(box, n, 10.0)) return true
+        return if ((bugGoneSecs(box, n) ?: 0.0) >= 45) false else null
     }
 
     private fun adTextNow(box: Int, n: Double): Boolean {
         val adAt = tileAdAt[box] ?: return false
-        return n - adAt < 10 && (tileGameAt[box] ?: -1e9) < adAt
+        return n - adAt < 10 && (bugReads.gameAt(box) ?: -1e9) < adAt
     }
 
-    /**
-     * How long this box's score bug has been missing, when that means something: 8 to 45 s on a box
-     * where it's read nearly every time ([bugJustGone]), or 45 s to 20 minutes on one where it was
-     * read 4+ times in the minute before it went (longer than replays and close-ups), while it still
-     * reads other boxes. Its graphics saying halftime or final in the last minute isn't gone.
-     */
-    private fun bugGoneSecs(box: Int, n: Double, boxes: Int): Double? {
-        val at = tileGameAt[box] ?: return null
-        val gone = n - at
-        if (gone < 8) return null
-        if (gone < 45) return if (bugJustGone(box, n, boxes)) gone else null
-        if (gone > 1200) return null
-        val read = tileRead[box] ?: return null
-        if (n - read.second > 10) return null
-        val notLive = tileReads[box]?.let { q -> synchronized(q) { q.any { it.third && n - it.first < 60 } } } == true
-        val seesTv = (1..boxes).any { it != box && tileGameAt[it]?.let { t -> n - t < 45 } == true }
-        val dependable = tileGameTimes[box]?.let { q -> synchronized(q) { q.count { it in (at - 60)..at } } }?.let { it >= 4 } == true
-        return if (!notLive && seesTv && dependable) gone else null
+    /** How long this box's score bug has been missing, when that means something (see [BugReads.goneSecs]). */
+    private fun bugGoneSecs(box: Int, n: Double): Double? {
+        // Halftime: the score bug is off for much of the studio show, so its absence says nothing.
+        if ((feed ?: previewFeed)?.info?.get(box)?.statusName == "STATUS_HALFTIME") return null
+        return bugReads.goneSecs(box, n)
     }
 
     /** What the camera sees on a box right now, for pairing with the sound. */
-    private fun sightFor(box: Int, v: com.rickle8.mvswitch.core.CameraView, n: Double, boxes: Int) =
+    private fun sightFor(box: Int, v: com.rickle8.mvswitch.core.CameraView, n: Double) =
         com.rickle8.mvswitch.core.Sight(
-            bug = tileGameAt[box]?.let { n - it < 6 } == true,
-            bugGoneSecs = bugGoneSecs(box, n, boxes),
+            bug = bugReads.readWithin(box, n, 6.0),
+            bugGoneSecs = bugGoneSecs(box, n),
             lines = lineWatch.trusted(box) && lineWatch.linesNow(box, n),
             grass = field.trusted(box) && field.fieldNow(box, n),
             adText = adTextNow(box, n),
@@ -1208,8 +1168,8 @@ object Engine {
         val r = lastResult
         for (b in 1..boxes) {
             val bug = v.showingGame[b] ?: continue
-            val text = textSays(b, n, boxes)
-            val textNow = tileGameAt[b]?.let { n - it < 3 } == true
+            val text = textSays(b, n)
+            val textNow = bugReads.readWithin(b, n, 3.0)
             val here = onSound && b == cur
             val knownAd = here && r != null && r.heard == Heard.AD && r.strongAd
             val saidGame = here && gameSaidAt[b]?.let { n - it in 8.0..20.0 } == true
@@ -1240,12 +1200,12 @@ object Engine {
         val r = lastResult
         for (b in 1..boxes) {
             val here = onSound && b == cur
-            val textNow = tileGameAt[b]?.let { n - it < 3 } == true
+            val textNow = bugReads.readWithin(b, n, 3.0)
             val heard = if (here) r?.heard else null
             val sureAd = (here && r != null && r.heard == Heard.AD && r.strongAd) ||
                 (tileAdAt[b]?.let { n - it < 5 } == true)
             val game = textNow || heard == Heard.GAME
-            val commercial = textSays(b, n, boxes) == false || heard == Heard.AD
+            val commercial = textSays(b, n) == false || heard == Heard.AD
             field.check(b, n, game = game, commercial = commercial, sureAd = sureAd)
             lineWatch.check(b, n, game = game, commercial = commercial, sureAd = sureAd)
         }
@@ -1333,12 +1293,12 @@ object Engine {
         // Score bars are only learned from boxes known to be showing the game.
         val gameLikely = (1..boxCount(s)).filter { b ->
             (b == cur && lastResult?.heard == Heard.GAME) ||
-                (tileGameAt[b]?.let { n - it < 10 } == true) ||
+                bugReads.readWithin(b, n, 10.0) ||
                 (c != null && c.outlook(b, n, ignoreCamera = true).first == com.rickle8.mvswitch.core.Controller.Outlook.LIVE)
         }.toSet()
         // ...and never from one known to be in commercial.
         val adLikely = (1..boxCount(s)).filter { b ->
-            (b == cur && lastResult?.heard == Heard.AD) || textSays(b, n, boxCount(s)) == false ||
+            (b == cur && lastResult?.heard == Heard.AD) || textSays(b, n) == false ||
                 (c != null && c.outlook(b, n, ignoreCamera = true).first == com.rickle8.mvswitch.core.Controller.Outlook.BREAK)
         }.toSet() - gameLikely
         val v = watcher!!.frame(img, gameLikely, adLikely)
@@ -1348,11 +1308,10 @@ object Engine {
         checkField(cur, job?.isActive == true, n, boxCount(s))
         // What the camera sees on each box: its score bug, yard lines, the field, commercial text. The
         // switching logic pairs it with the sound on the box you're hearing, and uses its word on the others.
-        val sights = (1..boxCount(s)).associateWith { b -> sightFor(b, v, n, boxCount(s)) }
+        val sights = (1..boxCount(s)).associateWith { b -> sightFor(b, v, n) }
         cameraSights = sights
         cameraMerged = sights.mapValues { it.value.word }
         c?.sights = n to sights
-        c?.camera = n to cameraMerged
         // YouTube TV flashes an outline on the box the sound moves to. Every move the app makes
         // checks it; once it has proven it reads the outline right, a flash the app didn't cause
         // (you, with the TV remote) moves the app's sound box too. Until then it only asks.
@@ -1420,6 +1379,8 @@ object Engine {
         paused = false
         holdUntil = 0.0
         needResync = true
+        // Multiview just put up: the sound starts on box 1 (with homing on, the resync presses its way there).
+        synchronized(lock) { if (!_settings.value.homing) nav?.current = 1 }
         log("Running. Audio on box 1.")
     }
 
@@ -2012,7 +1973,7 @@ object Engine {
                     (v?.scoreBar?.get(b)?.let { " $it%" } ?: "") +
                     " (matched the text up ${bugUp[b] ?: 0}/2, gone ${bugGone[b] ?: 0}/1)" +
                     ", text " + (text?.let { (r, t) -> "\"${r.summary.take(40)}\" ${(n - t).toInt()} s ago" } ?: "none read") +
-                    (tileGameAt[b]?.let { ", score bug text ${(n - it).toInt()} s ago" } ?: "") +
+                    (bugReads.gameAt(b)?.let { ", score bug text ${(n - it).toInt()} s ago" } ?: "") +
                     (tileTickerAt[b]?.let { ", ticker ${(n - it).toInt()} s ago" } ?: "") +
                     (tileAdAt[b]?.let { ", commercial text ${(n - it).toInt()} s ago" } ?: ""))
             }

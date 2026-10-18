@@ -6,15 +6,11 @@ import kotlin.math.ln
 import kotlin.math.max
 import kotlin.math.sqrt
 
-/**
- * One second from the mic: raw audio, YAMNet's score for each of its 521 sound
- * types, and a level-boosted copy for speech recognition.
- */
+/** One second from the mic: raw audio, and YAMNet's score for each of its 521 sound types. */
 class MicSecond(
     val samples: FloatArray,
     val scores: FloatArray,
     val names: Array<String>,
-    val boosted: FloatArray = samples,
 )
 
 data class DetectResult(
@@ -113,8 +109,6 @@ class Detector(private val dir: File? = null) {
     private var pendingPrintUntil = 0.0
     private var dirty = false
     private var lastSave = 0.0
-    var lastWhy: String? = null
-        private set
 
     fun labelingNow(now: Double): String? =
         if (now < labelUntil) (if (labelAsAd) "commercial" else "game") else null
@@ -236,7 +230,6 @@ class Detector(private val dir: File? = null) {
             recentTransition && heard == Heard.AD -> "Sound changed suddenly"
             else -> effBias.why?.replaceFirstChar { it.uppercase() }
         }
-        lastWhy = why
         val frac = verdict.adFraction(effBias.windowSecs)
         return DetectResult(heard, strong, frac?.let { (it * 100).toInt() }, why, top)
     }

@@ -463,6 +463,19 @@ class BroadcastTest {
         assertFalse(c.step(Heard.GAME, adPct = 12))
     }
 
+    @Test fun sureCommercialsEverywhereStillSettle() {
+        var now = 100.0
+        val logs = mutableListOf<String>()
+        val nav = Navigator(quiet, LAYOUTS.getValue(4), home = false, sleep = {})
+        val f = GameFeed(emptyMap(), { JSONObject() }, { now }, pollSecs = 1e9)
+        val c = Controller(nav, listOf(1, 2, 3, 4), f, clock = { now }, log = { logs += it })
+        // Each box it lands on is in commercial too, and it's sure of each one.
+        assertTrue(c.step(Heard.AD, strongAd = true))
+        now = 110.0; assertTrue(c.step(Heard.AD, strongAd = true))
+        now = 120.0; assertFalse(c.step(Heard.AD, strongAd = true))
+        assertTrue(logs.last().startsWith("Commercials everywhere"))
+    }
+
     @Test fun yardLinesHoldAnAdSoundingMoment() {
         var now = 100.0
         val nav = Navigator(quiet, LAYOUTS.getValue(4), home = false, sleep = {})

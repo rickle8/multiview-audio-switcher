@@ -11,6 +11,9 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class LogicTest {
+    /** What the camera sees on a box in commercial. */
+    private val AD = Sight(adText = true)
+
     private class Clock { var t = 0.0 }
 
     private class Recorder : Remote {
@@ -214,6 +217,41 @@ class LogicTest {
         assertNotEquals(1, nav.current)
     }
 
+    @Test fun halftimeStillGoesWhenEspnHasPlays() {
+        // A real game has plays: its end-of-half play used to keep pushing halftime's "go" back forever.
+        val info = (1..4).associateWith { nfl(14, 10, 2, 0.0) }.toMutableMap()
+        info[1] = nfl(14, 10, 2, 0.0, GameStatus.BREAK, statusName = "STATUS_HALFTIME")
+        val status = mapOf(1 to GameStatus.BREAK, 2 to GameStatus.LIVE, 3 to GameStatus.LIVE, 4 to GameStatus.LIVE)
+        val (ctrl, nav, c) = setup(info, status, plays = mutableMapOf(1 to ("End of Half: END QUARTER 2" to 20.0)))
+        for (t in 100 until 140) { c.t = t.toDouble(); assertFalse("the TV is still behind at $t", ctrl.step(Heard.GAME)) }
+        c.t = 141.0
+        assertTrue(ctrl.step(Heard.GAME))
+        assertNotEquals(1, nav.current)
+    }
+
+    @Test fun theBandOnTheFieldAtHalftimeIsntTheGameBack() {
+        // You're on box 2 while box 1 (your game) is at halftime; the camera sees box 1's field and lines (the band).
+        val info = (1..4).associateWith { nfl(14, 10, 3, 400.0) }.toMutableMap()
+        info[1] = nfl(14, 10, 2, 0.0, GameStatus.BREAK, statusName = "STATUS_HALFTIME")
+        val status = mapOf(1 to GameStatus.BREAK, 2 to GameStatus.LIVE, 3 to GameStatus.LIVE, 4 to GameStatus.LIVE)
+        val (ctrl, nav, c) = setup(info, status)
+        nav.current = 2; ctrl.returnTo = 1
+        c.t = 100.0; ctrl.see(c.t, 1 to Sight(lines = true, grass = true), 2 to Sight(bug = true))
+        assertFalse(ctrl.step(Heard.GAME))
+        assertEquals(2, nav.current)
+        assertEquals(Controller.Outlook.SHOW, ctrl.outlook(1, c.t).first)
+        // Its score bug gone says nothing at halftime either; commercial text does.
+        ctrl.see(c.t, 1 to Sight(bugGoneSecs = 60.0))
+        assertEquals(Controller.Outlook.SHOW, ctrl.outlook(1, c.t).first)
+        ctrl.see(c.t, 1 to Sight(adText = true))
+        assertEquals(Controller.Outlook.BREAK, ctrl.outlook(1, c.t).first)
+        // The second half kicks off: the camera reads its live score bug before ESPN's status moves on.
+        c.t = 130.0; ctrl.see(c.t, 1 to Sight(bug = true, lines = true), 2 to Sight(bug = true))
+        assertEquals(Controller.Outlook.LIVE, ctrl.outlook(1, c.t).first)
+        assertTrue(ctrl.step(Heard.GAME))
+        assertEquals(1, nav.current)
+    }
+
     @Test fun aHalftimeShowBeatsACommercial() {
         val info = (1..4).associateWith { nfl(14, 10, 3, 400.0) }.toMutableMap()
         info[2] = nfl(14, 10, 2, 0.0, GameStatus.BREAK, statusName = "STATUS_HALFTIME")
@@ -221,7 +259,7 @@ class LogicTest {
         val (ctrl, nav, c) = setup(info, status)
         c.t = 100.0
         // Your game goes to commercial; boxes 3 and 4 are in commercials too (the camera sees them).
-        ctrl.camera = c.t to mapOf(3 to false, 4 to false)
+        ctrl.see(c.t, 3 to AD, 4 to AD)
         assertTrue(ctrl.step(Heard.AD))
         assertEquals(2, nav.current)
     }
@@ -231,13 +269,13 @@ class LogicTest {
         info[1] = nfl(14, 10, 2, 0.0, GameStatus.BREAK, statusName = "STATUS_HALFTIME")
         val status = mapOf(1 to GameStatus.BREAK, 2 to GameStatus.LIVE, 3 to GameStatus.LIVE, 4 to GameStatus.LIVE)
         val (ctrl, nav, c) = setup(info, status)
-        c.t = 100.0; ctrl.camera = c.t to mapOf(2 to false, 3 to false, 4 to false)
+        c.t = 100.0; ctrl.see(c.t, 2 to AD, 3 to AD, 4 to AD)
         assertFalse("the TV isn't at halftime yet", ctrl.step(Heard.GAME))
-        c.t = 141.0; ctrl.camera = c.t to mapOf(2 to false, 3 to false, 4 to false)
+        c.t = 141.0; ctrl.see(c.t, 2 to AD, 3 to AD, 4 to AD)
         assertFalse("nothing else is being played: stays for the halftime show", ctrl.step(Heard.GAME))
         assertEquals(1, nav.current)
         // Box 3 is back from its commercial: a live game beats the halftime show.
-        c.t = 170.0; ctrl.camera = c.t to mapOf(2 to false, 3 to true, 4 to false)
+        c.t = 170.0; ctrl.see(c.t, 2 to AD, 3 to Sight(bug = true), 4 to AD)
         assertTrue(ctrl.step(Heard.GAME))
         assertEquals(3, nav.current)
         // Box 1 is still the one to go back to when its second half starts.
@@ -294,7 +332,7 @@ class LogicTest {
         val nav = Navigator(Recorder(), LAYOUTS.getValue(2), home = false, sleep = {})
         val ctrl = Controller(nav, listOf(1, 2), f, clock = { c.t })
         assertFalse(ctrl.step(Heard.GAME))
-        assertNull(f.latestPlay(2))
+        assertTrue(f.plays(2).isEmpty())
     }
 
     // ---- detection fixes ----

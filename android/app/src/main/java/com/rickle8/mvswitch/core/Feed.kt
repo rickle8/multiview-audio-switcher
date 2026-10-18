@@ -299,12 +299,10 @@ class GameFeed(
     private val clockMoved = java.util.concurrent.ConcurrentHashMap<Int, Double>()
     /** How long after a play happened this app first saw it (ESPN's own delay), seconds. */
     private val lagSamples = ArrayDeque<Double>()
-    private val names = java.util.concurrent.ConcurrentHashMap<Int, Set<String>>()
     private val teams = java.util.concurrent.ConcurrentHashMap<Int, Set<String>>()
     /** Per box, each team's words on its own (abbreviation, name, place), to tell one team from both. */
     private val sides = java.util.concurrent.ConcurrentHashMap<Int, List<Set<String>>>()
 
-    private val namesAt = HashMap<Int, Double>()
 
     /** The game whose play-by-play is polled every few seconds (the one you're hearing). */
     @Volatile var focusBox: Int? = null
@@ -376,10 +374,7 @@ class GameFeed(
             info[box] = gi
             if (gi.status == GameStatus.LIVE || gi.status == GameStatus.BREAK) noteClock(box, "board", gi.period, gi.clock, now)
             teamSides(event).takeIf { it.size == 2 }?.let { sides[box] = it }
-            teamNames(event).takeIf { it.isNotEmpty() }?.let { t ->
-                val cur = names[box].orEmpty()
-                if (!cur.containsAll(t)) { teams[box] = t; names[box] = t + cur }
-            }
+            teamNames(event).takeIf { it.isNotEmpty() }?.let { teams[box] = it }
             // The scoreboard only has the latest play. Use it when play-by-play isn't flowing.
             val play = gi.lastPlay
             val pbpFresh = (summaryOk[box] ?: -1e9) > now - 30
@@ -411,12 +406,6 @@ class GameFeed(
             // The summary gives "5:21" (displayClock), the scoreboard a number of seconds.
             val secs = if (st.has("clock")) st.optDouble("clock") else clockSeconds(st.optString("displayClock"))
             if (secs != null) noteClock(box, "pbp", st.optInt("period", 0), secs, now)
-        }
-        if (now - (namesAt[box] ?: -1e9) > 600) {
-            namesAt[box] = now
-            val found = HashSet<String>()
-            athleteNames(json, found, 0)
-            if (found.isNotEmpty()) names[box] = (teams[box].orEmpty() + names[box].orEmpty() + found).take(150).toSet()
         }
         if (plays.isEmpty()) return
         summaryOk[box] = now
@@ -474,45 +463,8 @@ class GameFeed(
     /** Each game's two teams, each as its own words (lowercase). */
     fun teamSides(): Map<Int, List<Set<String>>> = HashMap(sides)
 
-    /** Player and team names for every game, lowercase (for the announcers' words). */
-    fun names(): Set<String> = names.values.flatten().toSet()
-
-
-    @Synchronized
-    fun latestPlay(box: Int): Pair<String, Double>? = log[box]?.lastOrNull()?.let { it.text to it.seen }
-
     @Synchronized
     fun plays(box: Int): List<Play> = log[box]?.toList().orEmpty()
-
-    @Synchronized
-    fun playChangedSince(box: Int, t: Double): Boolean {
-        val p = log[box]?.lastOrNull() ?: return false
-        return p.seen > t && !isBreakPlay(p.text)
-    }
-}
-
-private val NAME_SUFFIX = setOf("jr", "sr", "ii", "iii", "iv", "v")
-
-private fun cleanName(full: String): String? {
-    val words = full.lowercase().replace('-', ' ').replace(Regex("[^a-z' ]"), " ").split(' ')
-        .filter { it.isNotBlank() && it !in NAME_SUFFIX }
-    val last = words.lastOrNull() ?: return null
-    return last.takeIf { it.length >= 3 }
-}
-
-/** Last names of every athlete mentioned in an ESPN game summary. */
-fun athleteNames(j: Any?, out: MutableSet<String>, depth: Int) {
-    if (depth > 14 || out.size >= 150) return
-    when (j) {
-        is JSONObject -> {
-            j.optJSONObject("athlete")?.let { a ->
-                (a.optString("lastName").ifBlank { null }?.let { cleanName(it) }
-                    ?: cleanName(a.optString("displayName")))?.let { out += it }
-            }
-            for (k in j.keys()) athleteNames(j.opt(k), out, depth + 1)
-        }
-        is org.json.JSONArray -> for (i in 0 until j.length()) athleteNames(j.opt(i), out, depth + 1)
-    }
 }
 
 /** Each competitor's words from a scoreboard event: abbreviation, nickname, place, short name (lowercase). */

@@ -12,8 +12,6 @@ package com.rickle8.mvswitch.core
 data class TileRead(
     /** The game in the box is being played: its score bug with a live quarter, clock, down and distance. */
     val game: Boolean,
-    /** How sure (0 = nothing game-like, 5+ = unmistakable). */
-    val strength: Int,
     /** Which of your games it is, if the team names say so (box number of that game). */
     val showsGameOf: Int?,
     /** A short version of what it read, for the setup screen. */
@@ -102,20 +100,14 @@ object TileText {
         }
         val t = " " + norm(picture.toString()) + " "
         val notLive = NOT_LIVE.containsMatchIn(t)
-        var strength = 0
         val clock = CLOCK.containsMatchIn(t)
         val period = PERIOD.containsMatchIn(t)
         val down = DOWN.containsMatchIn(t)
-        if (clock) strength++
-        if (period) strength++
-        if (down) strength += 2
-        if (clock && period) strength++
         // Which game: the most team words from one game's teams (whole words only, so "OSU" isn't in "BOSUN").
         val hits = words.mapValues { (_, ws) -> ws.count { w -> t.contains(" $w ") } }.filterValues { it > 0 }
         val best = hits.maxByOrNull { it.value }
         val second = hits.values.sortedDescending().getOrNull(1) ?: 0
         val showsGameOf = best?.takeIf { it.value > second }?.key
-        if (showsGameOf != null) strength += minOf(2, best.value)
         // The game on screen (the one its teams say, else the one set for this box): its teams and
         // its score, at or near ESPN's (your TV runs behind ESPN, so up to a touchdown and a two-point
         // conversion lower, or a field goal higher when ESPN is the late one).
@@ -129,7 +121,6 @@ object TileText {
         val exactScore = score != null && numbers.count { it == score[0] } >= (if (score[0] == score[1]) 2 else 1) &&
             score[1] in numbers
         val closeScore = score != null && score.all { s -> numbers.any { it in (s - 8)..(s + 3) } }
-        if (exactScore) strength++
         val tickerText = norm(ticker.toString())
         val summary = (norm(picture.toString()).ifBlank { null }?.take(60) ?: "") +
             (if (tickerText.isNotBlank()) " [ticker: ${tickerText.take(30)}]" else "")
@@ -148,7 +139,7 @@ object TileText {
         // mid-game). Fine print along the bottom counts too, even where a ticker runs.
         val ad = !game && (AD_SURE.containsMatchIn(t) || AD_HINTS.count { it.containsMatchIn(t) } >= 2 ||
             AD_FINE_PRINT.containsMatchIn(" $tickerText "))
-        return TileRead(game, strength, showsGameOf, summary.trim(), ad, ticker = tickerText.isNotBlank(), notLive = notLive)
+        return TileRead(game, showsGameOf, summary.trim(), ad, ticker = tickerText.isNotBlank(), notLive = notLive)
     }
 
     /**

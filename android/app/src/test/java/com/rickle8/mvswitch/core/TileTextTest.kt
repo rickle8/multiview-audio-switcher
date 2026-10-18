@@ -20,7 +20,6 @@ class TileTextTest {
             mapOf(1 to listOf(14, 14)))
         assertTrue(r.game)
         assertEquals(1, r.showsGameOf)
-        assertTrue(r.strength >= 5)
     }
 
     @Test fun recognitionMistakesStillRead() {

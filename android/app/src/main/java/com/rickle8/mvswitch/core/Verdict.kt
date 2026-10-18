@@ -88,12 +88,6 @@ class Verdict(
         return ad / (game + ad)
     }
 
-    /** The game is back (the network's coming-back music): no need to wait. */
-    fun forceGame(t: Double) {
-        state = Heard.GAME
-        adSince = null
-    }
-
     /** A replayed commercial was recognized: no need to wait. */
     fun forceAd(t: Double) {
         state = Heard.AD

@@ -114,7 +114,7 @@ class MicClassifier(private val context: Context) {
         }
         if (count == 0) return null
         for (i in totals.indices) totals[i] /= count
-        return MicSecond(buffer.copyOf(), totals, names.copyOf(), boosted)
+        return MicSecond(buffer.copyOf(), totals, names.copyOf())
     }
 
     fun stop() {
