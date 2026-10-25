@@ -46,12 +46,22 @@ data class Bias(
         /** Sound dipped and then changed character: a break may have just started. */
         val TRANSITION = Bias(5.0, 4.0, 0.0, "sound changed suddenly")
         /** A play that usually leads to a break just happened. */
-        val LIKELY = Bias(6.0, 5.0, 0.0, "break likely after that play")
-        /** The game just came back from a break with nothing since that causes another. */
-        val UNLIKELY = Bias(10.0, 16.0, 0.08, "just back from a break")
+        val LIKELY = Bias(6.0, 4.0, 0.0, "break likely after that play")
+        /**
+         * The game just came back from a break with nothing since that causes another. Only a little
+         * slower: a wrong "back from the break" (a commercial with talking in it) used to hold the next
+         * commercial for 16 s and more.
+         */
+        val UNLIKELY = Bias(8.0, 8.0, 0.04, "just back from a break")
         val TRANSITION_BUT_UNLIKELY = Bias(5.0, 5.0, 0.0, "sound changed suddenly")
-        /** The game clock is running: commercials only air when it's stopped. */
-        val CLOCK = Bias(10.0, 16.0, 0.12, "game clock is running")
+        /**
+         * ESPN's clock was running a moment ago. Only a little slower: ESPN's data reaches the app
+         * after your TV shows it (about 15 s on the Oct 25 games), so the TV is often already in the
+         * commercial while ESPN still has the clock running.
+         */
+        val CLOCK = Bias(8.0, 8.0, 0.05, "game clock is running")
+        /** The camera sees a commercial on the box you're hearing: the first seconds of commercial sound are enough. */
+        val CAMERA_AD = Bias(4.0, 2.5, -0.05, "the camera sees a commercial")
         /** ESPN says a break is coming (a score, timeout, quarter end): the first few seconds of commercial sound are enough. */
         val EXPECTED = Bias(2.5, 2.0, -0.05, "ESPN said a break was coming")
         /** Just switched games: if this one is also in a break, notice fast and move on. */
@@ -115,7 +125,9 @@ class Verdict(
                 adSince = null
                 state = Heard.GAME
             }
-            else -> adSince = null
+            // In between: a commercial wobbling just under the line (55-60% for a few seconds, a voice
+            // over music) keeps its clock running; only a real drop toward the game starts it over.
+            else -> if (frac < (adThreshold + gameThreshold) / 2 + shift) adSince = null
         }
         return state
     }

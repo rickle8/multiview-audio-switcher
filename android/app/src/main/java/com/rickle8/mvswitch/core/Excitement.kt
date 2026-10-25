@@ -61,14 +61,37 @@ fun closeness(info: GameInfo, pick: String? = null): Double {
     return close
 }
 
+/** Dead time in football: a kickoff, an extra point, a touchback (and usually a commercial next). */
+private val DEAD_PLAY = Regex("kickoff|kicks \\d+ yards|extra point|touchback|two.point|\\bpat\\b", RegexOption.IGNORE_CASE)
+
+private fun margin(info: GameInfo): Int? =
+    info.scores.values.toList().takeIf { it.size == 2 }?.let { abs(it[0] - it[1]) }
+
+/**
+ * How worth watching a game is right now, the way RedZone picks: a close game late, and in football
+ * a touchdown one snap away (first and goal), the red zone, a 4th down, a one-score game in the last
+ * minutes; a kickoff or extra point is dead time.
+ */
 fun excitement(info: GameInfo?, slot: GameSlot?): Double {
     val importance = slot?.importance ?: 1.0
     if (info == null) return 0.5 * importance
     if (info.status != GameStatus.LIVE && info.status != GameStatus.BREAK) return 0.0
     val p = progress(info)
     val c = closeness(info, slot?.pick)
+    val m = margin(info)
     var score = 0.3 + c * (0.4 + 1.3 * min(p, 1.0).pow(2))
-    if (info.redZone) score += 0.4
+    if (info.league.startsWith("football")) {
+        if (info.redZone) score += 0.4
+        if (info.goalToGo) score += 0.2
+        // 4th down in a game still in reach: go for it, a long field goal, a stop.
+        if (info.down == 4 && c > 0.3) score += 0.25
+        // One score (8 points) with a few minutes left, more in the last two.
+        if (m != null && m <= 8 && p in 0.9..1.0) score += if (p >= 0.97) 0.6 else 0.35
+        info.lastPlay?.let { if (DEAD_PLAY.containsMatchIn(it)) score -= 0.25 }
+    } else if (info.league.startsWith("basketball")) {
+        // A one- or two-possession game in its last minutes.
+        if (m != null && m <= 6 && p in 0.93..1.0) score += if (p >= 0.98) 0.6 else 0.35
+    } else if (info.redZone) score += 0.4
     if (p > 1 && c > 0.5) score += 0.8
-    return ((score * importance) * 1000).roundToInt() / 1000.0
+    return ((maxOf(0.0, score) * importance) * 1000).roundToInt() / 1000.0
 }

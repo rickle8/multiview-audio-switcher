@@ -925,7 +925,7 @@ object Engine {
                     try {
                         val from = nav?.current
                         val started = now()
-                        if (lockedBox == null && ctrl?.commercialNow() == true) {
+                        if (lockedBox == null && ctrl?.commercialNow(cur) == true) {
                             noteAppMove(from, nav?.current, started)
                             recordSwitch(from, nav?.current, started)
                             mic?.drain()
@@ -1392,22 +1392,46 @@ object Engine {
         val flash = v.outlineAppeared
         if (flash != null) {
             lastOutline = flash to n
-            when (outline.flash(flash, n, cur)) {
-                com.rickle8.mvswitch.core.OutlineTrust.Action.FOLLOW -> if (job?.isActive == true && cur != null) {
+            when (val action = outline.flash(flash, n, cur)) {
+                com.rickle8.mvswitch.core.OutlineTrust.Action.NOTHING -> if (flash == cur) outlineAsk = null
+                // Not acted on yet: a flash only means you moved the sound if the sound changed too.
+                else -> pendingFlash = Triple(flash, n, action)
+            }
+        }
+        val pf = pendingFlash
+        if (pf != null && n - pf.second >= 3.5) {
+            pendingFlash = null
+            val (box, t, action) = pf
+            // The app moved the sound itself since (or just before): its own outline, not news.
+            val ownMove = appMovedAt > t - 2
+            val changed = !ownMove && synchronized(detector) { detector.soundChangedAt(t, notBefore = appMovedAt + 2) }
+            if (!ownMove && !changed) flashesIgnored++
+            val here = nav?.current
+            if (changed && here != null && here != box) {
+                if (action == com.rickle8.mvswitch.core.OutlineTrust.Action.FOLLOW && job?.isActive == true) {
                     synchronized(lock) {
-                        nav?.current = flash
+                        nav?.current = box
                         c?.lastSwitch = n
                         c?.returnTo = null
                     }
                     synchronized(detector) { detector.onSwitch() }
                     outlineAsk = null
-                    log("Camera: you moved the sound to box $flash. Going with it.")
+                    log("Camera: you moved the sound to box $box (the outline flashed there and the sound changed). Going with it.")
+                } else if (action == com.rickle8.mvswitch.core.OutlineTrust.Action.ASK && running) {
+                    outlineAsk = box to t
                 }
-                com.rickle8.mvswitch.core.OutlineTrust.Action.ASK -> if (running && cur != null) outlineAsk = flash to n
-                com.rickle8.mvswitch.core.OutlineTrust.Action.NOTHING -> if (flash == cur) outlineAsk = null
             }
         }
     }
+
+    /**
+     * An outline flash on a box the app didn't move the sound to, waiting a few seconds to hear whether
+     * the sound changed with it. On Oct 25 the camera "followed" three flashes on its own and all three
+     * were wrong (something on screen looked like the outline), which left it on the wrong box.
+     */
+    @Volatile private var pendingFlash: Triple<Int, Double, com.rickle8.mvswitch.core.OutlineTrust.Action>? = null
+    /** Outline flashes thrown out because the sound didn't change with them (for the diagnostics). */
+    @Volatile private var flashesIgnored = 0
 
     /** Expose and focus on the TV, not the room. */
     private fun meterOnGrid(flat: List<Double>) {
@@ -2275,6 +2299,23 @@ object Engine {
                 setGridCorners(c.map { it.coerceIn(0.0, 1.0) })
                 log("Camera: corners set from your phone.")
             }
+            // The games dragged into a new order: "3,1,2,4" puts what was in box 3 into box 1, and so on.
+            "order" -> {
+                val order = value.split(',').mapNotNull { it.trim().toIntOrNull() }
+                val n = boxCount(_settings.value)
+                if (order.size != n || order.toSet() != (1..n).toSet()) return "That order doesn't look right"
+                if (order == (1..n).toList()) return null
+                val cur0 = _settings.value
+                val slots = order.withIndex().mapNotNull { (i, from) -> cur0.slots[from]?.let { (i + 1) to it } }.toMap()
+                // The TV's multiview hasn't changed, only which game the app thinks is where: the sound
+                // is still on the same box after the restart.
+                nav?.current?.let { b ->
+                    runCatching { java.io.File(app.filesDir, "last_box.txt").writeText("$b|${System.currentTimeMillis()}|${gamesKey(cur0.copy(slots = slots))}") }
+                }
+                update { st -> st.copy(slots = slots) }
+                log("Games reordered from your phone: " + order.withIndex().filter { (i, f) -> i + 1 != f }
+                    .joinToString { (i, f) -> "box ${i + 1} now has box $f's game" } + ".")
+            }
             else -> return "That setting isn't known"
         }
         return null
@@ -2375,7 +2416,8 @@ object Engine {
             sb.appendLine("  Looked for the TV again ${tracker.looks} times, moved the grid ${tracker.moves}" +
                 (if (tracker.lastLookAt > 0) ", last look ${(n - tracker.lastLookAt).toInt()} s ago" else ""))
             sb.appendLine("  Outline checks on the app's own moves: right ${outline.right}, wrong ${outline.wrong}, " +
-                "not seen ${outline.missed}; " + (if (outline.trusted) "follows TV-remote moves" else "asks"))
+                "not seen ${outline.missed}; " + (if (outline.trusted) "follows TV-remote moves" else "asks") +
+                " (only when the sound changes too; $flashesIgnored flashes without a sound change ignored)")
             sb.appendLine("  Picture model: " + (visual?.describe() ?: "not started") + "; per box " +
                 (1..boxCount(s)).joinToString { b -> "$b " + (cameraSights[b]?.look?.let { "${(it * 100).toInt()}% ad" } ?: "-") })
             sb.appendLine("  Field green proven per box: " + (1..boxCount(s)).joinToString { b ->

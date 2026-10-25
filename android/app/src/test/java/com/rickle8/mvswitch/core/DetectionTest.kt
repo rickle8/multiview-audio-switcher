@@ -290,4 +290,25 @@ class DetectionTest {
         d.onSwitch() // the tap skips to another game
         assertTrue("only the last few seconds, not the game before: ${d.model.adSeconds}", d.model.adSeconds <= 3)
     }
+
+    @Test fun hearsTheSoundMoveToAnotherBox() {
+        // One game's sound, then another's (what moving the sound with the remote does), or the same
+        // game going on (what a graphic that looks like the outline leaves you with).
+        val one = throughRoom(jingle(43, 30), 9, snrDb = 0.0)
+        // Another broadcast: a low crowd rumble instead of the first one's music and talk.
+        val other = run {
+            val r = java.util.Random(5); var y = 0.0
+            FloatArray(Dsp.SR * 10) { y = 0.995 * y + r.nextGaussian() * 0.02; y.toFloat() }
+        }
+        val moved = Detector()
+        var t = 0.0
+        for (s in 0 until 12) moved.process(second(one, s), t++, 1, Bias.NORMAL, false)
+        val at = t
+        for (s in 0 until 5) moved.process(second(other, s), t++, 1, Bias.NORMAL, false)
+        assertTrue(moved.soundChangedAt(at))
+        val stayed = Detector()
+        t = 0.0
+        for (s in 0 until 17) stayed.process(second(one, s), t++, 1, Bias.NORMAL, false)
+        assertFalse(stayed.soundChangedAt(12.0))
+    }
 }

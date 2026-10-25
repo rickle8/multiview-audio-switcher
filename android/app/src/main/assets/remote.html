@@ -2,90 +2,114 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover,interactive-widget=overlays-content">
 <meta name="theme-color" content="#0C1015">
 <title>Multiview Audio</title>
 <style>
-:root{--bg:#0C1015;--surface:#151B23;--surface2:#1D2530;--line:#2A3441;--text:#E8EDF3;--muted:#8A96A6;--accent:#2BD9A0;--amber:#F5A524;--blue:#6CB4FF;--red:#FF6B6B}
+/* Built for a phone held in one hand: every piece keeps its size, the two big buttons never move. */
+:root{--bg:#0C1015;--surface:#151B23;--surface2:#1D2530;--line:#2A3441;--text:#E8EDF3;--muted:#8A96A6;--accent:#2BD9A0;--amber:#F5A524;--blue:#6CB4FF;--red:#FF6B6B;--bar:84px}
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
-body{margin:0 auto;max-width:560px;background:var(--bg);color:var(--text);font:16px/1.35 system-ui,-apple-system,Roboto,sans-serif;padding:16px 16px 48px}
-h1{font-size:24px;margin:4px 0 2px}
+[hidden]{display:none!important}
+html{-webkit-text-size-adjust:100%;text-size-adjust:100%;background:var(--bg)}
+body{margin:0 auto;max-width:560px;background:var(--bg);color:var(--text);font:16px/1.35 system-ui,-apple-system,Roboto,sans-serif;
+  padding:12px 16px calc(var(--bar) + 24px + env(safe-area-inset-bottom));overscroll-behavior-y:contain;overflow-x:hidden}
+button,input,select,textarea,label{touch-action:manipulation}
+h1{font-size:20px;margin:0;white-space:nowrap}
+.head{display:flex;align-items:baseline;gap:10px;height:28px}
+.one{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .muted{color:var(--muted)}.small{font-size:13px}
-.panel{background:var(--surface);border:1px solid var(--line);border-radius:16px;padding:14px;margin-top:14px}
-.grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:14px}
-.box{background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:10px 12px;min-height:96px;cursor:pointer}
-.box.sound{border:2px solid var(--accent);background:rgba(43,217,160,.10)}
-.box .top{display:flex;align-items:center;gap:6px}
+#status{flex:1;min-width:0;font-size:13px}
+.panel{background:var(--surface);border:1px solid var(--line);border-radius:16px;padding:12px 14px;margin-top:12px}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px}
+.box{position:relative;background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:9px 11px;height:104px;cursor:pointer;overflow:hidden;user-select:none;-webkit-user-select:none}
+.box.sound{border:2px solid var(--accent);background:rgba(43,217,160,.10);padding:8px 10px}
+.box .top{display:flex;align-items:center;gap:6px;height:20px}
 .box .num{color:var(--muted);font-size:12px;font-weight:700}
-.chip{display:inline-block;font-size:11px;font-weight:700;padding:2px 6px;border-radius:6px}
+.chip{display:inline-block;font-size:11px;font-weight:700;padding:2px 6px;border-radius:6px;white-space:nowrap}
 .chip.LIVE{color:var(--accent);background:rgba(43,217,160,.14)}
 .chip.BREAK{color:var(--amber);background:rgba(245,165,36,.14)}
 .chip.FINAL,.chip.EMPTY,.chip.NONE{color:var(--muted);background:rgba(138,150,166,.14)}
 .chip.LATER,.chip.OTHER,.chip.HALFTIME{color:var(--blue);background:rgba(108,180,255,.14)}
 .chip.NOGAME{color:var(--amber);background:rgba(245,165,36,.14)}
-.box .name{font-weight:600;margin-top:6px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.box .detail,.box .cam{font-size:12px;color:var(--muted);margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.box .name{font-weight:600;margin-top:5px;height:21px}
+.box .detail,.box .cam{font-size:12px;color:var(--muted);margin-top:2px;height:16px}
 .box .cam.game{color:var(--accent)}.box .cam.commercial{color:var(--amber)}
+.box.flash{animation:flash .5s}
+@keyframes flash{from{background:rgba(43,217,160,.35)}to{background:var(--surface)}}
 .sound-tag{margin-left:auto;font-size:12px;color:var(--accent);font-weight:700}
-.btn{appearance:none;border:1px solid var(--line);background:var(--surface2);color:var(--text);border-radius:12px;padding:12px;font:600 16px system-ui,-apple-system,Roboto,sans-serif;width:100%;cursor:pointer}
+.hint{font-size:12px;color:var(--muted);margin-top:6px;height:16px;text-align:center}
+.btn{appearance:none;border:1px solid var(--line);background:var(--surface2);color:var(--text);border-radius:12px;padding:12px;font:600 16px system-ui,-apple-system,Roboto,sans-serif;width:100%;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .btn:active{opacity:.7}
-.big{height:66px;font-size:18px}
+.btn:disabled{opacity:.45}
 .ad{border-color:var(--amber);color:var(--amber)}.game{border-color:var(--accent);color:var(--accent)}
-.row{display:flex;gap:10px;margin-top:12px}.row>*{flex:1}
-#ask{border-color:var(--blue);color:var(--blue)}
-#ask .row .btn{border-color:var(--blue);color:var(--blue)}
+.row{display:flex;gap:10px;margin-top:10px}.row>*{flex:1;min-width:0}
+/* The two big buttons: fixed to the bottom of the screen on the Control tab. */
+#bar{position:fixed;left:0;right:0;bottom:0;z-index:20;background:rgba(12,16,21,.96);border-top:1px solid var(--line);
+  padding:10px 16px calc(10px + env(safe-area-inset-bottom))}
+#bar .in{max-width:528px;margin:0 auto;display:flex;gap:10px}
+#bar .btn{height:calc(var(--bar) - 20px);font-size:19px;flex:1}
+#bar[hidden]{display:none}
+/* "Is the sound on box N?": over the top of the page, so nothing below it moves. */
+#ask{position:fixed;left:0;right:0;top:0;z-index:30;padding:10px 16px calc(10px);background:#10233A;border-bottom:1px solid var(--blue);color:var(--blue)}
+#ask[hidden]{display:none}
+#ask .in{max-width:528px;margin:0 auto}
+#ask .row .btn{border-color:var(--blue);color:var(--blue);padding:10px}
+#heard{height:22px;font-weight:600}
+#why{height:18px;margin-top:2px}
+#paired{height:36px;margin-top:2px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;font-size:13px}
 .meter{height:6px;border-radius:3px;background:var(--surface2);overflow:hidden;margin-top:8px}
-.meter>div{height:100%;background:var(--accent);width:0}
-.log div{display:flex;gap:10px;padding:5px 0;font-size:13px;color:var(--muted)}
+.meter>div{height:100%;background:var(--accent);width:0;transition:width .3s}
+#swText{height:38px;margin-top:4px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;font-size:14px}
+#swButtons .btn,#slowChips .btn{padding:10px 4px;font-size:15px;height:44px}
+.log{height:250px;overflow-y:auto;overscroll-behavior:contain}
+.log div{display:flex;gap:10px;padding:4px 0;font-size:13px;color:var(--muted)}
 .log div:first-child{color:var(--text)}
 .log span:first-child{flex:0 0 62px}
-summary{cursor:pointer;font-weight:600}
 .camwrap{position:relative;margin-top:10px}
-.camwrap img{width:100%;display:block;border-radius:10px;background:#000}
+.camwrap img{width:100%;display:block;border-radius:10px;background:#000;aspect-ratio:16/9;object-fit:contain}
 .camwrap canvas{position:absolute;left:0;top:0;width:100%;height:100%}
 textarea{width:100%;height:160px;margin-top:10px;background:var(--surface2);color:var(--text);border:1px solid var(--line);border-radius:10px;font:12px ui-monospace,monospace}
-#sheet{position:fixed;inset:0;background:rgba(0,0,0,.55);display:flex;align-items:flex-end;justify-content:center}
+#sheet{position:fixed;inset:0;z-index:40;background:rgba(0,0,0,.55);display:flex;align-items:flex-end;justify-content:center}
 #sheet[hidden]{display:none}
-#sheet .card{background:var(--surface2);width:100%;max-width:560px;border-radius:18px 18px 0 0;padding:16px 16px 28px}
+#sheet .card{background:var(--surface2);width:100%;max-width:560px;border-radius:18px 18px 0 0;padding:16px 16px calc(24px + env(safe-area-inset-bottom))}
 #sheet .card .btn{margin-top:10px}
-#toast{position:fixed;left:16px;right:16px;bottom:18px;max-width:528px;margin:0 auto;background:var(--surface2);border:1px solid var(--line);border-radius:12px;padding:12px 14px;font-size:14px;opacity:0;transition:opacity .2s;pointer-events:none}
+#toast{position:fixed;left:16px;right:16px;bottom:calc(var(--bar) + 12px + env(safe-area-inset-bottom));z-index:35;max-width:528px;margin:0 auto;background:var(--surface2);border:1px solid var(--line);border-radius:12px;padding:12px 14px;font-size:14px;opacity:0;transition:opacity .2s;pointer-events:none}
 #toast.on{opacity:1}
-.tabs{display:flex;gap:6px;margin-top:12px;position:sticky;top:0;background:var(--bg);padding:6px 0;z-index:5}
-.tabs button{flex:1;appearance:none;border:1px solid var(--line);background:var(--surface);color:var(--muted);border-radius:10px;padding:9px 2px;font:600 13px system-ui,-apple-system,Roboto,sans-serif}
+.tabs{display:flex;gap:6px;margin-top:8px;position:sticky;top:0;background:var(--bg);padding:6px 0;z-index:5}
+.tabs button{flex:1;appearance:none;border:1px solid var(--line);background:var(--surface);color:var(--muted);border-radius:10px;padding:9px 2px;font:600 13px system-ui,-apple-system,Roboto,sans-serif;min-width:0}
 .tabs button.on{color:var(--text);border-color:var(--accent);background:rgba(43,217,160,.10)}
 .page[hidden]{display:none}
 .set{display:flex;align-items:center;gap:12px;padding:12px 0;border-bottom:1px solid var(--line)}
 .set:last-child{border-bottom:0}
-.set .lab{flex:1}.set .lab .small{margin-top:2px}
+.set .lab{flex:1;min-width:0}.set .lab .small{margin-top:2px}
 .sw{position:relative;width:50px;height:30px;flex:0 0 50px}
 .sw input{opacity:0;width:0;height:0}
 .sw span{position:absolute;inset:0;background:var(--surface2);border:1px solid var(--line);border-radius:15px;transition:.15s}
 .sw span:before{content:"";position:absolute;width:22px;height:22px;left:3px;top:3px;background:var(--muted);border-radius:50%;transition:.15s}
 .sw input:checked+span{background:rgba(43,217,160,.25);border-color:var(--accent)}
 .sw input:checked+span:before{transform:translateX(20px);background:var(--accent)}
-input[type=range]{width:100%;accent-color:var(--accent)}
+input[type=range]{width:100%;accent-color:var(--accent);height:32px}
 select,input[type=search],input[type=text]{width:100%;background:var(--surface2);color:var(--text);border:1px solid var(--line);border-radius:10px;padding:10px;font:16px system-ui,-apple-system,Roboto,sans-serif}
-.seg{display:flex;gap:6px;margin-top:8px}.seg button{flex:1}
+.seg{display:flex;gap:6px;margin-top:8px}.seg button{flex:1;min-width:0;padding:10px 2px;font-size:14px}
 .seg .btn.on{border-color:var(--accent);color:var(--accent)}
-.slot{display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid var(--line)}
+.slot{display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid var(--line);background:var(--surface)}
 .slot:last-child{border-bottom:0}
-.slot .num{color:var(--muted);font-weight:700;width:18px}
-.slot .nm{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.slot .btn{width:auto;padding:8px 12px;font-size:14px}
+.slot .num{color:var(--muted);font-weight:700;width:18px;flex:0 0 18px}
+.slot .nm{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.slot .btn{width:auto;padding:8px 12px;font-size:14px;flex:0 0 auto}
+.slot .grip{flex:0 0 40px;height:40px;display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:22px;touch-action:none;cursor:grab;border-radius:10px;border:1px solid var(--line);user-select:none;-webkit-user-select:none}
+.slot.dragging{opacity:.85;border:1px solid var(--accent);border-radius:12px;padding-left:6px;padding-right:6px;position:relative;z-index:3}
 .gm{padding:10px 0;border-bottom:1px solid var(--line);cursor:pointer}
 .gm .small{margin-top:2px}
 .pad{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:12px}
 .pad .btn{height:64px;font-size:20px}
 .danger{border-color:var(--red);color:var(--red)}
-#lastSw .row .btn{padding:10px 4px;font-size:15px}
-#slowChips .btn{padding:10px 4px}
 .verdict{font-size:12px;font-weight:700;color:var(--accent);margin-left:6px}
 .teach{display:flex;gap:10px}.teach .btn{margin-top:10px}
 </style>
 </head>
 <body>
-<h1>Multiview Audio</h1>
-<div id="status" class="muted">Connecting to the camera phone…</div>
+<div class="head"><h1>Multiview Audio</h1><div id="status" class="muted one">Connecting to the camera phone…</div></div>
 <div class="tabs" id="tabs">
   <button data-tab="control" class="on">Control</button>
   <button data-tab="games">Games</button>
@@ -94,35 +118,30 @@ select,input[type=search],input[type=text]{width:100%;background:var(--surface2)
   <button data-tab="tv">TV</button>
 </div>
 
+<div id="ask" hidden><div class="in">
+  <div id="askText" class="one"></div>
+  <div class="row"><button class="btn" data-a="yes">Yes</button><button class="btn" data-a="no">No</button></div>
+</div></div>
+
 <div class="page" id="p-control">
 
-<div id="ask" class="panel" hidden>
-  <div id="askText"></div>
-  <div class="row"><button class="btn" data-a="yes">Yes</button><button class="btn" data-a="no">No</button></div>
-</div>
-
 <div class="grid" id="grid"></div>
-
-<div class="row">
-  <button class="btn big ad" data-a="ad">It's an ad</button>
-  <button class="btn big game" data-a="game">It's the game</button>
-</div>
+<div class="hint">Tap a box for choices · double-tap to play its sound</div>
 
 <div class="panel">
-  <div id="heard">Not listening</div>
-  <div id="why" class="small muted"></div>
-  <div id="paired" class="small"></div>
+  <div id="heard" class="one">Not listening</div>
+  <div id="why" class="small muted one"></div>
+  <div id="paired"></div>
   <div class="meter"><div id="meter"></div></div>
 </div>
 
-<div class="panel" id="lastSw" hidden>
-  <div class="muted small">Last switch <span class="verdict" id="swVerdict"></span></div>
-  <div id="swText" style="margin-top:4px"></div>
-  <div class="row"><button class="btn game" id="swGood">Good</button><button class="btn" id="swSlow">Too slow</button><button class="btn ad" id="swWrong">Wrong</button></div>
+<div class="panel" id="lastSw">
+  <div class="muted small one">Last switch <span class="verdict" id="swVerdict"></span></div>
+  <div id="swText">No switch yet.</div>
+  <div class="row" id="swButtons"><button class="btn game" id="swGood">Good</button><button class="btn" id="swSlow">Too slow</button><button class="btn ad" id="swWrong">Wrong</button></div>
   <div class="row" id="slowChips" hidden>
     <button class="btn" data-late="5">~5 s</button><button class="btn" data-late="10">~10 s</button><button class="btn" data-late="20">~20 s</button><button class="btn" data-late="30">30 s+</button>
   </div>
-  <div class="small muted" id="swHelp" style="margin-top:8px">Too slow: how late it was. Wrong: it wasn't a commercial (it goes back).</div>
 </div>
 
 <div class="panel">
@@ -136,7 +155,6 @@ select,input[type=search],input[type=text]{width:100%;background:var(--surface2)
   <button class="btn" id="startstop">Start</button>
 </div>
 
-
 <div class="panel">
   <div class="muted small">Activity</div>
   <div class="log" id="log"></div>
@@ -148,7 +166,7 @@ select,input[type=search],input[type=text]{width:100%;background:var(--surface2)
 
 <div class="page" id="p-games" hidden>
   <div class="panel">
-    <div class="muted small">The game in each multiview box, in the TV's order (left to right, top to bottom)</div>
+    <div class="muted small">The game in each multiview box, in the TV's order (left to right, top to bottom). Drag ≡ to reorder.</div>
     <div id="slots"></div>
     <div class="row"><button class="btn" id="fill">Fill empty boxes with games on now</button></div>
   </div>
@@ -174,7 +192,7 @@ select,input[type=search],input[type=text]{width:100%;background:var(--surface2)
     <div class="set"><div class="lab">Go back to my game after its commercial</div>
       <label class="sw"><input type="checkbox" data-set="returnToGame"><span></span></label></div>
     <div class="set" style="display:block"><div class="lab">Jump to a better game mid-play
-      <div class="small muted">Moves to a closer, later or red-zone game even when yours isn't in commercial</div></div>
+      <div class="small muted">Eager works like RedZone: scoring chances, 4th downs, late and close games. Never: only commercials move it.</div></div>
       <div class="seg" id="hopSeg"><button class="btn" data-hop="OFF">Never</button><button class="btn" data-hop="CALM">Calm</button><button class="btn" data-hop="NORMAL">Normal</button><button class="btn" data-hop="EAGER">Eager</button></div></div>
     <div class="set"><div class="lab">Use the camera</div>
       <label class="sw"><input type="checkbox" data-set="useCamera"><span></span></label></div>
@@ -225,9 +243,14 @@ select,input[type=search],input[type=text]{width:100%;background:var(--surface2)
   <div class="row"><button class="btn danger" data-key="POWER">Power</button></div>
 </div>
 
+<div id="bar"><div class="in">
+  <button class="btn ad" data-a="ad">It's an ad</button>
+  <button class="btn game" data-a="game">It's the game</button>
+</div></div>
+
 <div id="sheet" hidden>
   <div class="card">
-    <div id="sheetTitle" style="font-weight:700;font-size:18px"></div>
+    <div id="sheetTitle" style="font-weight:700;font-size:18px" class="one"></div>
     <button class="btn game" id="sPlay">Play audio from this box</button>
     <button class="btn" id="sOn">Sound is already on this box</button>
     <button class="btn" id="sLock">Lock here</button>
@@ -243,17 +266,28 @@ const K = new URLSearchParams(location.search).get('k') || '';
 let S = null, sheetBox = 0, failures = 0;
 let tab = 'control', C = null, editing = null, pickBox = 0;
 const $ = id => document.getElementById(id);
+const enc = encodeURIComponent;
+/** Only touch the page when something really changed (no flicker, no lost taps). */
+function setText(el, t) { t = t == null ? '' : String(t); if (el.textContent !== t) el.textContent = t; }
+function setHidden(el, h) { if (el.hidden !== h) el.hidden = h; }
 
 function toast(t) { const el = $('toast'); el.textContent = t; el.classList.add('on'); clearTimeout(toast.h); toast.h = setTimeout(() => el.classList.remove('on'), 2600); }
 
+let busy = {};
 async function act(a, n, v) {
+  // One tap at a time per button: a second tap while the first is on its way does nothing.
+  const key = a + ':' + (n || '');
+  const once = a === 'ad' || a === 'game' || a === 'play';
+  if (once && busy[key]) return;
+  if (once) busy[key] = true;
   try {
-    const r = await fetch('/do?k=' + encodeURIComponent(K) + '&a=' + a + (n ? '&n=' + n : '') + (v ? '&v=' + encodeURIComponent(v) : ''), { method: 'POST' });
+    const r = await fetch('/do?k=' + enc(K) + '&a=' + a + (n ? '&n=' + n : '') + (v ? '&v=' + enc(v) : ''), { method: 'POST' });
     const j = await r.json();
     if (!j.ok && j.error) toast(j.error);
     else if (a === 'ad') toast('Got it, commercial.');
     else if (a === 'game') toast('Got it, game.');
   } catch (e) { toast("Couldn't reach the camera phone."); }
+  finally { if (once) setTimeout(() => { busy[key] = false; }, a === 'ad' ? 1500 : 400); }
   poll();
 }
 
@@ -263,9 +297,10 @@ $('startstop').onclick = () => act(S && S.running ? 'stop' : 'start');
 
 function openSheet(box) {
   if (!S) return;
-  sheetBox = box.box;
-  $('sheetTitle').textContent = 'Box ' + box.box + (box.name ? ': ' + box.name : '');
-  $('sLock').textContent = S.locked === box.box ? 'Unlock' : 'Lock here';
+  const b = (S.boxes || []).find(x => x.box === box) || { box };
+  sheetBox = box;
+  $('sheetTitle').textContent = 'Box ' + box + (b.name ? ': ' + b.name : '');
+  $('sLock').textContent = S.locked === box ? 'Unlock' : 'Lock here';
   $('sheet').hidden = false;
 }
 $('sCancel').onclick = () => $('sheet').hidden = true;
@@ -276,68 +311,110 @@ $('sPlay').onclick = () => { $('sheet').hidden = true; act('play', sheetBox); };
 $('sOn').onclick = () => { $('sheet').hidden = true; act('on', sheetBox); };
 $('sLock').onclick = () => { $('sheet').hidden = true; act(S && S.locked === sheetBox ? 'unlock' : 'lock', sheetBox); };
 
+// ---------------------------------------------------------------- the boxes: built once, then only their text changes
+let gridKey = '', tiles = {};
+let tapBox = 0, tapTimer = 0;
+function boxTapped(n, el) {
+  if (tapBox === n && tapTimer) {
+    // Double-tap: play this box's sound.
+    clearTimeout(tapTimer); tapTimer = 0; tapBox = 0;
+    el.classList.remove('flash'); void el.offsetWidth; el.classList.add('flash');
+    act('play', n); toast('Playing box ' + n + '.');
+    return;
+  }
+  tapBox = n;
+  clearTimeout(tapTimer);
+  tapTimer = setTimeout(() => { tapTimer = 0; tapBox = 0; openSheet(n); }, 280);
+}
+function buildGrid(boxes) {
+  const g = $('grid'); g.innerHTML = ''; tiles = {};
+  for (const b of boxes) {
+    const d = document.createElement('div');
+    d.className = 'box';
+    d.innerHTML = '<div class="top"><span class="num"></span><span class="chip"></span><span class="sound-tag"></span></div>' +
+      '<div class="name one"></div><div class="detail one"></div><div class="cam one"></div>';
+    d.querySelector('.num').textContent = b.box;
+    d.addEventListener('click', () => boxTapped(b.box, d));
+    g.appendChild(d);
+    tiles[b.box] = { el: d, chip: d.querySelector('.chip'), tag: d.querySelector('.sound-tag'), name: d.querySelector('.name'),
+      detail: d.querySelector('.detail'), cam: d.querySelector('.cam') };
+  }
+}
+
+let logShown = '';
 function render() {
   const s = S;
-  $('status').textContent = s.status;
-  $('ask').hidden = !s.ask;
-  if (s.ask) $('askText').textContent = 'Camera saw the sound move to box ' + s.ask + '. Is it there?';
-  const g = $('grid'); g.innerHTML = '';
-  g.style.gridTemplateColumns = s.layout === 2 ? '1fr 1fr' : '1fr 1fr';
+  setText($('status'), s.status);
+  setHidden($('ask'), !s.ask);
+  if (s.ask) setText($('askText'), 'Did the sound move to box ' + s.ask + '?');
+  const key = s.boxes.map(b => b.box).join(',');
+  if (key !== gridKey) { gridKey = key; buildGrid(s.boxes); }
   for (const b of s.boxes) {
-    const d = document.createElement('div');
-    d.className = 'box' + (s.running && s.box === b.box ? ' sound' : '');
-    const chip = b.chip || 'NONE';
-    d.innerHTML = '<div class="top"><span class="num"></span><span class="chip"></span><span class="sound-tag"></span></div>' +
-      '<div class="name"></div><div class="detail"></div><div class="cam"></div>';
-    d.querySelector('.num').textContent = b.box;
-    const c = d.querySelector('.chip'); c.textContent = b.chip || '–'; c.classList.add(chip.replace(' ', ''));
-    d.querySelector('.sound-tag').textContent = s.running && s.box === b.box ? (s.locked === b.box ? 'LOCKED' : 'SOUND') : '';
-    d.querySelector('.name').textContent = b.name || 'No game set';
-    d.querySelector('.detail').textContent = b.detail || '';
-    const cam = d.querySelector('.cam');
-    if (b.sees || b.camera) { cam.textContent = 'Camera: ' + (b.sees || b.camera); if (b.camera) cam.classList.add(b.camera); }
-    else if (b.reads) cam.textContent = 'Reads: ' + b.reads;
-    d.onclick = () => openSheet(b);
-    g.appendChild(d);
+    const t = tiles[b.box]; if (!t) continue;
+    const sound = s.running && s.box === b.box;
+    const cls = 'box' + (sound ? ' sound' : '') + (t.el.classList.contains('flash') ? ' flash' : '');
+    if (t.el.className !== cls) t.el.className = cls;
+    const chip = (b.chip || 'NONE').replace(' ', '');
+    setText(t.chip, b.chip || '–');
+    if (t.chip.className !== 'chip ' + chip) t.chip.className = 'chip ' + chip;
+    setText(t.tag, sound ? (s.locked === b.box ? 'LOCKED' : 'SOUND') : '');
+    setText(t.name, b.name || 'No game set');
+    setText(t.detail, b.detail || '');
+    const camText = (b.sees || b.camera) ? 'Camera: ' + (b.sees || b.camera) : (b.reads ? 'Reads: ' + b.reads : '');
+    setText(t.cam, camText);
+    const cc = 'cam one' + (b.camera ? ' ' + b.camera : '');
+    if (t.cam.className !== cc) t.cam.className = cc;
   }
   const heard = s.running ? (s.mic ? (s.heard === 'game' ? 'Game audio' : s.heard === 'commercial' ? 'Commercial' : 'Listening…') : 'Mic off') : 'Not listening';
-  $('heard').textContent = heard + (s.running && s.mic && s.adPct >= 0 ? ' · commercial-like sound ' + s.adPct + '%' : '');
+  setText($('heard'), heard + (s.running && s.mic && s.adPct >= 0 ? ' · commercial-like ' + s.adPct + '%' : ''));
   $('heard').style.color = s.heard === 'commercial' && s.running ? 'var(--amber)' : (s.heard === 'game' && s.running ? 'var(--accent)' : 'var(--text)');
-  $('why').textContent = s.why || s.error || s.remoteMsg || '';
-  $('paired').textContent = s.running ? (s.paired || '') : '';
+  setText($('why'), s.why || s.error || s.remoteMsg || '');
+  setText($('paired'), s.running ? (s.paired || '') : '');
   $('meter').style.width = (s.running && s.adPct >= 0 ? s.adPct : 0) + '%';
   $('meter').style.background = s.adPct >= 60 ? 'var(--amber)' : 'var(--accent)';
-  $('pause').textContent = s.paused ? 'Resume' : 'Pause';
+  setText($('pause'), s.paused ? 'Resume' : 'Pause');
   $('pause').disabled = !s.running;
-  $('startstop').textContent = s.running ? 'Stop' : (s.starting ? 'Starting…' : 'Start');
-  const log = $('log'); log.innerHTML = '';
-  for (const line of s.log) {
-    const i = line.indexOf('  ');
-    const row = document.createElement('div');
-    const t = document.createElement('span'); t.textContent = i > 0 ? line.slice(0, i) : '';
-    const m = document.createElement('span'); m.textContent = i > 0 ? line.slice(i + 2) : line;
-    row.appendChild(t); row.appendChild(m); log.appendChild(row);
+  setText($('startstop'), s.running ? 'Stop' : (s.starting ? 'Starting…' : 'Start'));
+  const joined = s.log.join('\n');
+  if (joined !== logShown) {
+    logShown = joined;
+    const log = $('log'), keepTop = log.scrollTop;
+    log.innerHTML = '';
+    for (const line of s.log) {
+      const i = line.indexOf('  ');
+      const row = document.createElement('div');
+      const t = document.createElement('span'); t.textContent = i > 0 ? line.slice(0, i) : '';
+      const m = document.createElement('span'); m.textContent = i > 0 ? line.slice(i + 2) : line;
+      row.appendChild(t); row.appendChild(m); log.appendChild(row);
+    }
+    log.scrollTop = keepTop;
   }
+  // The last switch: always there (same size), its buttons only work when there's one to rate.
   const sw = s.lastSwitch || {};
-  $('lastSw').hidden = !(sw.ago >= 0 && sw.ago < 600);
-  if (!$('lastSw').hidden) {
+  const has = sw.ago >= 0 && sw.ago < 600;
+  if (has) {
     const ago = sw.ago < 60 ? sw.ago + ' s ago' : Math.floor(sw.ago / 60) + ' min ago';
-    $('swText').textContent = 'Box ' + sw.from + ' → ' + sw.to + ', ' + ago + (sw.why ? ': ' + sw.why : '');
-    $('swVerdict').textContent = sw.verdict ? 'you said: ' + sw.verdict : '';
-  }
+    setText($('swText'), 'Box ' + sw.from + ' → ' + sw.to + ', ' + ago + (sw.why ? ': ' + sw.why : ''));
+    setText($('swVerdict'), sw.verdict ? 'you said: ' + sw.verdict : '');
+  } else { setText($('swText'), 'No switch in the last 10 minutes.'); setText($('swVerdict'), ''); }
+  for (const id of ['swGood', 'swSlow', 'swWrong']) $(id).disabled = !has;
   drawGrid();
 }
 
 async function poll() {
   try {
-    const r = await fetch('/state?k=' + encodeURIComponent(K), { cache: 'no-store' });
-    if (r.status === 403) { $('status').textContent = 'This link is out of date. Scan the code on the camera phone again.'; return; }
+    const r = await fetch('/state?k=' + enc(K), { cache: 'no-store' });
+    if (r.status === 403) { setText($('status'), 'This link is out of date. Scan the code on the camera phone again.'); return; }
     S = await r.json(); failures = 0; render();
   } catch (e) {
-    if (++failures >= 2) $('status').textContent = "Can't reach the camera phone. Is it on the same Wi-Fi with the app open?";
+    if (++failures >= 2) setText($('status'), "Can't reach the camera phone. Same Wi-Fi, app open?");
   }
 }
 setInterval(poll, 1000); poll();
+
+// The big buttons hide while you type (the keyboard would push them over what you're typing).
+document.addEventListener('focusin', e => { if (e.target.matches('textarea,input[type=text],input[type=search]')) setHidden($('bar'), true); });
+document.addEventListener('focusout', () => setTimeout(() => setHidden($('bar'), tab !== 'control'), 150));
 
 // Camera view: what the camera phone sees, with the boxes as it reads them.
 function lerp(a, b, t) { return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]; }
@@ -368,13 +445,13 @@ function refreshCam() {
   if (tab !== 'camera') return;
   const img = new Image();
   img.onload = () => { $('cam').src = img.src; setTimeout(drawGrid, 30); };
-  img.src = '/frame.jpg?k=' + encodeURIComponent(K) + '&t=' + Date.now();
+  img.src = '/frame.jpg?k=' + enc(K) + '&t=' + Date.now();
 }
 setInterval(refreshCam, 1500);
 
 $('diag').onclick = async () => {
   try {
-    const r = await fetch('/report?k=' + encodeURIComponent(K), { cache: 'no-store' });
+    const r = await fetch('/report?k=' + enc(K), { cache: 'no-store' });
     const t = await r.text();
     const ta = $('report'); ta.value = t; ta.hidden = false;
     let copied = false;
@@ -385,11 +462,12 @@ $('diag').onclick = async () => {
 };
 
 // ---------------------------------------------------------------- tabs
-const enc = encodeURIComponent;
 document.querySelectorAll('#tabs button').forEach(b => b.onclick = () => {
   tab = b.dataset.tab;
   document.querySelectorAll('#tabs button').forEach(x => x.classList.toggle('on', x === b));
   document.querySelectorAll('.page').forEach(p => p.hidden = p.id !== 'p-' + tab);
+  setHidden($('bar'), tab !== 'control');
+  window.scrollTo(0, 0);
   if (tab === 'camera') refreshCam();
   if (tab === 'games' || tab === 'settings' || tab === 'camera') loadConfig();
 });
@@ -408,40 +486,90 @@ async function setting(name, value, done) {
   loadConfig();
 }
 
+let slotsShown = '';
 function renderConfig() {
   if (!C) return;
   document.querySelectorAll('[data-set]').forEach(el => {
     const v = C[el.dataset.set];
     if (el.type === 'checkbox') el.checked = !!v; else if (document.activeElement !== el) el.value = v;
   });
-  $('sensVal').textContent = Math.round(C.micSensitivity * 100) + '%';
-  $('breakVal').textContent = Math.floor(C.breakSecs / 60) + ':' + String(C.breakSecs % 60).padStart(2, '0');
+  setText($('sensVal'), Math.round(C.micSensitivity * 100) + '%');
+  setText($('breakVal'), Math.floor(C.breakSecs / 60) + ':' + String(C.breakSecs % 60).padStart(2, '0'));
   document.querySelectorAll('#layoutSeg .btn').forEach(b => b.classList.toggle('on', +b.dataset.layout === C.layout));
   document.querySelectorAll('#hopSeg .btn').forEach(b => b.classList.toggle('on', b.dataset.hop === C.hopping));
-  $('soundLearned').textContent = C.soundLearned;
-  $('pictureLearned').textContent = C.pictureLearned;
+  setText($('soundLearned'), C.soundLearned);
+  setText($('pictureLearned'), C.pictureLearned);
   if (document.activeElement !== $('zoom')) $('zoom').value = C.cameraZoom;
-  $('zoomVal').textContent = Math.round(C.cameraZoom * 100) + '%';
+  setText($('zoomVal'), Math.round(C.cameraZoom * 100) + '%');
+  // The game list: rebuilt only when it changed, never in the middle of a drag.
+  const key = JSON.stringify(C.slots);
+  if (key === slotsShown || dragSlot) return;
+  slotsShown = key;
   const sl = $('slots'); sl.innerHTML = '';
   for (const g of C.slots) {
-    const d = document.createElement('div'); d.className = 'slot';
-    d.innerHTML = '<span class="num"></span><span class="nm"></span><button class="btn">Change</button>';
+    const d = document.createElement('div'); d.className = 'slot'; d.dataset.box = g.box;
+    d.innerHTML = '<span class="grip" aria-label="Drag to reorder">≡</span><span class="num"></span><span class="nm"></span><button class="btn">Change</button>';
     d.querySelector('.num').textContent = g.box;
     const nm = d.querySelector('.nm'); nm.textContent = g.name || 'No game set'; if (!g.name) nm.classList.add('muted');
     d.querySelector('.btn').onclick = () => openPicker(g.box, g.name);
+    d.querySelector('.grip').addEventListener('pointerdown', e => startDrag(e, d));
     sl.appendChild(d);
   }
+}
+
+// ---------------------------------------------------------------- dragging games into a new order
+let dragSlot = null, dragStartY = 0, dragRows = [];
+function startDrag(e, row) {
+  e.preventDefault();
+  dragSlot = row; dragStartY = e.clientY;
+  dragRows = [...$('slots').children];
+  row.classList.add('dragging');
+  // (The dragged row itself is never moved in the page, only the rows it passes: moving it would drop the drag.)
+  document.addEventListener('pointermove', moveDrag);
+  document.addEventListener('pointerup', endDrag, { once: true });
+  document.addEventListener('pointercancel', endDrag, { once: true });
+}
+function moveDrag(e) {
+  if (!dragSlot) return;
+  e.preventDefault();
+  dragSlot.style.transform = 'translateY(' + (e.clientY - dragStartY) + 'px)';
+  const list = $('slots'), rows = [...list.children], i = rows.indexOf(dragSlot);
+  const r = dragSlot.getBoundingClientRect(), mid = r.top + r.height / 2;
+  const prev = rows[i - 1], next = rows[i + 1];
+  const half = el => { const b = el.getBoundingClientRect(); return b.top + b.height / 2; };
+  if (next && mid > half(next)) {
+    const h = next.getBoundingClientRect().height;
+    list.insertBefore(next, dragSlot);
+    dragStartY += h;
+  } else if (prev && mid < half(prev)) {
+    const h = prev.getBoundingClientRect().height;
+    list.insertBefore(prev, dragSlot.nextSibling);
+    dragStartY -= h;
+  } else return;
+  dragSlot.style.transform = 'translateY(' + (e.clientY - dragStartY) + 'px)';
+}
+async function endDrag() {
+  const row = dragSlot; if (!row) return;
+  document.removeEventListener('pointermove', moveDrag);
+  document.removeEventListener('pointerup', endDrag);
+  document.removeEventListener('pointercancel', endDrag);
+  row.style.transform = ''; row.classList.remove('dragging');
+  dragSlot = null;
+  const order = [...$('slots').children].map(x => x.dataset.box);
+  if (order.join(',') === dragRows.map(x => x.dataset.box).join(',')) return;
+  slotsShown = '';
+  await setting('order', order.join(','), 'Games reordered. Box 1 is now ' + (C.slots.find(g => String(g.box) === order[0]) || {}).name + '.');
 }
 
 document.querySelectorAll('[data-set]').forEach(el => {
   const name = el.dataset.set;
   el.addEventListener('change', () => setting(name, el.type === 'checkbox' ? el.checked : el.value));
   if (el.type === 'range') el.addEventListener('input', () => {
-    if (name === 'micSensitivity') $('sensVal').textContent = Math.round(el.value * 100) + '%';
-    if (name === 'breakSecs') $('breakVal').textContent = Math.floor(el.value / 60) + ':' + String(el.value % 60).padStart(2, '0');
+    if (name === 'micSensitivity') setText($('sensVal'), Math.round(el.value * 100) + '%');
+    if (name === 'breakSecs') setText($('breakVal'), Math.floor(el.value / 60) + ':' + String(el.value % 60).padStart(2, '0'));
   });
 });
-document.querySelectorAll('#hopSeg .btn').forEach(b => b.onclick = () => setting('hopping', b.dataset.hop, b.dataset.hop === 'OFF' ? 'It only moves for commercials now.' : 'Saved.'));
+document.querySelectorAll('#hopSeg .btn').forEach(b => b.onclick = () => setting('hopping', b.dataset.hop, b.dataset.hop === 'OFF' ? 'It only moves for commercials now.' : b.dataset.hop === 'EAGER' ? 'Eager: it jumps to scoring chances and late, close games.' : 'Saved.'));
 document.querySelectorAll('#layoutSeg .btn').forEach(b => b.onclick = () => setting('layout', b.dataset.layout, 'Layout set. Check the games for each box.'));
 $('forgetSound').onclick = () => { if (confirm('Forget what it learned about the sound? It goes back to the built-in rules.')) act('forgetSound'); };
 $('forgetPicture').onclick = () => { if (confirm('Forget what the camera learned about the picture?')) act('forgetPicture'); setTimeout(loadConfig, 500); };
@@ -485,7 +613,7 @@ async function search(q) {
   try {
     const r = await fetch('/games?k=' + enc(K) + '&q=' + enc(q), { cache: 'no-store' });
     const list = await r.json();
-    $('found').textContent = list.length ? (q ? 'Tap a game' : 'On now and coming up. Tap a game.') : 'No games found.';
+    $('found').textContent = list.length ? (q ? 'Tap a game' : 'Football and basketball on now and coming up. Tap a game.') : 'No games found.';
     for (const g of list) {
       const d = document.createElement('div'); d.className = 'gm';
       d.innerHTML = '<div class="nm"></div><div class="small muted"></div>';
@@ -505,12 +633,12 @@ async function assign(extra, name) {
     toast(j.ok ? 'Box ' + pickBox + ': ' + name : j.error);
     if (j.ok) $('picker').hidden = true;
   } catch (e) { toast("Couldn't reach the camera phone."); }
-  loadConfig();
+  slotsShown = ''; loadConfig();
 }
 $('setOther').onclick = () => { const n = $('otherName').value.trim(); if (n) assign('&other=' + enc(n), n); };
-$('clearBox').onclick = async () => { await act('clearBox', pickBox); $('picker').hidden = true; loadConfig(); };
+$('clearBox').onclick = async () => { await act('clearBox', pickBox); $('picker').hidden = true; slotsShown = ''; loadConfig(); };
 $('closePick').onclick = () => $('picker').hidden = true;
-$('fill').onclick = async () => { await act('fill'); setTimeout(loadConfig, 2500); };
+$('fill').onclick = async () => { await act('fill'); setTimeout(() => { slotsShown = ''; loadConfig(); }, 2500); };
 
 // ---------------------------------------------------------------- camera: corners and zoom
 $('editCorners').onclick = () => {
@@ -540,7 +668,7 @@ $('ov').addEventListener('pointermove', e => {
 });
 $('ov').addEventListener('pointerup', () => dragging = -1);
 $('ov').style.touchAction = 'none';
-$('zoom').addEventListener('input', () => $('zoomVal').textContent = Math.round($('zoom').value * 100) + '%');
+$('zoom').addEventListener('input', () => setText($('zoomVal'), Math.round($('zoom').value * 100) + '%'));
 $('zoom').addEventListener('change', () => setting('cameraZoom', $('zoom').value, 'Zoom set. Finding the TV again.'));
 
 // ---------------------------------------------------------------- feedback on switches, and notes
@@ -552,17 +680,19 @@ async function feedback(a, v, msg) {
   } catch (e) { toast("Couldn't reach the camera phone."); }
   poll();
 }
+// "Too slow" swaps its row for the how-late choices (same place, same size).
+function showSlow(on) { setHidden($('slowChips'), !on); setHidden($('swButtons'), on); }
 $('swGood').onclick = () => feedback('good', '', 'Thanks. Learning that commercial.');
-$('swSlow').onclick = () => $('slowChips').hidden = !$('slowChips').hidden;
+$('swSlow').onclick = () => showSlow(true);
 document.querySelectorAll('[data-late]').forEach(b => b.onclick = () => {
-  $('slowChips').hidden = true;
+  showSlow(false);
   feedback('slow', b.dataset.late, 'Got it. It will call them a bit quicker.');
 });
 $('swWrong').onclick = () => feedback('wrong', '', "Got it. Going back; it will be a bit less quick.");
 $('saveNote').onclick = async () => {
   const t = $('noteText').value.trim(); if (!t) return;
   await feedback('note', t, 'Saved. It goes in the diagnostics.');
-  $('noteText').value = '';
+  $('noteText').value = ''; $('noteText').blur();
 };
 
 // ---------------------------------------------------------------- TV remote

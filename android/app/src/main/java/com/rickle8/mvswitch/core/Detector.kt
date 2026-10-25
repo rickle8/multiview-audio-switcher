@@ -45,6 +45,23 @@ class TransitionDetector {
     private fun mean(list: List<DoubleArray>) =
         DoubleArray(list.first().size) { i -> list.sumOf { it[i] } / list.size }
 
+    /**
+     * Whether the sound changed around [t] (a few seconds ago at most): the seconds after it unlike
+     * the seconds before, by much more than the sound usually moves from one second to the next, or a
+     * brief dropout right then. Moving the sound to another box does that; a graphic on screen that
+     * looks like YouTube TV's outline doesn't. Seconds before [notBefore] (the app's own last move)
+     * don't count.
+     */
+    fun changedAt(t: Double, notBefore: Double = -1e9): Boolean {
+        if (kotlin.math.abs(lastDip - t) < 3) return true
+        val before = shapes.filter { it.first < t - 1 && it.first > maxOf(t - 9, notBefore) }.map { it.second }
+        val after = shapes.filter { it.first >= t - 1 && it.first <= t + 4 }.map { it.second }
+        if (before.size < 3 || after.size < 2) return false
+        val steps = before.zipWithNext { x, y -> dist(x, y) }.sorted()
+        val typical = max(0.3, steps[steps.size / 2])
+        return dist(mean(after), mean(before)) > 2.0 * typical
+    }
+
     fun update(a: SecondAudio, now: Double): Boolean {
         if (energies.size >= 150) {
             val sorted = energies.sorted()
@@ -190,7 +207,7 @@ class Detector(private val dir: File? = null) {
         transitions.update(audio, now)
         val recentTransition = now - transitions.lastTransition < 20
         val effBias = when {
-            !recentTransition || bias == Bias.EXPECTED -> bias
+            !recentTransition || bias == Bias.EXPECTED || bias == Bias.CAMERA_AD -> bias
             bias == Bias.UNLIKELY || bias == Bias.CLOCK -> Bias.TRANSITION_BUT_UNLIKELY
             else -> Bias.TRANSITION
         }
@@ -247,6 +264,9 @@ class Detector(private val dir: File? = null) {
         prints.add(fp.range(from, fp.latestFrame), auto = false, now = System.currentTimeMillis())
         dirty = true
     }
+
+    /** Whether the sound changed around [t] (see [TransitionDetector.changedAt]). */
+    fun soundChangedAt(t: Double, notBefore: Double = -1e9): Boolean = transitions.changedAt(t, notBefore)
 
     /** Call right after switching games: the next audio is a different game. */
     fun onSwitch() {

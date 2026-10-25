@@ -17,6 +17,8 @@ private val HALF = Regex("end of (the )?(1st |first )?half|halftime|end quarter 
 val PROACTIVE_STATUSES = setOf("STATUS_HALFTIME", "STATUS_END_PERIOD")
 
 private val KICK = Regex("kick|extra point|touchback|two.point", RegexOption.IGNORE_CASE)
+/** Commercial-like sound this clear goes whatever ESPN's (later) plays and clock say. */
+const val CLEAR_AD_PCT = 80
 private val STOPPAGE = Regex("end of|end period|halftime|official timeout|tv timeout|media timeout", RegexOption.IGNORE_CASE)
 
 class Controller(
@@ -83,11 +85,15 @@ class Controller(
     /** For the screen: the break ESPN says is coming that the app is waiting out. */
     fun waitingFor(box: Int): String? = armed[box]?.text
 
-    /** How much later the TV shows something than this app hears about it from ESPN. */
+    /**
+     * How much later the TV shows something than this app hears about it from ESPN. Negative when
+     * ESPN's data comes in after the TV has already shown it (on the Oct 25 games ESPN was about 44 s
+     * behind the real game and the TV about 30 s, so the TV ran ~15 s ahead of what the app knew).
+     */
     private fun dataLead(): Double {
         val d = delay() ?: return 0.0
         val lag = feed?.espnLag() ?: return 0.0
-        return maxOf(0.0, d - lag)
+        return (d - lag).coerceIn(-30.0, 60.0)
     }
 
     /** The game clock is running on what the TV shows now (or is about to): no break. */
@@ -175,6 +181,37 @@ class Controller(
 
     /** What the camera sees on each box (score bug, yard lines, field, commercial text), and when. */
     @Volatile var sights: Pair<Double, Map<Int, Sight>>? = null
+        set(v) { field = v; v?.let { (_, m) -> runCatching { noteSights(m) } } }
+
+    /** Boxes you said are the game where the camera has since seen the game too. */
+    private val userLiveCalm: MutableSet<Int> = java.util.concurrent.ConcurrentHashMap.newKeySet()
+
+    /**
+     * Your "It's the game" keeps the camera from calling that box a commercial, but only until the
+     * picture really changes: once the camera has seen the game there and then sees a commercial,
+     * that's a new break, not the mistake you corrected. (Held for 4 minutes regardless, it kept a
+     * whole Geico commercial on box 1 on Oct 25: you'd tapped "It's the game" 90 s before.)
+     */
+    private fun noteSights(m: Map<Int, Sight>) {
+        for (box in userLive.keys) {
+            val p = m[box]?.points ?: continue
+            if (p <= 0.0) userLiveCalm += box
+            else if (box in userLiveCalm && p >= Pairing.LEAN_AD) { userLive.remove(box); userLiveCalm.remove(box) }
+        }
+    }
+
+    /**
+     * The camera sees a commercial on a box clearly enough to make the sound quicker there: commercial
+     * text, the learned picture sure of it, or the score bug gone a while with the picture leaning
+     * commercial. (The score bug alone not being read isn't enough: on Oct 25 box 1's went unread for
+     * a minute of live play.)
+     */
+    fun cameraSeesAd(box: Int, now: Double): Boolean {
+        if (userSaidGame(box, now)) return false
+        val s = sightOf(box, now) ?: return false
+        if (s.bug) return false
+        return s.adText || s.looksAd || ((s.bugGoneSecs ?: 0.0) >= 20 && (s.look ?: 0.0) >= 0.75)
+    }
 
     /** What the camera sees on a box, if it's watching. */
     fun sightOf(box: Int, now: Double): Sight? = sights?.takeIf { now - it.first < 4 }?.second?.get(box)
@@ -193,11 +230,13 @@ class Controller(
      * few minutes pass.
      */
     private val userLive: MutableMap<Int, Double> = java.util.concurrent.ConcurrentHashMap()
-    var userLiveSecs = 240.0
+    var userLiveSecs = 180.0
 
     fun userSaysGame(box: Int) {
         val now = clock()
         userLive[box] = now
+        userLiveCalm.remove(box)
+        userAdAt.remove(box)
         breakUntil.remove(box)
         breakStarted.remove(box)
         awayForBreak.remove(box)
@@ -210,9 +249,14 @@ class Controller(
     fun userSaysAd(box: Int) {
         val now = clock()
         userLive.remove(box)
-        breakStarted[box] = now
+        userAdAt[box] = now
+        if ((breakUntil[box] ?: 0.0) <= now) breakStarted[box] = now
         breakUntil[box] = now + breakLength(box, recentScore(box, now))
     }
+
+    /** When you last said a box is in commercial: not a place to send you back to for a bit. */
+    private val userAdAt: MutableMap<Int, Double> = java.util.concurrent.ConcurrentHashMap()
+    private fun userSaidAd(box: Int, now: Double) = userAdAt[box]?.let { now - it < 45 } == true
 
     /** How far behind ESPN the TV is taken to run right now, for the recording. */
     fun dataLeadForRecord(): Double = dataLead()
@@ -303,9 +347,12 @@ class Controller(
             .filter { outlook(it, now, status).first == Outlook.SHOW }
             .sortedByDescending { score(it) }
 
-    /** Every other game is in commercial too: the one whose break started first should be back first. */
+    /**
+     * Every other game is in commercial too: the one whose break started first should be back first.
+     * Never one you just said is in commercial (on Oct 25 that bounced you between boxes 2 and 3).
+     */
     private fun backSoonest(now: Double, status: Map<Int, GameStatus>, exclude: Int): Int? =
-        boxes.filter { it != exclude && status[it] != GameStatus.FINAL && status[it] != GameStatus.PREGAME }
+        boxes.filter { it != exclude && status[it] != GameStatus.FINAL && status[it] != GameStatus.PREGAME && !userSaidAd(it, now) }
             .mapNotNull { b ->
                 val started = breakStarted[b]?.takeIf { inBreak(b, now, status) }
                     ?: feed?.plays(b)?.lastOrNull()?.let { tvTime(it) }?.takeIf { outlook(b, now, status).first == Outlook.BREAK }
@@ -379,9 +426,12 @@ class Controller(
      * a break ended with nothing since, it's unlikely.
      */
     fun bias(box: Int?, now: Double): Bias {
-        if (box == null || feed == null) return Bias.NORMAL
+        if (box == null) return Bias.NORMAL
+        if (feed != null && armed[box] != null) return Bias.EXPECTED
+        // What the camera sees on the TV beats what ESPN's (later) data guesses about it.
+        if (cameraSeesAd(box, now)) return Bias.CAMERA_AD
+        if (feed == null) return Bias.NORMAL
         val end = lastBreakEnd[box] ?: -1e9
-        if (armed[box] != null) return Bias.EXPECTED
         if (clockRunning(box, now)) return Bias.CLOCK
         if (now - lastSwitch < 20) return Bias.LANDED
         val likely = feed.plays(box).lastOrNull {
@@ -488,18 +538,34 @@ class Controller(
         return p.text
     }
 
-    /** You said it's a commercial: treat it as a break and move now. */
-    fun commercialNow(): Boolean {
+    /**
+     * You said it's a commercial on [tapped] (the box the sound was on when you tapped): treat it as a
+     * break and move now. Taps that waited while the remote was busy moving the sound are about a box
+     * it already left: they only count as that box being in commercial.
+     */
+    fun commercialNow(tapped: Int? = null): Boolean {
         val now = clock()
         val cur = nav.current ?: return false
+        if (tapped != null && tapped != cur) {
+            if ((breakUntil[tapped] ?: 0.0) <= now) userSaysAd(tapped) else userAdAt[tapped] = now
+            return false
+        }
         syncAdStart(cur, now - 2) // you tapped a moment after it started
+        userAdAt[cur] = now
         val status = feedStatus()
         if (goToBreak(cur, now, status, "You marked a commercial on box $cur", quiet = true)) return true
-        // You said it's a commercial: go somewhere anyway, the best other game that isn't over
-        // (pregame shows included), rather than sit on it.
-        val any = boxes.filter { it != cur && status[it] != GameStatus.FINAL && sightOf(it, now)?.adText != true }
-            .sortedWith(compareByDescending<Int> { status[it] != GameStatus.PREGAME }.thenByDescending { score(it) })
-            .firstOrNull() ?: return false
+        // You said it's a commercial: go somewhere anyway, the best other game that isn't over (pregame
+        // shows included), rather than sit on it. Not one you just said is in commercial, though:
+        // when they all are, it stays put and goes to the first one back.
+        val any = boxes.filter { it != cur && status[it] != GameStatus.FINAL && sightOf(it, now)?.adText != true && !userSaidAd(it, now) }
+            .sortedWith(compareByDescending<Int> { status[it] != GameStatus.PREGAME }
+                .thenBy { inBreak(it, now, status) }.thenByDescending { score(it) })
+            .firstOrNull()
+        if (any == null) {
+            log("Every game is in commercial. Staying on box $cur; it goes to the first game back.")
+            settleUntil = maxOf(settleUntil, now + 45)
+            return false
+        }
         adSwitches.addLast(now)
         return switchTo(any, now, "You marked a commercial on box $cur; going to box $any anyway")
     }
@@ -615,6 +681,10 @@ class Controller(
                     "Commercial started on box $cur after \u201c${expected.text.take(40)}\u201d")
                 if (strongAd) return goToBreak(cur, now, status,
                     (strongWhy ?: "Recognized a commercial") + " on box $cur")
+                // ESPN only holds back a borderline call. Its plays and clock reach the app after the TV
+                // shows them, so a play "just now" was often the last one before the commercial
+                // you're hearing: clearly commercial sound goes (14:27 on Oct 25 sat at 90%+ for 16 s).
+                if ((adPct ?: 0) >= CLEAR_AD_PCT) return goToBreak(cur, now, status, "Commercial on box $cur")
                 val play = recentPlay(cur, now)
                 if (play != null) {
                     if (guardLogged != play) {

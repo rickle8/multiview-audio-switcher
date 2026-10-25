@@ -41,6 +41,8 @@ data class GameInfo(
     val down: Int? = null,
     val distance: Int? = null,
     val outs: Int? = null,
+    /** Football: first and goal, or inside the 10 (a touchdown is one snap away). */
+    val goalToGo: Boolean = false,
 )
 
 data class ScheduledGame(
@@ -111,6 +113,8 @@ fun parseEvent(event: JSONObject, league: String = ""): GameInfo {
         down = sit.optInt("down", 0).takeIf { it in 1..4 },
         distance = sit.optInt("distance", -1).takeIf { it >= 0 },
         outs = if (sit.has("outs")) sit.optInt("outs", -1).takeIf { it in 0..3 } else null,
+        goalToGo = sit.optString("downDistanceText").contains("& goal", ignoreCase = true) ||
+            sit.optString("shortDownDistanceText").contains("& goal", ignoreCase = true),
     )
 }
 
@@ -445,6 +449,9 @@ class GameFeed(
 
     /** When this app last saw the game clock running for [box] (app clock), or null. */
     fun clockMovedAt(box: Int): Double? = clockMoved[box]
+
+    /** For tests: the game clock was seen running at [at]. */
+    internal fun clockSeenRunning(box: Int, at: Double) { clockMoved[box] = at }
 
     /** ESPN's own delay: how long after a play happens it shows up here. Null until known. */
     @Synchronized

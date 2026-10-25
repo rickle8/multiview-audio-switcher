@@ -123,7 +123,9 @@ object Pairing {
     }
 
     private fun soundWords(heard: Heard, adPct: Int?): String =
-        (when (heard) { Heard.AD -> "commercial"; Heard.GAME -> "game"; Heard.UNSURE -> "not sure" }) +
+        // Sounding like a commercial but not called one yet (it waits a few seconds to be sure).
+        if (heard != Heard.AD && adPct != null && adPct >= 60) "commercial-like ($adPct%), making sure"
+        else (when (heard) { Heard.AD -> "commercial"; Heard.GAME -> "game"; Heard.UNSURE -> "not sure" }) +
             (adPct?.let { " ($it% ad)" } ?: "")
 
     private fun soundVerdict(heard: Heard) = when (heard) {

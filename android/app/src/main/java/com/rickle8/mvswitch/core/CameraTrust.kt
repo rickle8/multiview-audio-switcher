@@ -47,7 +47,8 @@ class OutlineTrust {
     @Synchronized
     fun flash(box: Int, t: Double, current: Int?): Action {
         val c = check
-        if (c != null && t >= c.start - 0.3 && t <= c.end + 3) {
+        // (Up to 6 s after its last key: the camera sees the flash a moment late, and it can come late.)
+        if (c != null && t >= c.start - 0.3 && t <= c.end + 6) {
             c.flashes += box // the app's own move
             return Action.NOTHING
         }
@@ -68,7 +69,7 @@ class OutlineTrust {
     @Synchronized
     fun tick(now: Double) {
         val c = check ?: return
-        if (now > c.end + 3) { settle(c); check = null }
+        if (now > c.end + 6) { settle(c); check = null }
     }
 
     /** You answered "Is it there?": that counts like a check. */
@@ -76,11 +77,10 @@ class OutlineTrust {
     fun answered(yes: Boolean) = record(yes)
 
     private fun settle(c: Check) {
-        val last = c.flashes.lastOrNull()
         when {
-            last == null -> missed++
-            last == c.target -> record(true)
-            last in c.via -> missed++ // only saw it pass through: can't tell
+            c.flashes.isEmpty() -> missed++
+            c.target in c.flashes -> record(true)
+            c.flashes.all { it in c.via } -> missed++ // only saw it pass through: can't tell
             else -> record(false)
         }
     }

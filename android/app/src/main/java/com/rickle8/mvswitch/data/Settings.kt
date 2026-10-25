@@ -189,6 +189,7 @@ class SettingsStore(context: Context) {
     }
 }
 
+/** The leagues to pick games from: football and basketball (what you watch). */
 val LEAGUES = listOf(
     "football/nfl" to "NFL",
     "football/college-football" to "College FB",
@@ -196,21 +197,5 @@ val LEAGUES = listOf(
     "basketball/mens-college-basketball" to "NCAA MBB",
     "basketball/womens-college-basketball" to "NCAA WBB",
     "basketball/wnba" to "WNBA",
-    "hockey/nhl" to "NHL",
-    "hockey/mens-college-hockey" to "College hockey",
-    "baseball/mlb" to "MLB",
-    "baseball/college-baseball" to "College baseball",
-    "soccer/usa.1" to "MLS",
-    "soccer/eng.1" to "Premier League",
-    "soccer/uefa.champions" to "Champions League",
-    "soccer/esp.1" to "La Liga",
-    "soccer/mex.1" to "Liga MX",
-    "soccer/usa.nwsl" to "NWSL",
     "football/ufl" to "UFL",
-    "golf/pga" to "PGA Tour",
-    "racing/f1" to "F1",
-    "racing/nascar-premier" to "NASCAR",
-    "mma/ufc" to "UFC",
-    "tennis/atp" to "Tennis ATP",
-    "tennis/wta" to "Tennis WTA",
 )
